@@ -16,6 +16,8 @@ import type {TrustedMint} from '../trustedMints'
 import {readTrustedMints, mergeTrustedMints} from '../trustedMints'
 import type {EncryptedBearerRecord} from './bearers'
 import {readEncryptedBearers, writeEncryptedBearers} from './bearers'
+import type {WalletSettings} from './settings'
+import {loadSettings, persistSettings} from './settings'
 
 export type BackupFile = {
   type: 'sattle-backup'
@@ -24,6 +26,7 @@ export type BackupFile = {
   linkingKey?: StoredSecret
   bearers: EncryptedBearerRecord[]
   trustedMints?: TrustedMint[]
+  settings?: WalletSettings
 }
 
 export const buildBackup = (): BackupFile => {
@@ -32,7 +35,8 @@ export const buildBackup = (): BackupFile => {
     version: 1,
     createdAt: Date.now(),
     bearers: readEncryptedBearers(),
-    trustedMints: readTrustedMints()
+    trustedMints: readTrustedMints(),
+    settings: loadSettings()
   }
   const storedKey = getSavedLinkingKeyStored()
   if (savedKeyIsEncrypted() && storedKey) {
@@ -54,6 +58,10 @@ export type RestoreResult = {
   // let that read as a silent no-op.
   linkingKeySkipped: boolean
   trustedMintsAdded: number
+  // true when the backup's settings filled in a field this device had never
+  // set - never when it would overwrite one, same merge direction as the
+  // trusted mints (the device's own current state always wins)
+  settingsRestored: boolean
 }
 
 // restore-time bounds - a crafted or corrupt file must not be able to fill
@@ -144,11 +152,29 @@ export const applyBackup = (data: unknown): RestoreResult => {
     ? mergeTrustedMints(backup.trustedMints)
     : 0
 
+  // settings merge: fill only fields this device has never set. Flat
+  // optional fields (see settings.ts), so the merge is field by field -
+  // today that is just defaultMint
+  let settingsRestored = false
+  if (typeof backup.settings === 'object' && backup.settings !== null) {
+    const incoming = (backup.settings as Record<string, unknown>).defaultMint
+    const local = loadSettings()
+    if (
+      local.defaultMint === undefined &&
+      typeof incoming === 'string' &&
+      incoming.length <= MAX_BACKUP_FIELD_LENGTH
+    ) {
+      persistSettings({...local, defaultMint: incoming})
+      settingsRestored = true
+    }
+  }
+
   return {
     added,
     skipped,
     linkingKeyRestored,
     linkingKeySkipped,
-    trustedMintsAdded
+    trustedMintsAdded,
+    settingsRestored
   }
 }

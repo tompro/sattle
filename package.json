@@ -26,6 +26,7 @@
     "@scure/bip32": "^2.3.0",
     "@scure/bip39": "^2.3.0",
     "lnurlcash-kit": "github:tompro/lnurlcash-kit#prepare-git-install",
+    "nostr-tools": "2.24.3",
     "pinia": "^4.0.2",
     "qrcode.vue": "^3.10.0",
     "quasar": "^2.25.1",
