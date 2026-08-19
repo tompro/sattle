@@ -1,6 +1,17 @@
 <template>
   <q-page class="q-pa-md">
-    <div class="text-h5 text-weight-bold q-mb-md">Settings</div>
+    <div class="row items-center q-mb-md">
+      <q-btn
+        flat
+        dense
+        round
+        color="primary"
+        icon="arrow_back"
+        aria-label="Back"
+        @click="router.push('/')"
+      />
+      <div class="text-h5 text-weight-bold text-primary q-ml-sm">Settings</div>
+    </div>
 
     <!-- group shells only - entries are placeholders until their milestone
          lands (see project plan: M2 flows, M3 mints, M4 backup/security,
@@ -23,6 +34,10 @@
 </template>
 
 <script setup lang="ts">
+import { useRouter } from 'vue-router';
+
+const router = useRouter();
+
 const groups: { label: string; items: string[] }[] = [
   { label: 'Wallet', items: ['Backup', 'Security'] },
   { label: 'Connections', items: ['Nostr Wallet Connect', 'Nostr'] },
