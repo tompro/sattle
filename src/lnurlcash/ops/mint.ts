@@ -145,18 +145,43 @@ export const claimMintedNote = async (
       'The payment settled but the service did not reveal the preimage.'
     )
   }
+  return claimFromPreimage(prepared, preimage, options)
+}
+
+// what a claim needs once the preimage is known - PreparedMint satisfies
+// this, and so does the target side of an inter-mint transfer (see
+// transfer.ts)
+export type ClaimTarget = {
+  withdrawLink: string
+  // the net note value asked for - a claim, cross-checked against the
+  // service's authoritative maxWithdrawable
+  expectedNoteValueMsat: number
+  mintPubkey?: string
+}
+
+// The claim itself, once the payment's preimage is known: the preimage IS
+// the note secret. The claim (an informational GET) puts that secret on
+// the wire, and the mint has known it since it generated the invoice - so
+// the fresh note is rotated immediately and unconditionally (observer
+// race: anyone who saw the unpaid invoice knows the payment hash), before
+// anything else happens with it.
+export const claimFromPreimage = async (
+  claim: ClaimTarget,
+  preimage: string,
+  options: LnurlcashOptions = {}
+): Promise<ClaimedNote> => {
   // declare the invoiced amount (a claim - not yet confirmed) so the note
   // is self-describing even before the verifying GET below
   const declaredUrl = buildNoteUrl(
-    prepared.withdrawLink,
+    claim.withdrawLink,
     preimage,
-    prepared.expectedNoteValueMsat
+    claim.expectedNoteValueMsat
   )
   // the service's maxWithdrawable is authoritative - SERVICE's own fee
   // math might not match this wallet's estimate, and the note is worth
   // exactly maxWithdrawable regardless
   const noteInfo = await fetchNoteInfo(declaredUrl, options)
-  const mintPubkey = noteInfo.mintPubkey ?? prepared.mintPubkey
+  const mintPubkey = noteInfo.mintPubkey ?? claim.mintPubkey
   const base: NewBearer = {
     url: withNewK1(declaredUrl, noteInfo.k1, noteInfo.maxWithdrawable),
     callback: noteInfo.callback,
