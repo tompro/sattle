@@ -12,6 +12,8 @@
     "dev": "quasar dev",
     "build": "quasar build",
     "test": "vitest run",
+    "test:e2e": "playwright test",
+    "test:e2e:ui": "playwright test --ui",
     "typecheck": "vue-tsc --noEmit",
     "postinstall": "quasar prepare --silent"
   },
@@ -34,6 +36,7 @@
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@intlify/unplugin-vue-i18n": "^11.0.0",
+    "@playwright/test": "^1.62.1",
     "@quasar/app-vite": "^3.7.0",
     "@types/node": "^22.19.11",
     "@vue/eslint-config-prettier": "^10.2.0",

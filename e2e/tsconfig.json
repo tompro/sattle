@@ -1,0 +1,10 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true
+  },
+  "include": ["."],
+  // the root config excludes "e2e" for the app typecheck; that inherited
+  // exclude would void this config's own inputs, so reset it here
+  "exclude": []
+}
