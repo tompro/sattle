@@ -12,7 +12,7 @@ test.describe('Navigation', () => {
     await expect(page).toHaveURL(/#\/settings$/);
     await expect(page.getByText('Settings', { exact: true })).toBeVisible();
 
-    await page.getByRole('button', { name: 'Back' }).click();
+    await page.getByRole('button', { name: 'Back', exact: true }).click();
     await expect(page).toHaveURL(/#\/$/);
     await expect(page.getByText('Welcome to sattle')).toBeVisible();
   });
