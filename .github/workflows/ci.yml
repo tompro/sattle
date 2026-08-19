@@ -1,0 +1,25 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      # installs the lnurlcash-kit git dependency and builds its dist via the
+      # package's prepare hook (standard npm runs prepare for git deps)
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npx vitest run
+      - run: npx quasar build -m pwa

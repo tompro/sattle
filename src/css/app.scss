@@ -1,0 +1,19 @@
+// app global css - sattle's visual identity is inherited from lnurl-wallet
+// (see src/lnurlcash/ provenance): dark teal surfaces, mint-green accents
+
+@import '@fontsource/noto-sans/400.css';
+@import '@fontsource/noto-sans/700.css';
+
+body {
+  font-family: 'Noto Sans', sans-serif;
+  background: linear-gradient(160deg, #001616 0%, #002222 55%, #001a1a 100%);
+  background-attachment: fixed;
+  color: #55ffcc;
+}
+
+// glassy dark-teal card surface, lnurl-wallet style
+.sattle-card {
+  background: rgba(0, 68, 68, 0.6);
+  border-radius: 8px;
+  backdrop-filter: blur(4px);
+}

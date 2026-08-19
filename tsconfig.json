@@ -1,0 +1,10 @@
+{
+  "extends": "./.quasar/tsconfig.json",
+  "compilerOptions": {
+    // The extracted protocol core (src/lnurlcash/) is a verbatim, tested
+    // client from lnurl-wallet, written against standard `strict` without
+    // these two extended flags. Keep them off so the core stays untouched.
+    "exactOptionalPropertyTypes": false,
+    "noUncheckedIndexedAccess": false
+  }
+}

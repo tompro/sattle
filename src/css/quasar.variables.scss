@@ -1,0 +1,23 @@
+// Quasar Sass (& SCSS) Variables
+// --------------------------------------------------
+// sattle's visual identity is inherited from lnurl-wallet (dark teal +
+// mint green). Exact values from lnurl-wallet's src/styles/style.scss:
+//   bg #002222, accent base #004444, primary #55ffcc,
+//   warning #ff8800, negative #ff4444, spent #ff6666,
+//   signed badge #66cc66, device badge #6699cc
+
+$primary: #55ffcc;
+$secondary: #004444;
+$accent: #004444;
+
+$dark: #002222;
+$dark-page: #001616;
+
+$positive: #66cc66;
+$negative: #ff4444;
+$info: #6699cc;
+$warning: #ff8800;
+
+// extra lnurl-wallet palette tokens, for use in app.scss / components
+$spent: #ff6666;
+$bg-glow: #001a1a;
