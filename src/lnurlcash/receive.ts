@@ -7,7 +7,8 @@ import {
   rotateNote,
   withNewK1,
   NoteSpentError,
-  NoteUnknownError
+  NoteUnknownError,
+  PendingNoteError
 } from 'lnurlcash-kit'
 import type {Bearer, NewBearer} from './types'
 
@@ -42,12 +43,16 @@ export const receiveNote = async (
       mintPubkey: info.mintPubkey
     }
   } catch (err) {
-    // the service positively told us this k1 is dead - that's worth more
-    // than the sender's own claim, so don't paper over it with an
-    // unverified fallback the way an unreachable/unknown-shaped error
-    // below does. The caller (ReceiveDialog.tsx) surfaces this and never stores
-    // the note.
-    if (err instanceof NoteSpentError || err instanceof NoteUnknownError) {
+    // the service positively told us this k1 is dead, unknown, or locked
+    // mid-melt (pending) - all definitive states the caller must surface
+    // distinctly, so don't paper over them with an unverified fallback the
+    // way an unreachable/unknown-shaped error below does. The caller never
+    // stores the note in these cases.
+    if (
+      err instanceof NoteSpentError ||
+      err instanceof NoteUnknownError ||
+      err instanceof PendingNoteError
+    ) {
       throw err
     }
     // service unreachable (or some other non-definitive failure) - fall
