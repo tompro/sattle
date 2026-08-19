@@ -27,12 +27,19 @@
               nodejs_22
               corepack_22
               git
-              # extensible: playwright browsers, capacitor/android SDK tooling,
-              # etc. go here as the project grows
-            ];
+              # extensible: capacitor/android SDK tooling, etc. go here as
+              # the project grows
+            ]
+            # playwright e2e drives the system chromium (see
+            # playwright.config.ts); nixpkgs chromium is linux-only
+            ++ pkgs.lib.optionals pkgs.stdenv.isLinux [ chromium ];
 
             shellHook = ''
               echo "sattle dev shell (node $(node --version))"
+              ${pkgs.lib.optionalString pkgs.stdenv.isLinux ''
+                export CHROMIUM_PATH="${pkgs.chromium}/bin/chromium"
+                echo "playwright e2e chromium: $CHROMIUM_PATH"
+              ''}
             '';
           };
         }
