@@ -121,7 +121,12 @@ describe('deriveBackupKey', () => {
 describe('buildBackupEvent / parseBackupEvent', () => {
   const secretKey = deriveBackupKey(LINKING_KEY)
 
-  const records = [{id: 'r1', iv: '00'.repeat(12), ciphertext: 'ab'.repeat(40)}]
+  const records = [
+    // long unique sentinel id: a short id like 'r1' randomly appears in
+    // base64 ciphertext (~17% for 700 chars), which flakes the no-plaintext
+    // assertion below
+    {id: 'record-id-plaintext-sentinel-7f3a', iv: '00'.repeat(12), ciphertext: 'ab'.repeat(40)}
+  ]
   const mints = [
     {server: 'mint.example', mintPubkey: MINT_PUBKEY, addedAt: 1000, locked: true}
   ]
@@ -158,7 +163,7 @@ describe('buildBackupEvent / parseBackupEvent', () => {
 
   it('leaves no plaintext in the payload', () => {
     const event = buildBackupEvent(secretKey, 'notes', records)
-    expect(event.content).not.toContain('r1')
+    expect(event.content).not.toContain('record-id-plaintext-sentinel-7f3a')
     expect(event.content).not.toContain('ciphertext')
   })
 
