@@ -7,6 +7,14 @@ const routes: RouteRecordRaw[] = [
     children: [
       { path: '', component: () => import('@/pages/IndexPage.vue') },
       { path: 'settings', component: () => import('@/pages/SettingsPage.vue') },
+      {
+        path: 'settings/mints',
+        component: () => import('@/pages/ManageMintsPage.vue'),
+      },
+      {
+        path: 'settings/move',
+        component: () => import('@/pages/MoveFundsPage.vue'),
+      },
     ],
   },
   {
