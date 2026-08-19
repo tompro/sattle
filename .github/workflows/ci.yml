@@ -20,6 +20,8 @@ jobs:
       # installs the lnurlcash-kit git dependency and builds its dist via the
       # package's prepare hook (standard npm runs prepare for git deps)
       - run: npm ci
+      # src-pwa is its own package (register-service-worker types)
+      - run: npm ci --prefix src-pwa
       - run: npm run typecheck
       - run: npx vitest run
       - run: npx quasar build -m pwa
