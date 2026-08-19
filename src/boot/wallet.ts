@@ -1,6 +1,7 @@
 import { defineBoot } from '#q-app';
 import { useWalletStore } from '@/stores/wallet';
 import { useNostrBackupStore } from '@/stores/nostrBackup';
+import { useNwcStore } from '@/stores/nwc';
 
 // Wallet lifecycle bootstrap: reflects whatever is on this device into the
 // wallet store at app start - a plaintext-stored key unlocks straight away,
@@ -12,4 +13,7 @@ export default defineBoot(async () => {
   // instantiating the store arms its watchers: while the wallet is unlocked
   // and nostr backup is enabled, store changes schedule debounced publishes
   useNostrBackupStore();
+  // same arming for NWC: while enabled and unlocked, the service answers
+  // client requests; on lock it stops and drops the key-material closure
+  useNwcStore();
 });

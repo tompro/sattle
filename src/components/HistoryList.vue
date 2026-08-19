@@ -20,6 +20,7 @@ const KIND_ICONS: Record<ActivityKind, string> = {
   spent: 'check',
   deleted: 'delete',
   transfer: 'swap_horiz',
+  nwc: 'bolt',
 };
 
 const KIND_COLORS: Record<ActivityKind, string> = {
@@ -31,6 +32,7 @@ const KIND_COLORS: Record<ActivityKind, string> = {
   spent: 'grey-5',
   deleted: 'negative',
   transfer: 'primary',
+  nwc: 'primary',
 };
 
 const iconFor = (kind: ActivityKind): string => KIND_ICONS[kind];

@@ -14,8 +14,8 @@
     </div>
 
     <!-- group shells - entries are placeholders until their milestone
-         lands (see project plan: M2 flows, M4 backup/security, M5 NWC);
-         the Mints group (M3) is live -->
+         lands (see project plan); Wallet (M4), Connections (M5) and the
+         Mints group (M3) are live -->
     <q-list
       v-for="group in groups"
       :key="group.label"
@@ -57,7 +57,13 @@ const groups: { label: string; items: SettingsItem[] }[] = [
       { label: 'Security', to: '/settings/security' },
     ],
   },
-  { label: 'Connections', items: [{ label: 'Nostr Wallet Connect' }, { label: 'Nostr' }] },
+  {
+    label: 'Connections',
+    items: [
+      { label: 'Nostr Wallet Connect', to: '/settings/nwc' },
+      { label: 'Nostr backup & relays', to: '/settings/backup' },
+    ],
+  },
   {
     label: 'Mints',
     items: [

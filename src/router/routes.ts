@@ -23,6 +23,10 @@ const routes: RouteRecordRaw[] = [
         path: 'settings/move',
         component: () => import('@/pages/MoveFundsPage.vue'),
       },
+      {
+        path: 'settings/nwc',
+        component: () => import('@/pages/NwcPage.vue'),
+      },
     ],
   },
   {
