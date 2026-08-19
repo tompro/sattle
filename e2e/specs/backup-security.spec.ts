@@ -17,7 +17,7 @@ test.describe('Backup page', () => {
     await createFreshWallet(page);
 
     await page.getByRole('button', { name: 'Settings' }).click();
-    await page.getByRole('button', { name: 'Backup' }).click();
+    await page.getByRole('button', { name: 'Backup', exact: true }).click();
     await expect(page).toHaveURL(/#\/settings\/backup$/);
 
     // the honest recovery-phrase state: sattle never stores it
