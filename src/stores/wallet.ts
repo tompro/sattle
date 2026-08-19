@@ -30,6 +30,7 @@ import {
   clearTrustedMints
 } from '@/lnurlcash/trustedMints'
 import {clearSettings} from '@/lnurlcash/storage'
+import {unlockWithPasskey as unlockWithPasskeyEngine} from '@/lnurlcash/passkeys'
 import {msatToSats} from '@/lnurlcash/units'
 import {useActivityStore} from './activity'
 
@@ -56,6 +57,10 @@ export const useWalletStore = defineStore('wallet', () => {
   const bearers = ref<Bearer[]>([])
   const pubkey = ref<string | null>(null)
   let aesKey: CryptoKey | null = null
+  // the linking key itself, only while unlocked - needed by backup/passkey
+  // operations (nostrBackup derives the backup key from it, passkey
+  // registration wraps it). Never exposed reactively; cleared on lock/forget
+  let currentLinkingKey: Uint8Array | null = null
 
   // ---- idle auto-lock bookkeeping ----
   let lastActivity = Date.now()
@@ -97,6 +102,7 @@ export const useWalletStore = defineStore('wallet', () => {
     // just auto-unlock again, so the UI only offers Lock when encrypted
     if (!savedKeyIsEncrypted()) return
     aesKey = null
+    currentLinkingKey = null
     pubkey.value = null
     bearers.value = []
     useActivityStore().unload()
@@ -145,6 +151,7 @@ export const useWalletStore = defineStore('wallet', () => {
   const activate = async (linkingKey: Uint8Array) => {
     const key = await deriveBearerAesKey(linkingKey)
     aesKey = key
+    currentLinkingKey = linkingKey
     pubkey.value = linkingPubKeyHex(linkingKey)
     const loaded = await loadBearers(key)
     bearers.value = loaded
@@ -193,6 +200,12 @@ export const useWalletStore = defineStore('wallet', () => {
     await activate(linkingKey)
   }
 
+  // passkey unlock (passkeys.ts): the ceremony unwraps the SAME linking key
+  // the password path protects, so activation is identical either way
+  const unlockWithPasskey = async (): Promise<void> => {
+    await activate(await unlockWithPasskeyEngine())
+  }
+
   // app-start entry point (boot/wallet.ts): a plaintext-stored key unlocks
   // without a password; an encrypted one waits on the unlock screen
   const init = async (): Promise<void> => {
@@ -214,6 +227,7 @@ export const useWalletStore = defineStore('wallet', () => {
     clearSettings()
     useActivityStore().unloadAndClear()
     aesKey = null
+    currentLinkingKey = null
     pubkey.value = null
     bearers.value = []
     stopIdleWatch()
@@ -223,6 +237,14 @@ export const useWalletStore = defineStore('wallet', () => {
   const requireKey = (): CryptoKey => {
     if (!aesKey) throw new Error('Wallet is locked.')
     return aesKey
+  }
+
+  // narrow accessor for the operations that need the key material itself
+  // (nostr backup key derivation, passkey registration) - never reactive,
+  // throws when locked, so callers can't accidentally hold a stale key
+  const requireLinkingKey = (): Uint8Array => {
+    if (!currentLinkingKey) throw new Error('Wallet is locked.')
+    return currentLinkingKey
   }
 
   // the one entry point for new notes (minted, received, carved outputs):
@@ -305,10 +327,12 @@ export const useWalletStore = defineStore('wallet', () => {
     create,
     restoreFromSeed,
     unlock,
+    unlockWithPasskey,
     lock,
     init,
     forgetWallet,
     postponeLock,
+    requireLinkingKey,
     addBearers,
     updateBearer,
     markSpent,

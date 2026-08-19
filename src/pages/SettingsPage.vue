@@ -50,7 +50,13 @@ const router = useRouter();
 type SettingsItem = { label: string; to?: string };
 
 const groups: { label: string; items: SettingsItem[] }[] = [
-  { label: 'Wallet', items: [{ label: 'Backup' }, { label: 'Security' }] },
+  {
+    label: 'Wallet',
+    items: [
+      { label: 'Backup', to: '/settings/backup' },
+      { label: 'Security', to: '/settings/security' },
+    ],
+  },
   { label: 'Connections', items: [{ label: 'Nostr Wallet Connect' }, { label: 'Nostr' }] },
   {
     label: 'Mints',

@@ -8,6 +8,14 @@ const routes: RouteRecordRaw[] = [
       { path: '', component: () => import('@/pages/IndexPage.vue') },
       { path: 'settings', component: () => import('@/pages/SettingsPage.vue') },
       {
+        path: 'settings/backup',
+        component: () => import('@/pages/BackupPage.vue'),
+      },
+      {
+        path: 'settings/security',
+        component: () => import('@/pages/SecurityPage.vue'),
+      },
+      {
         path: 'settings/mints',
         component: () => import('@/pages/ManageMintsPage.vue'),
       },

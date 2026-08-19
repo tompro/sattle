@@ -39,6 +39,17 @@
       @click="unlock"
     />
 
+    <q-btn
+      v-if="passkeyAvailable"
+      outline
+      color="primary"
+      icon="fingerprint"
+      label="Unlock with passkey"
+      class="full-width q-mt-sm"
+      :loading="passkeyBusy"
+      @click="unlockViaPasskey"
+    />
+
     <div class="text-center q-mt-md">
       <q-btn
         flat
@@ -57,6 +68,7 @@
 import { ref } from 'vue';
 import { useRouter } from 'vue-router';
 
+import { hasPasskeySlots } from '@/lnurlcash/passkeys';
 import { useWalletStore } from '@/stores/wallet';
 
 const emit = defineEmits<{ unlocked: [] }>();
@@ -68,6 +80,25 @@ const password = ref('');
 const showPassword = ref(false);
 const busy = ref(false);
 const error = ref('');
+
+// slots live in plain localStorage - a sync read at setup is enough; they
+// can only change from the security page while unlocked
+const passkeyAvailable = hasPasskeySlots();
+const passkeyBusy = ref(false);
+
+const unlockViaPasskey = async () => {
+  if (passkeyBusy.value) return;
+  passkeyBusy.value = true;
+  error.value = '';
+  try {
+    await wallet.unlockWithPasskey();
+    emit('unlocked');
+  } catch (err) {
+    error.value = err instanceof Error ? err.message : 'Passkey unlock failed.';
+  } finally {
+    passkeyBusy.value = false;
+  }
+};
 
 const unlock = async () => {
   if (busy.value || password.value === '') return;

@@ -4,6 +4,10 @@
 
 export type WalletSettings = {
   defaultMint?: string
+  // nostr backup (see nostrBackup.ts): off unless the holder turns it on;
+  // relays are only persisted once edited - absent means the UI's defaults
+  nostrBackupEnabled?: boolean
+  nostrBackupRelays?: string[]
 }
 
 const SETTINGS_STORAGE_KEY = 'sattle_settings'
@@ -17,7 +21,14 @@ export const loadSettings = (): WalletSettings => {
     const s = parsed as Record<string, unknown>
     return {
       defaultMint:
-        typeof s.defaultMint === 'string' ? s.defaultMint : undefined
+        typeof s.defaultMint === 'string' ? s.defaultMint : undefined,
+      nostrBackupEnabled:
+        typeof s.nostrBackupEnabled === 'boolean'
+          ? s.nostrBackupEnabled
+          : undefined,
+      nostrBackupRelays: Array.isArray(s.nostrBackupRelays)
+        ? s.nostrBackupRelays.filter((r): r is string => typeof r === 'string')
+        : undefined
     }
   } catch {
     return {}

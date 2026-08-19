@@ -1,5 +1,6 @@
 import { defineBoot } from '#q-app';
 import { useWalletStore } from '@/stores/wallet';
+import { useNostrBackupStore } from '@/stores/nostrBackup';
 
 // Wallet lifecycle bootstrap: reflects whatever is on this device into the
 // wallet store at app start - a plaintext-stored key unlocks straight away,
@@ -8,4 +9,7 @@ import { useWalletStore } from '@/stores/wallet';
 export default defineBoot(async () => {
   const wallet = useWalletStore();
   await wallet.init();
+  // instantiating the store arms its watchers: while the wallet is unlocked
+  // and nostr backup is enabled, store changes schedule debounced publishes
+  useNostrBackupStore();
 });

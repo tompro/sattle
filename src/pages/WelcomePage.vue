@@ -32,6 +32,7 @@
         { label: 'Create new', value: 'create' },
         { label: 'Restore seed', value: 'restore' },
         { label: 'Backup file', value: 'backup' },
+        { label: 'Nostr backup', value: 'nostr' },
       ]"
     />
 
@@ -199,6 +200,107 @@
         />
       </div>
 
+      <!-- restore from nostr backup -->
+      <div v-else-if="tab === 'nostr'">
+        <div class="text-body1 q-mb-md">
+          If this wallet used nostr backup before, your notes, mints and settings are
+          waiting on your relays - encrypted so only your recovery phrase can read
+          them.
+        </div>
+        <q-input
+          v-model="nostrPhrase"
+          type="textarea"
+          rows="3"
+          dark
+          outlined
+          color="primary"
+          label="Your 12-word recovery phrase"
+          placeholder="twelve words separated by spaces"
+          autocomplete="off"
+          autocapitalize="off"
+          spellcheck="false"
+          data-1p-ignore
+          data-lpignore="true"
+          class="q-mb-md"
+        />
+        <div class="text-caption text-grey-5 q-mb-xs">Relays to look on</div>
+        <RelaysEditor v-model="nostrRelays" />
+
+        <div v-if="nostrError" class="text-negative q-my-sm">{{ nostrError }}</div>
+
+        <template v-if="!nostrFound">
+          <div v-if="nostrLooked" class="text-warning q-my-sm">
+            No backup found for this phrase on those relays. Check the phrase and the
+            relay list - or restore from a backup file instead.
+          </div>
+          <q-btn
+            unelevated
+            color="primary"
+            text-color="dark"
+            label="Look for a backup"
+            class="full-width q-mt-md"
+            :loading="nostrBusy"
+            :disable="!nostrPhraseValid || nostrRelays.length === 0"
+            @click="lookForNostrBackup"
+          />
+        </template>
+
+        <template v-else>
+          <div class="text-body2 text-grey-4 q-my-md">
+            Found a backup: {{ nostrFound.notes }} note(s), {{ nostrFound.mints }}
+            mint(s)<template v-if="nostrFound.settings">, settings</template>.
+          </div>
+          <div class="text-caption text-grey-5 q-mb-sm">
+            Password (optional) — encrypts your wallet on this device and enables
+            locking. Minimum {{ MIN_PASSWORD_LENGTH }} characters. Leave empty to
+            store unencrypted.
+          </div>
+          <q-input
+            v-model="nostrPassword"
+            type="password"
+            dark
+            outlined
+            color="primary"
+            label="Password"
+            autocomplete="new-password"
+            class="q-mb-sm"
+          />
+          <q-input
+            v-if="nostrPassword !== ''"
+            v-model="nostrPasswordConfirm"
+            type="password"
+            dark
+            outlined
+            color="primary"
+            label="Confirm password"
+            autocomplete="new-password"
+            class="q-mb-sm"
+          />
+          <div
+            v-if="nostrPassword !== '' && nostrPassword.length < MIN_PASSWORD_LENGTH"
+            class="text-warning text-caption q-mb-sm"
+          >
+            At least {{ MIN_PASSWORD_LENGTH }} characters.
+          </div>
+          <div
+            v-if="nostrPasswordConfirm !== '' && nostrPassword !== nostrPasswordConfirm"
+            class="text-warning text-caption q-mb-sm"
+          >
+            Passwords do not match.
+          </div>
+          <q-btn
+            unelevated
+            color="primary"
+            text-color="dark"
+            label="Restore this backup"
+            class="full-width q-mt-sm"
+            :loading="nostrBusy"
+            :disable="!passwordValid(nostrPassword, nostrPasswordConfirm)"
+            @click="restoreNostrBackup"
+          />
+        </template>
+      </div>
+
       <!-- restore from backup file -->
       <div v-else>
         <div class="text-body1 q-mb-md">
@@ -269,13 +371,22 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue';
+import { ref, computed } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { Notify } from 'quasar';
 
+import { deriveWalletLinkingKey, isValidSeedPhrase } from '@/lnurlcash/keys';
+import {
+  backupPubkey,
+  deriveBackupKey,
+  fetchBackup,
+  restoreFromNostr,
+} from '@/lnurlcash/nostrBackup';
 import { useWalletStore } from '@/stores/wallet';
+import { DEFAULT_NOSTR_RELAYS } from '@/stores/nostrBackup';
 import { applyBackup, MAX_BACKUP_FILE_BYTES } from '@/lnurlcash/storage';
 import type { RestoreResult } from '@/lnurlcash/storage';
+import RelaysEditor from '@/components/RelaysEditor.vue';
 
 // the key's ciphertext sits in local storage AND travels inside every backup
 // file by design, so this password is the only thing between an offline
@@ -283,14 +394,16 @@ import type { RestoreResult } from '@/lnurlcash/storage';
 // no password at all
 const MIN_PASSWORD_LENGTH = 8;
 
-type Tab = 'create' | 'restore' | 'backup';
+type Tab = 'create' | 'restore' | 'backup' | 'nostr';
 
 const wallet = useWalletStore();
 const router = useRouter();
 const route = useRoute();
 
 const tab = ref<Tab>(
-  route.query.tab === 'restore' || route.query.tab === 'backup' ? route.query.tab : 'create',
+  route.query.tab === 'restore' || route.query.tab === 'backup' || route.query.tab === 'nostr'
+    ? route.query.tab
+    : 'create',
 );
 
 const errorMessage = (err: unknown): string =>
@@ -396,13 +509,78 @@ const restoreFromBackupFile = async (event: Event) => {
   }
 };
 
+// ---- restore from nostr backup ----
+// phrase in -> derive the linking key (and from it the backup key) -> fetch
+// the encrypted parts -> preview what was found -> applyBackup via
+// restoreFromNostr, then install the key through the ordinary seed path
+const nostrPhrase = ref('');
+const nostrRelays = ref<string[]>([...DEFAULT_NOSTR_RELAYS]);
+const nostrPassword = ref('');
+const nostrPasswordConfirm = ref('');
+const nostrBusy = ref(false);
+const nostrError = ref('');
+const nostrLooked = ref(false);
+const nostrFound = ref<{ notes: number; mints: number; settings: boolean } | null>(null);
+
+const nostrPhraseValid = computed(() => isValidSeedPhrase(nostrPhrase.value));
+
+const nostrLinkingKey = (): Uint8Array =>
+  deriveWalletLinkingKey(nostrPhrase.value.trim().toLowerCase());
+
+const lookForNostrBackup = async () => {
+  nostrBusy.value = true;
+  nostrError.value = '';
+  nostrFound.value = null;
+  nostrLooked.value = false;
+  try {
+    const secretKey = deriveBackupKey(nostrLinkingKey());
+    const parts = await fetchBackup(backupPubkey(secretKey), nostrRelays.value, {
+      secretKey,
+    });
+    nostrLooked.value = true;
+    if (parts.notes || parts.mints || parts.settings) {
+      nostrFound.value = {
+        notes: parts.notes?.length ?? 0,
+        mints: parts.mints?.length ?? 0,
+        settings: parts.settings !== undefined,
+      };
+    }
+  } catch (err) {
+    nostrError.value = errorMessage(err);
+  } finally {
+    nostrBusy.value = false;
+  }
+};
+
+const restoreNostrBackup = async () => {
+  nostrBusy.value = true;
+  nostrError.value = '';
+  try {
+    const linkingKey = nostrLinkingKey();
+    // merge the fetched parts into local storage FIRST (the same applyBackup
+    // path as a file restore), then installing the seed activates the wallet
+    // and loads what was just restored
+    await restoreFromNostr(linkingKey, nostrRelays.value);
+    await wallet.restoreFromSeed(
+      nostrPhrase.value.trim().toLowerCase(),
+      nostrPassword.value || undefined,
+    );
+    Notify.create({ type: 'positive', message: 'Backup restored - welcome back.' });
+    void router.push('/');
+  } catch (err) {
+    nostrError.value = errorMessage(err);
+    Notify.create({ type: 'negative', message: nostrError.value });
+  } finally {
+    nostrBusy.value = false;
+  }
+};
+
 // the backup installed its own key into local storage behind the wallet
 // store's back - a full reload re-runs the boot sequence so the app comes up
 // against the restored key (unlock screen if it was password-encrypted)
 const proceedWithBackupKey = () => {
   window.location.assign('/');
-};
-</script>
+};</script>
 
 <style lang="scss" scoped>
 .onboarding-panel {
