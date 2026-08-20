@@ -11,6 +11,7 @@
 <p align="center">
   <a href="https://github.com/tompro/sattle/actions/workflows/ci.yml"><img src="https://github.com/tompro/sattle/actions/workflows/ci.yml/badge.svg" alt="ci" /></a>
   <a href="https://github.com/tompro/sattle/releases"><img src="https://img.shields.io/github/v/release/tompro/sattle" alt="latest release" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT license" /></a>
 </p>
 
 ---
