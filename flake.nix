@@ -27,8 +27,13 @@
               nodejs_22
               corepack_22
               git
-              # extensible: capacitor/android SDK tooling, etc. go here as
-              # the project grows
+              # Android SDK/gradle are deliberately NOT provided via
+              # nixpkgs androidenv: composeAndroidPackages is heavy and
+              # fragile, and `npx cap sync android` needs no SDK. For
+              # native builds install Android Studio (or cmdline-tools +
+              # `sdkmanager "platforms;android-35" "build-tools"`) locally
+              # and point ANDROID_HOME at it; the gradle wrapper in
+              # android/ does the rest.
             ]
             # playwright e2e drives the system chromium (see
             # playwright.config.ts); nixpkgs chromium is linux-only
