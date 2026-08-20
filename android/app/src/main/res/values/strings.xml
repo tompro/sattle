@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">sattle</string>
+    <string name="title_activity_main">sattle</string>
+    <string name="package_name">eu.protom.sattle</string>
+    <string name="custom_url_scheme">eu.protom.sattle</string>
+</resources>
