@@ -291,13 +291,18 @@ const trustSuggestion = async (address: string) => {
       }
     }
     const info = await fetchPayRequest(payUrl);
-    if (!info.mintPubkey) {
+    // the signing key is announced on the mint-address (lnurlw discovery)
+    // response, not the payRequest: per the reference mint (lnurl-mint) a
+    // wallet paying the mint invoice recovers the node id from the invoice
+    // itself, so LUD-25 advertises mintPubkey on the withdraw side only
+    const announcedKey = nodeInfo?.nodePubkey ?? info.mintPubkey;
+    if (!announcedKey) {
       throw new Error("This mint didn't announce its signing key - add it manually instead.");
     }
     const server = serverOf(payUrl);
     const result = mints.trust(
       server,
-      info.mintPubkey,
+      announcedKey,
       mintAddressCacheInfo(nodeInfo, lightningAddressUsername(payUrl)),
     );
     trustResult(result, server);

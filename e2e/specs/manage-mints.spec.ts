@@ -8,9 +8,11 @@ import { createFreshWallet } from '../helpers/wallet';
 // registry accepts
 const MINT_PUBKEY = `02${'ab'.repeat(32)}`;
 
-// the payRequest discovery behind a one-tap suggestion: the app resolves
-// "@mint.600.wtf" to https://mint.600.wtf/.well-known/lnurlp/mint and reads
-// the mint's signing key out of the response
+// the discovery behind a one-tap suggestion: the app resolves
+// "@mint.600.wtf" to https://mint.600.wtf/.well-known/lnurlp/mint, derives
+// the mint-address endpoint (/.well-known/lnurlw/mint) and reads the
+// signing key there - the payRequest deliberately does NOT carry
+// mintPubkey (LUD-25 advertises it on the withdraw side only)
 const mockSuggestionMint = async (page: Page): Promise<void> => {
   const fulfill = async (route: import('@playwright/test').Route, body: unknown) => {
     await route.fulfill({
@@ -20,9 +22,15 @@ const mockSuggestionMint = async (page: Page): Promise<void> => {
       body: JSON.stringify(body),
     });
   };
-  // no mint-address discovery support - the app falls back to the LNURL-pay
-  await page.route(/^https:\/\/mint\.600\.wtf\/\.well-known\/lnurlw\//, (route) =>
-    fulfill(route, { status: 'ERROR', reason: 'not supported' }),
+  await page.route(/^https:\/\/mint\.600\.wtf\/\.well-known\/lnurlw\/mint/, (route) =>
+    fulfill(route, {
+      tag: 'withdrawRequest',
+      callback: 'https://mint.600.wtf/w',
+      minWithdrawable: 1000,
+      maxWithdrawable: 100_000_000_000,
+      mintPubkey: MINT_PUBKEY,
+      payLink: 'https://mint.600.wtf/.well-known/lnurlp/mint',
+    }),
   );
   await page.route(/^https:\/\/mint\.600\.wtf\/\.well-known\/lnurlp\/mint/, (route) =>
     fulfill(route, {
@@ -31,7 +39,6 @@ const mockSuggestionMint = async (page: Page): Promise<void> => {
       minSendable: 1000,
       maxSendable: 100_000_000_000,
       withdrawLink: 'https://mint.600.wtf/note',
-      mintPubkey: MINT_PUBKEY,
       metadata: '[]',
     }),
   );
