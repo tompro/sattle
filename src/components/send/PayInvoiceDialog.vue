@@ -12,6 +12,7 @@ import { useQuasar } from 'quasar';
 import { decodeBolt11AmountMsat, isBolt11Invoice, resolveLnurlInput } from 'lnurlcash-kit';
 
 import QrScanner from '@/components/QrScanner.vue';
+import { readClipboard } from '@/capabilities/clipboard';
 import { payWithBearers, UncertainOutcomeError } from '@/lnurlcash/ops';
 import type { CarveResult, PayOutcome } from '@/lnurlcash/ops';
 import type { NewBearer } from '@/lnurlcash/types';
@@ -121,7 +122,7 @@ const onScanError = (message: string) => {
 
 const paste = async () => {
   try {
-    const text = await navigator.clipboard.readText();
+    const text = await readClipboard();
     if (text) input.value = text.trim();
   } catch {
     toast('negative', "Couldn't read the clipboard - paste manually.");
@@ -349,18 +350,11 @@ const closeResult = () => {
           </q-item>
         </q-list>
         <div class="text-caption text-grey-5 q-mt-md">
-          If the mint charges a fee, it comes out of your change - you pay exactly the amount
-          shown.
+          If the mint charges a fee, it comes out of your change - you pay exactly the amount shown.
         </div>
         <div class="row justify-end q-gutter-sm q-mt-lg">
           <q-btn flat label="Back" color="grey-5" @click="step = 'input'" />
-          <q-btn
-            unelevated
-            color="primary"
-            text-color="dark"
-            label="Pay now"
-            @click="pay"
-          />
+          <q-btn unelevated color="primary" text-color="dark" label="Pay now" @click="pay" />
         </div>
       </q-card-section>
 

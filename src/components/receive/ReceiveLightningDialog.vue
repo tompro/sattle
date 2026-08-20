@@ -130,8 +130,8 @@
 
         <div v-else class="column items-center q-gutter-sm">
           <div class="text-caption text-grey-5 text-center">
-            Not watching right now — if the invoice gets paid, the sats are still
-            claimed into your wallet automatically.
+            Not watching right now — if the invoice gets paid, the sats are still claimed into your
+            wallet automatically.
           </div>
           <q-btn
             outline
@@ -157,8 +157,8 @@
           <template #avatar>
             <q-icon name="warning" color="warning" />
           </template>
-          The note is in your wallet, but it could not be fully secured yet — the
-          sender may still hold a copy. You can secure it later.
+          The note is in your wallet, but it could not be fully secured yet — the sender may still
+          hold a copy. You can secure it later.
         </q-banner>
 
         <q-btn
@@ -182,8 +182,8 @@
           <template v-if="trustNodeAlias"> ({{ trustNodeAlias }})</template>
         </div>
         <div class="text-caption text-grey-5 q-mb-md">
-          Trusting saves the mint so it is offered next time. You can manage trusted
-          mints in Settings.
+          Trusting saves the mint so it is offered next time. You can manage trusted mints in
+          Settings.
         </div>
         <div class="row q-gutter-sm justify-end">
           <q-btn flat no-caps color="grey-5" label="Just this once" @click="skipTrust" />
@@ -203,9 +203,10 @@
 
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
-import { Notify, copyToClipboard } from 'quasar';
+import { Notify } from 'quasar';
 
 import QrCode from '../QrCode.vue';
+import { writeClipboard } from '@/capabilities/clipboard';
 import { prepareMint, claimMintedNote } from '@/lnurlcash/ops';
 import type { ClaimedNote, PreparedMint } from '@/lnurlcash/ops';
 import type { NewBearer } from '@/lnurlcash/types';
@@ -277,7 +278,9 @@ const defaultChoice = (): string => {
 
 const formValid = computed(() => {
   if (!Number.isInteger(amountSats.value) || (amountSats.value ?? 0) < 1) return false;
-  return mintChoice.value === CUSTOM_MINT ? customMint.value.trim() !== '' : mintChoice.value !== '';
+  return mintChoice.value === CUSTOM_MINT
+    ? customMint.value.trim() !== ''
+    : mintChoice.value !== '';
 });
 
 const createInvoice = async () => {
@@ -326,7 +329,7 @@ const feeSats = computed(() => grossSats.value - netSats.value);
 const copyInvoice = async () => {
   if (!prepared.value) return;
   try {
-    await copyToClipboard(prepared.value.invoice);
+    await writeClipboard(prepared.value.invoice);
     Notify.create({ type: 'positive', message: 'Invoice copied.' });
   } catch (err) {
     Notify.create({ type: 'negative', message: errorMessage(err) });
@@ -380,7 +383,10 @@ const onClaimed = async (claimed: ClaimedNote, from: PreparedMint) => {
   receivedSats.value = displaySats(claimed.note.amount);
   receivedServer.value = server;
   rotationWarning.value = claimed.rotationError ?? '';
-  activity.log('mint', `Received ${receivedSats.value.toLocaleString()} sats from ${server} over Lightning.`);
+  activity.log(
+    'mint',
+    `Received ${receivedSats.value.toLocaleString()} sats from ${server} over Lightning.`,
+  );
   const nodeInfo = mintAddressCacheInfo(from.nodeInfo, from.username);
   if (nodeInfo) mints.cacheNodeInfo(server, nodeInfo);
   Notify.create({
@@ -420,7 +426,8 @@ const skipTrust = () => {
   showTrust.value = false;
   Notify.create({
     type: 'warning',
-    message: 'Note added, but this mint is not in your trusted list yet — you can review it in Settings.',
+    message:
+      'Note added, but this mint is not in your trusted list yet — you can review it in Settings.',
   });
 };
 

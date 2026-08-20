@@ -12,6 +12,8 @@ import { useQuasar } from 'quasar';
 import { toBech32Lnurl } from 'lnurlcash-kit';
 
 import QrCode from '@/components/QrCode.vue';
+import { writeClipboard } from '@/capabilities/clipboard';
+import { canShareText, shareText } from '@/capabilities/share';
 import { ensureExactAmount, UncertainOutcomeError } from '@/lnurlcash/ops';
 import type { CarveResult } from '@/lnurlcash/ops';
 import type { Bearer, NewBearer } from '@/lnurlcash/types';
@@ -71,12 +73,9 @@ const canPrepare = computed(
   () => parsedAmount.value !== null && amountError.value === null && !preparing.value,
 );
 
-const noteDisplayValue = computed(() =>
-  prepared.value ? toBech32Lnurl(prepared.value.url) : '',
-);
+const noteDisplayValue = computed(() => (prepared.value ? toBech32Lnurl(prepared.value.url) : ''));
 
-const canShare =
-  typeof navigator !== 'undefined' && typeof navigator.share === 'function';
+const canShare = canShareText();
 
 const reset = () => {
   step.value = 'amount';
@@ -153,7 +152,7 @@ const prepare = async () => {
 
 const copyNote = async () => {
   try {
-    await navigator.clipboard.writeText(noteDisplayValue.value);
+    await writeClipboard(noteDisplayValue.value);
     toast('positive', 'Note copied to clipboard.');
   } catch {
     toast('negative', "Couldn't copy - reveal the note and copy it manually.");
@@ -162,7 +161,7 @@ const copyNote = async () => {
 
 const shareNote = async () => {
   try {
-    await navigator.share({ title: 'sattle bearer note', text: noteDisplayValue.value });
+    await shareText('sattle bearer note', noteDisplayValue.value);
   } catch (err) {
     // the user dismissing the share sheet is not an error
     if (err instanceof DOMException && err.name === 'AbortError') return;
@@ -302,7 +301,13 @@ const finishKeep = () => {
             :loading="removing"
             @click="finishRemove"
           />
-          <q-btn flat color="grey-5" label="Keep in wallet" :disable="removing" @click="finishKeep" />
+          <q-btn
+            flat
+            color="grey-5"
+            label="Keep in wallet"
+            :disable="removing"
+            @click="finishKeep"
+          />
         </div>
       </q-card-section>
     </q-card>

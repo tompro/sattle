@@ -148,8 +148,9 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
 import { useRouter } from 'vue-router';
-import { copyToClipboard, useQuasar } from 'quasar';
+import { useQuasar } from 'quasar';
 
+import { writeClipboard } from '@/capabilities/clipboard';
 import { buildBackup } from '@/lnurlcash/storage';
 import { useWalletStore } from '@/stores/wallet';
 import { useNostrBackupStore } from '@/stores/nostrBackup';
@@ -191,7 +192,7 @@ const relayModel = computed({
 
 const copyPubkey = () => {
   if (!nostr.pubkey) return;
-  void copyToClipboard(nostr.pubkey).then(() => toast('positive', 'Backup address copied.'));
+  void writeClipboard(nostr.pubkey).then(() => toast('positive', 'Backup address copied.'));
 };
 
 const backupBusy = ref(false);

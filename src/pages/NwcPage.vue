@@ -224,8 +224,9 @@
 <script setup lang="ts">
 import { ref } from 'vue';
 import { useRouter } from 'vue-router';
-import { copyToClipboard, useQuasar } from 'quasar';
+import { useQuasar } from 'quasar';
 
+import { writeClipboard } from '@/capabilities/clipboard';
 import type { NwcBudget, NwcConnectionRecord } from '@/lnurlcash/nwc';
 import { msatToSats } from '@/lnurlcash/units';
 import { useWalletStore } from '@/stores/wallet';
@@ -282,7 +283,7 @@ const createNewConnection = (): void => {
 };
 
 const copyConnectionString = (): void => {
-  void copyToClipboard(createdString.value).then(() =>
+  void writeClipboard(createdString.value).then(() =>
     toast('positive', 'Connection string copied.'),
   );
 };
