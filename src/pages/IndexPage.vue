@@ -6,9 +6,7 @@
       class="sattle-card full-width q-mt-xl q-pa-lg text-center welcome-card"
     >
       <div class="text-h5 text-primary q-mb-sm">Welcome to sattle</div>
-      <div class="text-grey-5 q-mb-md">
-        A simple wallet for Lightning bearer notes.
-      </div>
+      <div class="text-grey-5 q-mb-md">A simple wallet for Lightning bearer notes.</div>
       <q-btn
         unelevated
         color="primary"
@@ -43,9 +41,7 @@
             class="sattle-card q-pa-sm q-mt-md row items-center lock-warning"
           >
             <q-icon name="lock_clock" color="warning" class="q-mx-sm" />
-            <div class="col text-grey-4">
-              Locking in {{ wallet.lockWarningSecondsLeft }}s
-            </div>
+            <div class="col text-grey-4">Locking in {{ wallet.lockWarningSecondsLeft }}s</div>
             <q-btn
               flat
               dense
@@ -128,10 +124,11 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { useQuasar } from 'quasar';
 import { isValidNoteInput } from 'lnurlcash-kit';
+import { consumePendingExternalInput, pendingExternalInput } from '@/capabilities/deepLinks';
 import { useWalletStore } from '@/stores/wallet';
 import UnlockForm from '@/components/UnlockForm.vue';
 import HistoryList from '@/components/HistoryList.vue';
@@ -174,6 +171,25 @@ const onScanError = (message: string) => {
   showScan.value = false;
   $q.notify({ type: 'negative', message, position: 'top' });
 };
+
+// Deep links (capabilities/deepLinks.ts): an inbound lightning:/lnurlw:
+// link waits as pendingExternalInput until the wallet is unlocked (the
+// dialogs need the keys), then opens the same dialogs a scan would.
+watch(
+  [pendingExternalInput, () => wallet.state],
+  () => {
+    if (!pendingExternalInput.value || wallet.state !== 'unlocked') return;
+    const input = consumePendingExternalInput();
+    if (!input) return;
+    scanned.value = input.value;
+    if (input.kind === 'note') {
+      showReceiveToken.value = true;
+    } else {
+      showPayInvoice.value = true;
+    }
+  },
+  { immediate: true },
+);
 </script>
 
 <style lang="scss" scoped>
