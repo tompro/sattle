@@ -1,0 +1,23 @@
+name: release
+
+# release-please: watches conventional commits on main, opens (and keeps
+# updating) a release PR that bumps the version and assembles the
+# changelog. Merging that PR creates the vX.Y.Z tag and the GitHub
+# release. Works with branch protection: the release itself lands as an
+# ordinary PR; no direct pushes to main are needed.
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: googleapis/release-please-action@v4
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
