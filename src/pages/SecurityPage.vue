@@ -73,6 +73,55 @@
       </template>
     </q-list>
 
+    <!-- biometric unlock (native app only - Android WebView has no WebAuthn
+         platform authenticator for us, so this is the native biometric path) -->
+    <q-list v-if="biometricNative" class="sattle-card q-mb-md" bordered>
+      <q-item-label header class="text-primary text-weight-bold"> Biometric unlock </q-item-label>
+
+      <q-item v-if="wallet.state !== 'unlocked'">
+        <q-item-section class="text-grey-5">
+          Unlock your wallet first - enabling biometric unlock needs the wallet's key in memory.
+        </q-item-section>
+      </q-item>
+
+      <template v-else>
+        <q-item>
+          <q-item-section>
+            <q-item-label class="text-grey-3">
+              {{ biometricEnrolled ? 'Biometric unlock is on' : 'Biometric unlock is off' }}
+            </q-item-label>
+            <q-item-label caption class="text-grey-5" style="white-space: normal">
+              Unlock this wallet with your device's screen lock instead of the password. The wallet
+              key stays wrapped on this device; the biometric prompt gates reading it.
+            </q-item-label>
+          </q-item-section>
+        </q-item>
+        <div class="q-pa-md">
+          <q-btn
+            v-if="!biometricEnrolled"
+            unelevated
+            color="primary"
+            text-color="dark"
+            icon="fingerprint"
+            label="Enable biometric unlock"
+            class="full-width"
+            :loading="biometricBusy"
+            @click="doEnableBiometric"
+          />
+          <q-btn
+            v-else
+            outline
+            no-caps
+            color="negative"
+            label="Disable biometric unlock"
+            class="full-width"
+            :loading="biometricBusy"
+            @click="doDisableBiometric"
+          />
+        </div>
+      </template>
+    </q-list>
+
     <!-- auto-lock -->
     <q-list class="sattle-card q-mb-md" bordered>
       <q-item-label header class="text-primary text-weight-bold">Auto-lock</q-item-label>
@@ -154,6 +203,12 @@ import { onMounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { useQuasar } from 'quasar';
 
+import {
+  disableBiometricUnlock,
+  enableBiometricUnlock,
+  isBiometricUnlockEnrolled,
+} from '@/capabilities/biometricUnlock';
+import { isNative } from '@/capabilities/platform';
 import type { PasskeySlot } from '@/lnurlcash/passkeys';
 import {
   passkeySupported,
@@ -184,6 +239,39 @@ onMounted(async () => {
   supported.value = await passkeySupported();
   slots.value = readPasskeySlots();
 });
+
+// ---- biometric unlock (native only - see capabilities/biometricUnlock.ts) ----
+const biometricNative = isNative();
+const biometricEnrolled = ref(biometricNative && isBiometricUnlockEnrolled());
+const biometricBusy = ref(false);
+
+const doEnableBiometric = async () => {
+  biometricBusy.value = true;
+  banner.value = '';
+  try {
+    await enableBiometricUnlock(wallet.requireLinkingKey());
+    biometricEnrolled.value = true;
+    toast('positive', 'Biometric unlock enabled.');
+  } catch (err) {
+    banner.value = err instanceof Error ? err.message : 'Could not enable biometric unlock.';
+  } finally {
+    biometricBusy.value = false;
+  }
+};
+
+const doDisableBiometric = async () => {
+  biometricBusy.value = true;
+  banner.value = '';
+  try {
+    await disableBiometricUnlock();
+    biometricEnrolled.value = false;
+    toast('positive', 'Biometric unlock disabled.');
+  } catch (err) {
+    banner.value = err instanceof Error ? err.message : 'Could not disable biometric unlock.';
+  } finally {
+    biometricBusy.value = false;
+  }
+};
 
 // ---- register ----
 const registering = ref(false);

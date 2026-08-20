@@ -50,6 +50,17 @@
       @click="unlockViaPasskey"
     />
 
+    <q-btn
+      v-if="biometricAvailable"
+      outline
+      color="primary"
+      icon="fingerprint"
+      label="Unlock with biometrics"
+      class="full-width q-mt-sm"
+      :loading="biometricBusy"
+      @click="unlockViaBiometric"
+    />
+
     <div class="text-center q-mt-md">
       <q-btn
         flat
@@ -65,9 +76,10 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue';
+import { onMounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
 
+import { biometricUnlockAvailable } from '@/capabilities/biometricUnlock';
 import { hasPasskeySlots } from '@/lnurlcash/passkeys';
 import { useWalletStore } from '@/stores/wallet';
 
@@ -85,6 +97,29 @@ const error = ref('');
 // can only change from the security page while unlocked
 const passkeyAvailable = hasPasskeySlots();
 const passkeyBusy = ref(false);
+
+// native biometric unlock (capabilities/biometricUnlock.ts): only probed
+// async because hardware availability is a plugin call; always false on web
+const biometricAvailable = ref(false);
+const biometricBusy = ref(false);
+
+onMounted(async () => {
+  biometricAvailable.value = await biometricUnlockAvailable();
+});
+
+const unlockViaBiometric = async () => {
+  if (biometricBusy.value) return;
+  biometricBusy.value = true;
+  error.value = '';
+  try {
+    await wallet.unlockWithBiometric();
+    emit('unlocked');
+  } catch (err) {
+    error.value = err instanceof Error ? err.message : 'Biometric unlock failed.';
+  } finally {
+    biometricBusy.value = false;
+  }
+};
 
 const unlockViaPasskey = async () => {
   if (passkeyBusy.value) return;
