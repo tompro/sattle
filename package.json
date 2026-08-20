@@ -34,7 +34,7 @@
     "@quasar/extras": "^2.0.4",
     "@scure/bip32": "^2.3.0",
     "@scure/bip39": "^2.3.0",
-    "lnurlcash-kit": "github:tompro/lnurlcash-kit#prepare-git-install",
+    "lnurlcash-kit": "github:TheCryptoDonkey/lnurlcash-kit#392aeaf6682f23a0e66d28175a9df62802cd1d76",
     "nostr-tools": "2.24.3",
     "pinia": "^4.0.2",
     "qrcode.vue": "^3.10.0",
