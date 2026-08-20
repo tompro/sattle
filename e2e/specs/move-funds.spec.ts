@@ -73,6 +73,31 @@ test.describe('Move funds', () => {
     await expect(page.getByRole('button', { name: 'Move now' })).toBeVisible();
   });
 
+  test('the Max helper discounts the target mint fee', async ({ page, mint }) => {
+    await fundSourceMint(page, mint);
+    // the target mint advertises a flat 2-sat receive fee (2000 msat, 0 ppm)
+    await mint.mockTargetMint(
+      {
+        mintPubkey: TARGET_PUBKEY,
+        invoice: INVOICE,
+        preimage: PREIMAGE,
+        noteAmountMsat: AMOUNT_MSAT,
+        mintFeeMetadata: '[["text/plain","Mint fees: 2000,0"]]',
+      },
+      MINT2_ORIGIN,
+    );
+
+    await page.goto('/#/settings/move');
+    await pickOption(page, 'From mint', 'mint.test - 50 sats available');
+    await pickOption(page, 'To mint', 'Another mint…');
+    await page.getByLabel('Target mint address').fill('@mint2.test');
+
+    // the fee quote lands (caption shown), then Max fills 50 - 2 = 48
+    await expect(page.getByText(/receive fee/)).toBeVisible();
+    await page.getByRole('button', { name: 'Max' }).click();
+    await expect(page.getByLabel('Amount')).toHaveValue('48');
+  });
+
   test('a two-mint transfer moves the balance', async ({ page, mint }) => {
     await fundSourceMint(page, mint);
     // the target mint: hands out the invoice, reports it settled with the

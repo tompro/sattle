@@ -64,7 +64,10 @@
             class="q-mb-md"
           />
 
-          <div class="row items-end q-gutter-sm q-mb-md">
+          <div
+            class="row items-end q-gutter-sm"
+            :class="targetFeeText ? 'q-mb-xs' : 'q-mb-md'"
+          >
             <q-input
               v-model.number="amountSats"
               type="number"
@@ -86,6 +89,9 @@
               :disable="!sourceServer"
               @click="setMax"
             />
+          </div>
+          <div v-if="targetFeeText" class="text-caption text-grey-5 q-mb-md">
+            {{ targetFeeText }}
           </div>
 
           <q-banner v-if="inlineError" dense class="bg-negative text-white rounded-borders q-mb-md">
@@ -235,10 +241,12 @@
 import { computed, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { useQuasar } from 'quasar';
-import { noteK1, serverOf } from 'lnurlcash-kit';
+import { describeMintFee, noteK1, serverOf } from 'lnurlcash-kit';
+import type { MintFee } from 'lnurlcash-kit';
 
 import { transferBetweenMints } from '@/lnurlcash/ops';
 import type { CarveResult, TransferOutcome } from '@/lnurlcash/ops';
+import { maxNetForBalance, quoteMintFee } from '@/lnurlcash/fees';
 import type { NewBearer } from '@/lnurlcash/types';
 import { floorMsatToSat, msatToSats, satsToMsat, MSAT_PER_SAT } from '@/lnurlcash/units';
 import { useWalletStore } from '@/stores/wallet';
@@ -331,9 +339,33 @@ const formFilled = computed(
     (amountSats.value ?? 0) >= 1,
 );
 
+// the target mint's advertised receive fee (lnurlcash/fees.ts), quoted
+// live: a transfer carves the GROSS (net + fee), so a Max that ignored
+// the fee would always overshoot the balance and fail the carve
+const targetFee = ref<MintFee | null>(null);
+let quoteTimer: ReturnType<typeof setTimeout> | null = null;
+watch(targetInput, (input) => {
+  targetFee.value = null;
+  if (quoteTimer) clearTimeout(quoteTimer);
+  if (input === '') return;
+  quoteTimer = setTimeout(() => {
+    void quoteMintFee(input).then((fee) => {
+      // a slow quote must not land on a target the user has since changed
+      if (targetInput.value === input) targetFee.value = fee;
+    });
+  }, 400);
+});
+
+const targetFeeText = computed(() => {
+  const fee = targetFee.value;
+  return fee
+    ? `This mint charges a receive fee (${describeMintFee(fee)}) - Max already accounts for it.`
+    : '';
+});
+
 const setMax = () => {
   const msat = spendableByServerMsat.value.get(sourceServer.value) ?? 0;
-  amountSats.value = displaySats(msat);
+  amountSats.value = displaySats(maxNetForBalance(msat, targetFee.value));
 };
 
 const proceed = () => {

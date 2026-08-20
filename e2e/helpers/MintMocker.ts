@@ -52,6 +52,9 @@ interface MockTargetMintOptions {
   preimage: string;
   // value of the note a claim mints, in msat
   noteAmountMsat: number;
+  // optional payRequest metadata advertising a receive fee, e.g.
+  // '[["text/plain","Mint fees: 2000,0"]]' (flat 2000 msat, 0 ppm)
+  mintFeeMetadata?: string;
 }
 
 export class MintMocker {
@@ -127,7 +130,7 @@ export class MintMocker {
           maxSendable: 100_000_000_000,
           withdrawLink: `${origin}${NOTE_PATH}`,
           mintPubkey: options.mintPubkey,
-          metadata: '[]',
+          metadata: options.mintFeeMetadata ?? '[]',
         });
       },
     );
