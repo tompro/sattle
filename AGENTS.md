@@ -25,25 +25,25 @@ e2e/              # Playwright (own AGENTS.md)
 
 ## WHERE TO LOOK
 
-| Task | Location | Notes |
-|------|----------|-------|
-| Any fund movement | `src/lnurlcash/ops/` | engine returns changesets, never mutates state |
-| Add a settings page | `src/pages/` + `router/routes.ts` + SettingsPage group | back-button header pattern |
-| Native feature | `src/capabilities/` | never import plugins elsewhere |
-| Change wallet state | stores call ops + `addBearers`/`markSpent` | add fresh notes BEFORE marking spent |
-| Mint fee math | `src/lnurlcash/fees.ts` | gross vs net direction matters |
+| Task                | Location                                               | Notes                                          |
+| ------------------- | ------------------------------------------------------ | ---------------------------------------------- |
+| Any fund movement   | `src/lnurlcash/ops/`                                   | engine returns changesets, never mutates state |
+| Add a settings page | `src/pages/` + `router/routes.ts` + SettingsPage group | back-button header pattern                     |
+| Native feature      | `src/capabilities/`                                    | never import plugins elsewhere                 |
+| Change wallet state | stores call ops + `addBearers`/`markSpent`             | add fresh notes BEFORE marking spent           |
+| Mint fee math       | `src/lnurlcash/fees.ts`                                | gross vs net direction matters                 |
 
 ## CODE MAP
 
-| Module | Role |
-|--------|------|
-| `lnurlcash/ops.ts` | façade: carve/mint/pay/receiveBearer/transfer |
-| `lnurlcash/storage/` | AES-GCM bearers+activity, backup (merge entry point), settings |
-| `lnurlcash/keys.ts` | BIP39 + LUD-05 linking key; password wrap |
-| `lnurlcash/passkeys.ts` | WebAuthn PRF wrap of the SAME linking key |
-| `lnurlcash/nostrBackup.ts` | kind-30078 NIP-44 backup + restore via applyBackup |
-| `lnurlcash/nwc/` | NIP-47 wallet service (per-connection budget) |
-| `stores/wallet.ts` | state none/locked/unlocked; linking key in memory only while unlocked |
+| Module                     | Role                                                                                                      |
+| -------------------------- | --------------------------------------------------------------------------------------------------------- |
+| `lnurlcash/ops.ts`         | façade: carve/mint/pay/receiveBearer/transfer                                                             |
+| `lnurlcash/storage/`       | AES-GCM bearers+activity, owner-bound credentials and trusted mints, backup (merge entry point), settings |
+| `lnurlcash/keys.ts`        | BIP39 + LUD-05 linking key; password wrap                                                                 |
+| `lnurlcash/passkeys.ts`    | WebAuthn PRF wrap of the SAME linking key                                                                 |
+| `lnurlcash/nostrBackup.ts` | kind-30078 NIP-44 backup + restore via applyBackup                                                        |
+| `lnurlcash/nwc/`           | NIP-47 wallet service (per-connection budget)                                                             |
+| `stores/wallet.ts`         | serialized owner lifecycle; state none/locked/unlocked; linking key in memory only while unlocked         |
 
 ## CONVENTIONS
 
@@ -79,8 +79,22 @@ npm run cap:sync           # build + cap sync android
 
 - NixOS: use the flake dev shell (nodejs_22 + chromium for e2e).
   `sass-embedded` is aliased to pure-JS `sass` via npm overrides.
-- lnurlcash-kit comes from `github:TheCryptoDonkey/lnurlcash-kit` pinned to
-  a commit — the `prepare` script (our merged PR#1) builds dist on install.
+- `lnurlcash-kit@0.1.1` and `lnurlcash-conformance@0.1.1` are exact npm
+  registry packages. Keep their manifest pins, registry tarball URLs, and lock
+  integrity values intact.
+- Credential and authorization records are bound to the canonical owner ID
+  derived from the linking key. Ordinary writes require an exact match with the
+  persisted saved-key owner. Ownerless legacy records migrate only after a
+  proven unlock, never from a restored file claim or passkey-first attempt.
+- Wallet create, unlock, lock, restore, and forget transitions are serialized.
+  Forget locks first, drains NWC, clears runtime keys and owner namespaces,
+  then removes the saved key only after biometric deletion succeeds.
+- Storage events are wakeups, not authoritative payloads. Re-read matching
+  storage on an event, including `key === null`, before converging state or
+  invalidating a stale owner tab. Web Locks serialize supported browsers but
+  do not make another tab's localStorage cache current; trusted mints reconcile
+  through a durable IndexedDB commit mirror before success. `withStorageLock`
+  falls back to local execution without a cross-tab guarantee.
 - tsconfig deliberately relaxed (`exactOptionalPropertyTypes` etc. off) to
   keep the protocol core untouched; `src/lnurlcash` has an eslint override.
 - Gitea remote dropped; origin = GitHub. Gitea mirror = pull-mirror on the
