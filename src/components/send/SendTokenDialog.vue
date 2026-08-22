@@ -7,19 +7,8 @@
 // Fund-safety order when applying the carve: the replacement notes are
 // added to the wallet BEFORE the consumed ones are marked spent, so a crash
 // mid-way strands a duplicate, never a secret.
-import { computed, ref, watch } from 'vue';
-import { useQuasar } from 'quasar';
-import { toBech32Lnurl } from 'lnurlcash-kit';
-
 import QrCode from '@/components/QrCode.vue';
-import { writeClipboard } from '@/capabilities/clipboard';
-import { canShareText, shareText } from '@/capabilities/share';
-import { ensureExactAmount, UncertainOutcomeError } from '@/lnurlcash/ops';
-import type { CarveResult } from '@/lnurlcash/ops';
-import type { Bearer, NewBearer } from '@/lnurlcash/types';
-import { msatToSats, satsToMsat } from '@/lnurlcash/units';
-import { useWalletStore } from '@/stores/wallet';
-import { useActivityStore } from '@/stores/activity';
+import { useSendTokenDialog } from '@/composables/useSendTokenDialog';
 
 const props = defineProps<{ modelValue: boolean }>();
 const emit = defineEmits<{
@@ -27,170 +16,28 @@ const emit = defineEmits<{
   sent: [];
 }>();
 
-const $q = useQuasar();
-const wallet = useWalletStore();
-const activity = useActivityStore();
-
-const toast = (type: 'positive' | 'negative' | 'warning' | 'info', message: string): void => {
-  // guarded: the Notify plugin registration lives in quasar.config, outside
-  // this component's control - a missing registration must not break a flow
-  if (typeof $q.notify === 'function') {
-    $q.notify({ type, message, position: 'top', timeout: 3000 });
-  }
-};
-
-const show = computed({
-  get: () => props.modelValue,
-  set: (value: boolean) => emit('update:modelValue', value),
-});
-
-type Step = 'amount' | 'ready';
-const step = ref<Step>('amount');
-const amountSats = ref('');
-const preparing = ref(false);
-const removing = ref(false);
-const errorMessage = ref<string | null>(null);
-const prepared = ref<Bearer | null>(null);
-const revealed = ref(false);
-
-const formatSats = (sats: number): string =>
-  sats.toLocaleString(undefined, { maximumFractionDigits: 3 });
-
-const parsedAmount = computed<number | null>(() => {
-  const n = Number(amountSats.value);
-  return Number.isInteger(n) && n > 0 ? n : null;
-});
-
-const amountError = computed<string | null>(() => {
-  if (parsedAmount.value === null) return null;
-  if (satsToMsat(parsedAmount.value) > wallet.balanceMsat) {
-    return `That's more than your spendable balance (${formatSats(wallet.balanceSats)} sats).`;
-  }
-  return null;
-});
-
-const canPrepare = computed(
-  () => parsedAmount.value !== null && amountError.value === null && !preparing.value,
-);
-
-const noteDisplayValue = computed(() => (prepared.value ? toBech32Lnurl(prepared.value.url) : ''));
-
-const canShare = canShareText();
-
-const reset = () => {
-  step.value = 'amount';
-  amountSats.value = '';
-  preparing.value = false;
-  removing.value = false;
-  errorMessage.value = null;
-  prepared.value = null;
-  revealed.value = false;
-};
-
-watch(
-  () => props.modelValue,
-  (open) => {
-    if (open) reset();
-  },
-);
-
-// Applies a carve to the wallet in the only safe order: add the fresh
-// note(s) first, mark the consumed inputs spent after. Returns the wallet
-// id of the carved note (for the exact-match path the note already exists
-// in the wallet, so it is found by url instead of re-added).
-const applyCarve = async (carve: CarveResult): Promise<Bearer> => {
-  const existing = wallet.bearers.find((b) => b.url === carve.note.url);
-  const toAdd: NewBearer[] = [];
-  if (!existing) toAdd.push(carve.note);
-  if (carve.change) toAdd.push(carve.change);
-  const added = toAdd.length > 0 ? await wallet.addBearers(toAdd) : [];
-  for (const consumed of carve.consumed) {
-    await wallet.markSpent(consumed.id);
-  }
-  return existing ?? added[0];
-};
-
-const prepare = async () => {
-  const sats = parsedAmount.value;
-  if (sats === null || amountError.value !== null) return;
-  preparing.value = true;
-  errorMessage.value = null;
-  try {
-    const carve = await ensureExactAmount(wallet.bearers, satsToMsat(sats));
-    const note = await applyCarve(carve);
-    if (carve.change) {
-      activity.log('split', `Prepared a ${formatSats(sats)} sat note to hand over.`);
-    } else if (carve.consumed.length > 1) {
-      activity.log('combine', `Combined notes into a ${formatSats(sats)} sat note.`);
-    }
-    prepared.value = note;
-    revealed.value = false;
-    step.value = 'ready';
-  } catch (err) {
-    if (err instanceof UncertainOutcomeError) {
-      // the mutation may have landed - the possible outputs carry fresh
-      // secrets and must be tracked alongside the (kept) originals
-      await wallet.addBearers(err.possibleOutputs);
-      activity.log(
-        'transfer',
-        'A note preparation could not be confirmed - possible notes stored unverified.',
-      );
-      errorMessage.value =
-        "Couldn't confirm with the mint. Your original notes are untouched, and the possible new notes are stored unverified - refresh your wallet later to reconcile.";
-      toast('warning', 'Preparation uncertain - see the notice in the dialog.');
-      return;
-    }
-    const message = err instanceof Error ? err.message : 'Something went wrong.';
-    errorMessage.value = message.startsWith('No mint holds enough')
-      ? 'Not enough spendable balance to cover that amount.'
-      : message;
-    toast('negative', errorMessage.value);
-  } finally {
-    preparing.value = false;
-  }
-};
-
-const copyNote = async () => {
-  try {
-    await writeClipboard(noteDisplayValue.value);
-    toast('positive', 'Note copied to clipboard.');
-  } catch {
-    toast('negative', "Couldn't copy - reveal the note and copy it manually.");
-  }
-};
-
-const shareNote = async () => {
-  try {
-    await shareText('sattle bearer note', noteDisplayValue.value);
-  } catch (err) {
-    // the user dismissing the share sheet is not an error
-    if (err instanceof DOMException && err.name === 'AbortError') return;
-    await copyNote();
-  }
-};
-
-const finishRemove = async () => {
-  const note = prepared.value;
-  if (!note) return;
-  removing.value = true;
-  try {
-    await wallet.markSpent(note.id);
-    activity.log('spent', `Handed over a ${formatSats(msatToSats(note.amount))} sat note.`);
-    toast('positive', 'Removed from your balance.');
-    emit('sent');
-    show.value = false;
-  } catch (err) {
-    const message = err instanceof Error ? err.message : 'Something went wrong.';
-    toast('negative', message);
-  } finally {
-    removing.value = false;
-  }
-};
-
-const finishKeep = () => {
-  toast('info', 'Note kept in your wallet.');
-  show.value = false;
-};
+const {
+  amountError,
+  amountSats,
+  canPrepare,
+  canShare,
+  copyNote,
+  errorMessage,
+  finishKeep,
+  finishRemove,
+  formatSats,
+  msatToSats,
+  noteDisplayValue,
+  prepare,
+  prepared,
+  preparing,
+  removing,
+  revealed,
+  shareNote,
+  show,
+  step,
+  wallet,
+} = useSendTokenDialog(props, emit);
 </script>
 
 <template>
