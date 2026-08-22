@@ -41,5 +41,5 @@ export type {
   TransferOptions,
   TransferOutcome,
   TransferQuote,
-  TransferResult
+  TransferResult,
 } from './ops/transfer'

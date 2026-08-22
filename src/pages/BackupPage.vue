@@ -172,7 +172,7 @@ const errorMessage = (err: unknown): string =>
 
 // ---- backup file ----
 const downloadBackupFile = () => {
-  const backup = buildBackup();
+  const backup = buildBackup(wallet.pubkey ?? undefined);
   const blob = new Blob([JSON.stringify(backup, null, 2)], {
     type: 'application/json',
   });

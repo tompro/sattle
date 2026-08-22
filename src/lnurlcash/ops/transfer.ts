@@ -24,7 +24,7 @@ import {
   rotateNote,
   sameInvoice,
   serverOf,
-  withNewK1
+  withNewK1,
 } from 'lnurlcash-kit'
 import type {LnurlcashOptions} from 'lnurlcash-kit'
 import type {Bearer, NewBearer} from '../types'
@@ -33,7 +33,8 @@ import {ensureExactAmount} from './carve'
 import type {ClaimedNote} from './mint'
 import {claimFromPreimage, prepareMint} from './mint'
 import type {PollOptions} from './shared'
-import {pollVerifyUntilSettled} from './shared'
+import type {FundOperationOptions} from './shared'
+import {assertFundOwner, pollVerifyUntilSettled} from './shared'
 
 export type TransferOutcome =
   // the melt settled and the target note was claimed (and rotated)
@@ -102,15 +103,16 @@ export type TransferOptions = {
   poll?: PollOptions
   // kit transport overrides (fetch injection, timeouts)
   kit?: LnurlcashOptions
+  assertOwner?: () => void
 }
 
 export const transferBetweenMints = async (
   bearers: Bearer[],
   amountMsat: number,
   targetMint: string,
-  {poll = {}, kit = {}}: TransferOptions = {}
+  {poll = {}, kit = {}, assertOwner}: TransferOptions = {},
 ): Promise<TransferResult> => {
-  const options = kit
+  const options: FundOperationOptions = assertOwner ? {...kit, assertOwner} : kit
   if (!Number.isInteger(amountMsat) || amountMsat <= 0) {
     throw new Error('Amount must be a positive whole number of msat.')
   }
@@ -120,7 +122,7 @@ export const transferBetweenMints = async (
   const prepared = await prepareMint(targetMint, amountMsat, options)
   if (!prepared.verifyUrl) {
     throw new Error(
-      'The target mint did not advertise a verify URL - a transfer there cannot auto-claim.'
+      'The target mint did not advertise a verify URL - a transfer there cannot auto-claim.',
     )
   }
   const verifyUrl = prepared.verifyUrl
@@ -129,19 +131,17 @@ export const transferBetweenMints = async (
   // goes nowhere (melt pays an invoice; the same mint's invoice just
   // re-mints into itself, paying fees for nothing)
   const eligible = bearers.filter(
-    b => !b.spent && b.callback !== '' && !b.deviceId && noteK1(b.url)
+    (b) => !b.spent && b.callback !== '' && !b.deviceId && noteK1(b.url),
   )
-  const offTarget = eligible.filter(b => serverOf(b.url) !== targetServer)
+  const offTarget = eligible.filter((b) => serverOf(b.url) !== targetServer)
   if (eligible.length > 0 && offTarget.length === 0) {
-    throw new Error(
-      'That\'s the mint these notes are already on - pick a different target.'
-    )
+    throw new Error("That's the mint these notes are already on - pick a different target.")
   }
   const quote: TransferQuote = {
     requestedMsat: amountMsat,
     grossMsat: prepared.grossMsat,
     targetMintFeeMsat: prepared.grossMsat - amountMsat,
-    sourceMeltFeeReserveMsat: 0
+    sourceMeltFeeReserveMsat: 0,
   }
   // carving burns its inputs server-side, so it happens only once the
   // target is known good and the invoice exists
@@ -151,12 +151,13 @@ export const transferBetweenMints = async (
   const claimMaterial: TransferClaimMaterial = {
     invoice,
     withdrawLink: prepared.withdrawLink,
-    expectedNoteValueMsat: prepared.expectedNoteValueMsat
+    expectedNoteValueMsat: prepared.expectedNoteValueMsat,
   }
   // from here on the carve's fresh secrets exist only in this result - the
   // flow never throws again; every outcome carries them
   const base = {carve, quote, invoice, verifyUrl, sourceServer, targetServer}
   const k1 = requireNoteK1(carve.note.url)
+  if (carve.consumed.length === 0) assertFundOwner(options)
   try {
     await meltNote(carve.note.callback, k1, invoice, options)
   } catch (err) {
@@ -197,20 +198,16 @@ export const transferBetweenMints = async (
       // the melt settled - the money is now the preimage note at the
       // target and nowhere else; surface it rather than lose it
       const note: NewBearer = {
-        url: buildNoteUrl(
-          prepared.withdrawLink,
-          proof.preimage,
-          prepared.expectedNoteValueMsat
-        ),
+        url: buildNoteUrl(prepared.withdrawLink, proof.preimage, prepared.expectedNoteValueMsat),
         callback: '',
         amount: prepared.expectedNoteValueMsat,
-        verified: false
+        verified: false,
       }
       if (prepared.mintPubkey) note.mintPubkey = prepared.mintPubkey
       return {
         ...base,
         outcome: 'settled-claim-failed',
-        claimMaterial: {...claimMaterial, note}
+        claimMaterial: {...claimMaterial, note},
       }
     }
   } catch {
@@ -229,14 +226,9 @@ export const transferBetweenMints = async (
           ...carve,
           note: {
             ...carve.note,
-            url: withNewK1(
-              carve.note.url,
-              rotated.k1,
-              carve.note.amount,
-              rotated.signature
-            )
-          }
-        }
+            url: withNewK1(carve.note.url, rotated.k1, carve.note.amount, rotated.signature),
+          },
+        },
       }
     } catch (err) {
       if (err instanceof PendingNoteError || err instanceof NoteSpentError) {
@@ -251,7 +243,7 @@ export const transferBetweenMints = async (
           url: withNewK1(carve.note.url, err.newSecrets[0], carve.note.amount),
           callback: carve.note.callback,
           amount: carve.note.amount,
-          verified: false
+          verified: false,
         }
         if (carve.note.mintPubkey) rescuedNote.mintPubkey = carve.note.mintPubkey
         return {...base, outcome: 'failed-funds-returned', rescuedNote}

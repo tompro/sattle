@@ -23,10 +23,10 @@ import type {PollOptions} from '../ops/shared'
 
 import type {PendingInvoice, RequestContext} from './context'
 
-export const DEFAULT_CLAIM_POLL: Required<PollOptions> = {
+export const DEFAULT_CLAIM_POLL: Required<Omit<PollOptions, 'signal'>> = {
   intervalMs: 2000,
   intervalCapMs: 10_000,
-  maxWaitMs: 15 * 60_000
+  maxWaitMs: 15 * 60_000,
 }
 
 // LUD-21 verify URLs end in /verify/<payment_hash> (the protocol's verify
@@ -41,9 +41,7 @@ export const resolvePaymentHash = (prepared: PreparedMint): string => {
 }
 
 // the NIP-47 transaction object make_invoice and lookup_invoice share
-export const invoiceResult = (
-  entry: PendingInvoice
-): Record<string, unknown> => {
+export const invoiceResult = (entry: PendingInvoice): Record<string, unknown> => {
   const result: Record<string, unknown> = {
     type: 'incoming',
     state: entry.state,
@@ -51,7 +49,7 @@ export const invoiceResult = (
     payment_hash: entry.paymentHash,
     amount: entry.amountMsat,
     created_at: entry.createdAt,
-    metadata: {}
+    metadata: {},
   }
   if (entry.description) result.description = entry.description
   if (entry.expiresAt) result.expires_at = entry.expiresAt
@@ -64,47 +62,50 @@ export const invoiceResult = (
 
 // the background half of make_invoice: watch the invoice, and once it
 // settles claim the note (rotating it immediately) and hand the fresh
-// bearer to the caller. Settlement is recorded LAST - after the rotate -
-// so a preimage lookup can only ever reveal an already-burned secret.
+// bearer to the caller. Settlement is recorded LAST - after the rotate and
+// bearer commit - so lookup can only reveal durably tracked funds and an
+// already-burned secret.
 // Throws on any failure; the caller marks the entry failed and reports
 // through deps.onError.
-export const settleAndClaim = async (
-  ctx: RequestContext,
-  entry: PendingInvoice
-): Promise<void> => {
+export const settleAndClaim = async (ctx: RequestContext, entry: PendingInvoice): Promise<void> => {
   if (!entry.prepared.verifyUrl) {
     throw new Error(
-      'This mint did not advertise a verify URL - the invoice cannot be auto-claimed.'
+      'This mint did not advertise a verify URL - the invoice cannot be auto-claimed.',
     )
   }
+  // the observation half is interruptible (the client may never pay, so
+  // the poll can legally outlive the service); once settlement is seen,
+  // everything below - claim, rotate, bearer commit - is fund-critical and
+  // deliberately ignores the stop signal: stop's drain awaits it
   const result = await pollVerifyUntilSettled(
     entry.prepared.verifyUrl,
-    ctx.deps.claimPoll ?? DEFAULT_CLAIM_POLL,
-    ctx.deps.kit ?? {}
+    {...(ctx.deps.claimPoll ?? DEFAULT_CLAIM_POLL), signal: ctx.stopSignal},
+    ctx.deps.kit ?? {},
   )
   // a settled report only means this wallet's invoice was paid if it's
   // for the invoice this wallet actually requested
   if (!sameInvoice(result.pr, entry.prepared.invoice)) {
-    throw new Error(
-      "The service's verify response is for a different invoice than requested."
-    )
+    throw new Error("The service's verify response is for a different invoice than requested.")
   }
   const preimage = result.preimage
   if (!preimage || !isPreimage(preimage)) {
-    throw new Error(
-      'The payment settled but the service did not reveal the preimage.'
-    )
+    throw new Error('The payment settled but the service did not reveal the preimage.')
   }
   // claimFromPreimage IS claimMintedNote's claim half (poll above is the
   // other half) - invoked in two steps here because NWC needs the
   // preimage, which claimMintedNote deliberately discards
-  const claimed = await claimFromPreimage(
-    entry.prepared,
-    preimage,
-    ctx.deps.kit ?? {}
-  )
+  const claimed = await claimFromPreimage(entry.prepared, preimage, {
+    ...(ctx.deps.kit ?? {}),
+    assertOwner: ctx.assertOwner,
+  })
   const add: NewBearer[] = [claimed.note]
   if (claimed.possibleCopy) add.push(claimed.possibleCopy)
+  await ctx.deps.applyChangeset(
+    {add, markSpent: []},
+    ctx.connection(),
+    'make_invoice',
+    ctx.assertOwner,
+  )
   entry.settledAt = ctx.nowSeconds()
   entry.state = 'settled'
   if (claimed.rotated) {
@@ -112,5 +113,4 @@ export const settleAndClaim = async (
     // secret, safe to hand out as the settlement receipt
     entry.preimage = preimage
   }
-  ctx.deps.applyChangeset({add, markSpent: []}, ctx.connection(), 'make_invoice')
 }

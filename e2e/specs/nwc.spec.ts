@@ -63,9 +63,10 @@ test.describe('NWC settings page', () => {
     await expect(page.getByText('shown only once', { exact: false })).toBeVisible();
     const uri = (await page.locator('.nwc-connection-string').textContent())?.trim();
     expect(uri).toBeTruthy();
+    if (!uri) throw new Error('Expected the one-time NWC connection string.');
 
     // a well-formed NIP-47 connection string
-    const url = new URL(uri!);
+    const url = new URL(uri);
     expect(url.protocol).toBe('nostr+walletconnect:');
     expect(url.host).toMatch(/^[0-9a-f]{64}$/);
     expect(url.searchParams.get('secret')).toMatch(/^[0-9a-f]{64}$/);

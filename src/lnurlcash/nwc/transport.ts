@@ -19,7 +19,7 @@ export type NwcTransport = {
   subscribe: (
     relays: string[],
     filter: NostrFilter,
-    onEvent: (event: NostrEvent) => void
+    onEvent: (event: NostrEvent) => void,
   ) => NwcSubscription
 }
 
@@ -30,11 +30,10 @@ export const defaultNwcTransport = async (): Promise<NwcTransport> => {
     publish: async (relays, event) => {
       const results = await Promise.allSettled(pool.publish(relays, event))
       // one honest relay accepting is enough - same rule as the backup
-      if (!results.some(r => r.status === 'fulfilled')) {
+      if (!results.some((r) => r.status === 'fulfilled')) {
         throw new Error('No relay accepted the event.')
       }
     },
-    subscribe: (relays, filter, onEvent) =>
-      pool.subscribeMany(relays, filter, {onevent: onEvent})
+    subscribe: (relays, filter, onEvent) => pool.subscribeMany(relays, filter, {onevent: onEvent}),
   }
 }

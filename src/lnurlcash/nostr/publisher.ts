@@ -22,9 +22,7 @@ export type BackupPublisherOptions = {
   onError?: (error: unknown) => void
 }
 
-export const createBackupPublisher = (
-  options: BackupPublisherOptions
-): BackupPublisher => {
+export const createBackupPublisher = (options: BackupPublisherOptions): BackupPublisher => {
   let timer: ReturnType<typeof setTimeout> | null = null
   let pending: Partial<BackupPartPayload> | null = null
   let running: Promise<void> | null = null
@@ -45,7 +43,9 @@ export const createBackupPublisher = (
       try {
         await options.publish(snapshot)
       } catch (error) {
-        options.onError?.(error)
+        options.onError?.(
+          error instanceof Error ? error : new Error('Backup publication failed.', {cause: error}),
+        )
       }
     }
   }
@@ -61,7 +61,7 @@ export const createBackupPublisher = (
   }
 
   return {
-    schedule: parts => {
+    schedule: (parts) => {
       pending = parts
       clearTimer()
       timer = setTimeout(() => void fire(), options.delayMs)
@@ -70,6 +70,6 @@ export const createBackupPublisher = (
     cancel: () => {
       clearTimer()
       pending = null
-    }
+    },
   }
 }

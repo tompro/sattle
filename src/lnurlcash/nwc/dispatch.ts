@@ -9,6 +9,7 @@ import {noteK1, sameInvoice} from 'lnurlcash-kit'
 import type {Bearer} from '../types'
 import type {PreparedMint} from '../ops'
 import {prepareMint} from '../ops'
+import {PollAbortedError} from '../ops/shared'
 
 import type {PendingInvoice, RequestContext} from './context'
 import {invoiceResult, resolvePaymentHash, settleAndClaim} from './invoices'
@@ -19,10 +20,7 @@ import {NWC_METHODS, errResult, okResult} from './protocol'
 // the same eligibility carve applies - the balance answers "what could
 // this wallet actually pay with right now"
 const spendable = (bearer: Bearer): boolean =>
-  !bearer.spent &&
-  bearer.callback !== '' &&
-  !bearer.deviceId &&
-  !!noteK1(bearer.url)
+  !bearer.spent && bearer.callback !== '' && !bearer.deviceId && !!noteK1(bearer.url)
 
 const handleGetInfo = (ctx: RequestContext): NwcResponse =>
   okResult('get_info', {
@@ -34,7 +32,7 @@ const handleGetInfo = (ctx: RequestContext): NwcResponse =>
     // block height/hash exists, so those fields are simply absent.
     network: 'mainnet',
     methods: [...NWC_METHODS],
-    notifications: []
+    notifications: [],
   })
 
 const handleGetBalance = (ctx: RequestContext): NwcResponse =>
@@ -42,20 +40,16 @@ const handleGetBalance = (ctx: RequestContext): NwcResponse =>
     balance: ctx.deps
       .getBearers()
       .filter(spendable)
-      .reduce((sum, b) => sum + b.amount, 0)
+      .reduce((sum, b) => sum + b.amount, 0),
   })
 
 const handleMakeInvoice = async (
   ctx: RequestContext,
-  params: Record<string, unknown>
+  params: Record<string, unknown>,
 ): Promise<NwcResponse> => {
   const amountMsat = Number(params.amount)
   if (!Number.isInteger(amountMsat) || amountMsat <= 0) {
-    return errResult(
-      'make_invoice',
-      'OTHER',
-      'Amount must be a positive whole number of msat.'
-    )
+    return errResult('make_invoice', 'OTHER', 'Amount must be a positive whole number of msat.')
   }
   const mint = ctx.deps.getDefaultMint()
   if (!mint) {
@@ -65,11 +59,7 @@ const handleMakeInvoice = async (
   try {
     prepared = await prepareMint(mint, amountMsat, ctx.deps.kit ?? {})
   } catch (err) {
-    return errResult(
-      'make_invoice',
-      'INTERNAL',
-      err instanceof Error ? err.message : String(err)
-    )
+    return errResult('make_invoice', 'INTERNAL', err instanceof Error ? err.message : String(err))
   }
   const entry: PendingInvoice = {
     invoice: prepared.invoice,
@@ -77,7 +67,7 @@ const handleMakeInvoice = async (
     amountMsat: prepared.grossMsat,
     createdAt: ctx.nowSeconds(),
     prepared,
-    state: 'pending'
+    state: 'pending',
   }
   if (typeof params.description === 'string' && params.description) {
     entry.description = params.description
@@ -88,30 +78,29 @@ const handleMakeInvoice = async (
   }
   ctx.invoices.set(entry.paymentHash, entry)
   // phase two runs in the background; the invoice goes out now and
-  // lookup_invoice reports the settlement the claim observes
-  void settleAndClaim(ctx, entry).catch(err => {
+  // lookup_invoice reports the settlement the service-owned claim observes
+  const started = ctx.startBackground(() =>
+    settleAndClaim(ctx, entry).catch((err) => {
+      entry.state = 'failed'
+      // an interrupted claim poll is normal service teardown (stop
+      // aborted it), not a background failure worth surfacing
+      if (err instanceof PollAbortedError) return
+      ctx.deps.onError?.(err, ctx.connection())
+    }),
+  )
+  if (!started) {
     entry.state = 'failed'
-    ctx.deps.onError?.(err, ctx.connection())
-  })
+    return errResult('make_invoice', 'INTERNAL', 'The wallet service is stopping.')
+  }
   return okResult('make_invoice', invoiceResult(entry))
 }
 
-const handleLookupInvoice = (
-  ctx: RequestContext,
-  params: Record<string, unknown>
-): NwcResponse => {
-  const invoiceParam =
-    typeof params.invoice === 'string' ? params.invoice : undefined
+const handleLookupInvoice = (ctx: RequestContext, params: Record<string, unknown>): NwcResponse => {
+  const invoiceParam = typeof params.invoice === 'string' ? params.invoice : undefined
   const hashParam =
-    typeof params.payment_hash === 'string'
-      ? params.payment_hash.toLowerCase()
-      : undefined
+    typeof params.payment_hash === 'string' ? params.payment_hash.toLowerCase() : undefined
   if (!invoiceParam && !hashParam) {
-    return errResult(
-      'lookup_invoice',
-      'OTHER',
-      'Provide an invoice or a payment hash.'
-    )
+    return errResult('lookup_invoice', 'OTHER', 'Provide an invoice or a payment hash.')
   }
   let entry = hashParam ? ctx.invoices.get(hashParam) : undefined
   if (!entry && invoiceParam) {
@@ -128,10 +117,7 @@ const handleLookupInvoice = (
   return okResult('lookup_invoice', invoiceResult(entry))
 }
 
-export const dispatch = async (
-  ctx: RequestContext,
-  request: NwcRequest
-): Promise<NwcResponse> => {
+export const dispatch = async (ctx: RequestContext, request: NwcRequest): Promise<NwcResponse> => {
   switch (request.method) {
     case 'get_info':
       return handleGetInfo(ctx)
@@ -144,10 +130,6 @@ export const dispatch = async (
     case 'lookup_invoice':
       return handleLookupInvoice(ctx, request.params)
     default:
-      return errResult(
-        request.method,
-        'NOT_IMPLEMENTED',
-        `Unknown method: ${request.method}.`
-      )
+      return errResult(request.method, 'NOT_IMPLEMENTED', `Unknown method: ${request.method}.`)
   }
 }

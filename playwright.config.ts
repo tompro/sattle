@@ -21,7 +21,8 @@ export default defineConfig({
 
   use: {
     baseURL: 'http://localhost:9333',
-    trace: 'on-first-retry',
+    trace: 'retain-on-failure',
+    screenshot: 'only-on-failure',
     serviceWorkers: 'block',
     launchOptions: {
       executablePath: process.env.CHROMIUM_PATH || findSystemChromium(),

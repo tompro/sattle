@@ -20,15 +20,12 @@ export const loadSettings = (): WalletSettings => {
     if (typeof parsed !== 'object' || parsed === null) return {}
     const s = parsed as Record<string, unknown>
     return {
-      defaultMint:
-        typeof s.defaultMint === 'string' ? s.defaultMint : undefined,
+      defaultMint: typeof s.defaultMint === 'string' ? s.defaultMint : undefined,
       nostrBackupEnabled:
-        typeof s.nostrBackupEnabled === 'boolean'
-          ? s.nostrBackupEnabled
-          : undefined,
+        typeof s.nostrBackupEnabled === 'boolean' ? s.nostrBackupEnabled : undefined,
       nostrBackupRelays: Array.isArray(s.nostrBackupRelays)
         ? s.nostrBackupRelays.filter((r): r is string => typeof r === 'string')
-        : undefined
+        : undefined,
     }
   } catch {
     return {}

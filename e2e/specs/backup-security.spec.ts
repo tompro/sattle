@@ -79,6 +79,97 @@ test.describe('Security page', () => {
     // auto-lock: display-only for now
     await expect(page.getByText('Locks after 5 minutes without activity')).toBeVisible();
   });
+
+  test('lists only passkeys owned by the current wallet', async ({ page }) => {
+    // Given a browser with a PRF-capable authenticator probe and an unlocked wallet
+    await page.addInitScript(() => {
+      Object.defineProperty(window, 'PublicKeyCredential', {
+        configurable: true,
+        value: {
+          isUserVerifyingPlatformAuthenticatorAvailable: () => Promise.resolve(true),
+          getClientCapabilities: () => Promise.resolve({ 'extension:prf': true }),
+        },
+      });
+    });
+    await createFreshWallet(page);
+    await page.evaluate(() => {
+      const saved: unknown = JSON.parse(localStorage.getItem('sattle_linking_key') ?? '{}');
+      if (
+        typeof saved !== 'object' ||
+        saved === null ||
+        !('ownerId' in saved) ||
+        typeof saved.ownerId !== 'string'
+      ) {
+        throw new Error('expected saved wallet owner');
+      }
+      const wrap = {
+        hkdfSalt: '11'.repeat(16),
+        iv: '22'.repeat(12),
+        wrappedKey: '33'.repeat(48),
+        createdAt: 1,
+      };
+      localStorage.setItem(
+        'sattle_passkey_slots',
+        JSON.stringify([
+          {
+            ...wrap,
+            credentialId: '44'.repeat(16),
+            name: 'Current wallet passkey',
+            ownerId: saved.ownerId,
+            version: 1,
+          },
+          {
+            ...wrap,
+            credentialId: '55'.repeat(16),
+            name: 'Foreign wallet passkey',
+            ownerId: '0256b328b30c8bf5839e24058747879408bdb36241dc9c2e7c619faa12b2920967',
+            version: 1,
+          },
+        ]),
+      );
+    });
+
+    // When the security management surface reads passkey slots
+    await page.goto('/#/settings/security');
+
+    // Then only the current owner's slot is rendered
+    await expect(page.getByText('Current wallet passkey')).toBeVisible();
+    await expect(page.getByText('Foreign wallet passkey')).toHaveCount(0);
+  });
+
+  test('hides passkey-first unlock for a markerless saved wallet', async ({ page }) => {
+    // Given an encrypted saved key and passkey slot without owner markers
+    await page.addInitScript(() => {
+      localStorage.setItem(
+        'sattle_linking_key',
+        JSON.stringify({
+          enc: true,
+          salt: '11'.repeat(16),
+          iv: '22'.repeat(12),
+          ciphertext: '33'.repeat(48),
+        }),
+      );
+      localStorage.setItem(
+        'sattle_passkey_slots',
+        JSON.stringify([
+          {
+            credentialId: '44'.repeat(16),
+            hkdfSalt: '55'.repeat(16),
+            iv: '66'.repeat(12),
+            wrappedKey: '77'.repeat(48),
+            createdAt: 1,
+          },
+        ]),
+      );
+    });
+
+    // When the locked wallet renders
+    await page.goto('/');
+
+    // Then passkey-first unlock is unavailable until another owner proof
+    await expect(page.getByText('Wallet locked')).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Unlock with passkey' })).toHaveCount(0);
+  });
 });
 
 test.describe('Welcome: restore from nostr', () => {

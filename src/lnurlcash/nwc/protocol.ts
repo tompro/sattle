@@ -29,7 +29,7 @@ export const NWC_METHODS = [
   'get_balance',
   'make_invoice',
   'pay_invoice',
-  'lookup_invoice'
+  'lookup_invoice',
 ] as const
 
 export type NwcMethod = (typeof NWC_METHODS)[number]
@@ -61,17 +61,13 @@ export type NwcResponse = {
 export const okResult = (method: string, result: unknown): NwcResponse => ({
   result_type: method,
   error: null,
-  result
+  result,
 })
 
-export const errResult = (
-  method: string,
-  code: NwcErrorCode,
-  message: string
-): NwcResponse => ({
+export const errResult = (method: string, code: NwcErrorCode, message: string): NwcResponse => ({
   result_type: method,
   error: {code, message},
-  result: null
+  result: null,
 })
 
 // the two encryption schemes this service speaks; the scheme of a request
@@ -79,16 +75,14 @@ export const errResult = (
 // requested by the client")
 export type NwcEncryption = 'nip44_v2' | 'nip04'
 
-const conversationKey = (
-  walletSecretKey: Uint8Array,
-  clientPubkey: string
-): Uint8Array => nip44v2.utils.getConversationKey(walletSecretKey, clientPubkey)
+const conversationKey = (walletSecretKey: Uint8Array, clientPubkey: string): Uint8Array =>
+  nip44v2.utils.getConversationKey(walletSecretKey, clientPubkey)
 
 export const encryptFor = (
   scheme: NwcEncryption,
   walletSecretKey: Uint8Array,
   clientPubkey: string,
-  plaintext: string
+  plaintext: string,
 ): string =>
   scheme === 'nip44_v2'
     ? nip44v2.encrypt(plaintext, conversationKey(walletSecretKey, clientPubkey))
@@ -98,14 +92,14 @@ const decryptFrom = (
   scheme: NwcEncryption,
   walletSecretKey: Uint8Array,
   clientPubkey: string,
-  content: string
+  content: string,
 ): string =>
   scheme === 'nip44_v2'
     ? nip44v2.decrypt(content, conversationKey(walletSecretKey, clientPubkey))
     : nip04Decrypt(walletSecretKey, clientPubkey, content)
 
 const tagValue = (event: NostrEvent, name: string): string | undefined =>
-  event.tags.find(t => t[0] === name)?.[1]
+  event.tags.find((t) => t[0] === name)?.[1]
 
 // The outcome of validating + decrypting a candidate request event:
 // - a request to dispatch (encryption scheme carried so the response can
@@ -126,7 +120,7 @@ export const decryptRequest = (
   walletServicePubkey: string,
   clientPubkey: string,
   event: NostrEvent,
-  nowSeconds: number = Math.floor(Date.now() / 1000)
+  nowSeconds: number = Math.floor(Date.now() / 1000),
 ): DecryptedNwcRequest | null => {
   if (event.kind !== NWC_REQUEST_KIND) return null
   // only the authorized client may talk to this connection, and the
@@ -155,8 +149,8 @@ export const decryptRequest = (
       response: errResult(
         '',
         'UNSUPPORTED_ENCRYPTION',
-        `Unsupported encryption scheme: ${advertised}.`
-      )
+        `Unsupported encryption scheme: ${advertised}.`,
+      ),
     }
   }
   let plaintext: string
@@ -173,7 +167,7 @@ export const decryptRequest = (
     return {
       respond: true,
       encryption,
-      response: errResult('', 'OTHER', 'The request is not valid JSON.')
+      response: errResult('', 'OTHER', 'The request is not valid JSON.'),
     }
   }
   if (
@@ -185,14 +179,11 @@ export const decryptRequest = (
     return {
       respond: true,
       encryption,
-      response: errResult('', 'OTHER', 'The request has no method.')
+      response: errResult('', 'OTHER', 'The request has no method.'),
     }
   }
   const request = data as NwcRequest
-  const params =
-    typeof request.params === 'object' && request.params !== null
-      ? request.params
-      : {}
+  const params = typeof request.params === 'object' && request.params !== null ? request.params : {}
   return {respond: false, request: {method: request.method, params}, encryption}
 }
 
@@ -204,7 +195,7 @@ export const buildResponseEvent = (
   encryption: NwcEncryption,
   requestEventId: string,
   response: NwcResponse,
-  createdAt: number = Math.floor(Date.now() / 1000)
+  createdAt: number = Math.floor(Date.now() / 1000),
 ): NostrEvent =>
   finalizeEvent(
     {
@@ -213,29 +204,24 @@ export const buildResponseEvent = (
       tags: [
         ['p', clientPubkey],
         ['e', requestEventId],
-        ['encryption', encryption]
+        ['encryption', encryption],
       ],
-      content: encryptFor(
-        encryption,
-        walletSecretKey,
-        clientPubkey,
-        JSON.stringify(response)
-      )
+      content: encryptFor(encryption, walletSecretKey, clientPubkey, JSON.stringify(response)),
     },
-    walletSecretKey
+    walletSecretKey,
   )
 
 // the replaceable info event advertising this service's capabilities
 export const buildInfoEvent = (
   walletSecretKey: Uint8Array,
-  createdAt: number = Math.floor(Date.now() / 1000)
+  createdAt: number = Math.floor(Date.now() / 1000),
 ): NostrEvent =>
   finalizeEvent(
     {
       kind: NWC_INFO_KIND,
       created_at: createdAt,
       tags: [['encryption', 'nip44_v2 nip04']],
-      content: NWC_METHODS.join(' ')
+      content: NWC_METHODS.join(' '),
     },
-    walletSecretKey
+    walletSecretKey,
   )

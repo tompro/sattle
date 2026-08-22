@@ -10,12 +10,9 @@
 
 import type {RestoreResult} from '../storage/backup'
 import {applyBackup} from '../storage/backup'
+import {linkingPubKeyHex} from '../keys'
 
-import type {
-  BackupPart,
-  BackupPartPayload,
-  NostrEvent
-} from './events'
+import type {BackupPart, BackupPartPayload, NostrEvent} from './events'
 import {
   BACKUP_EVENT_KIND,
   BACKUP_PARTS,
@@ -23,7 +20,7 @@ import {
   buildBackupEvent,
   deriveBackupKey,
   dTagOf,
-  parseBackupEvent
+  parseBackupEvent,
 } from './events'
 import type {BackupTransport} from './transport'
 import {defaultTransport} from './transport'
@@ -42,20 +39,17 @@ export const publishBackup = async (
   secretKey: Uint8Array,
   parts: Partial<BackupPartPayload>,
   relays: string[],
-  options: PublishBackupOptions = {}
+  options: PublishBackupOptions = {},
 ): Promise<PublishBackupResult> => {
   const at = options.createdAt ?? Math.floor(Date.now() / 1000)
-  const present = BACKUP_PARTS.filter(part => parts[part] !== undefined)
+  const present = BACKUP_PARTS.filter((part) => parts[part] !== undefined)
   if (present.length === 0) return {published: []}
   const transport = options.transport ?? (await defaultTransport())
   const published: BackupPart[] = []
   for (const part of present) {
     const payload = parts[part]
     if (payload === undefined) continue
-    await transport.publish(
-      relays,
-      buildBackupEvent(secretKey, part, payload, at)
-    )
+    await transport.publish(relays, buildBackupEvent(secretKey, part, payload, at))
     published.push(part)
   }
   return {published}
@@ -75,12 +69,12 @@ export type FetchBackupOptions = {
 export const fetchBackup = async (
   pubkey: string,
   relays: string[],
-  options: FetchBackupOptions
+  options: FetchBackupOptions,
 ): Promise<Partial<BackupPartPayload>> => {
   const transport = options.transport ?? (await defaultTransport())
   const events = await transport.fetch(relays, {
     kinds: [BACKUP_EVENT_KIND],
-    authors: [pubkey]
+    authors: [pubkey],
   })
   const byTag = new Map<string, NostrEvent[]>()
   for (const event of events) {
@@ -130,23 +124,26 @@ export type NostrRestoreResult = RestoreResult & {
 export const restoreFromNostr = async (
   linkingPrivKey: Uint8Array,
   relays: string[],
-  options: {transport?: BackupTransport} = {}
+  options: {transport?: BackupTransport} = {},
 ): Promise<NostrRestoreResult> => {
   const secretKey = deriveBackupKey(linkingPrivKey)
   const parts = await fetchBackup(backupPubkey(secretKey), relays, {
     secretKey,
-    transport: options.transport
+    transport: options.transport,
   })
-  const result = applyBackup({
-    type: 'sattle-backup',
-    version: 1,
-    createdAt: Date.now(),
-    bearers: parts.notes ?? [],
-    trustedMints: parts.mints,
-    settings: parts.settings
-  })
+  const result = await applyBackup(
+    {
+      type: 'sattle-backup',
+      version: 1,
+      createdAt: Date.now(),
+      bearers: parts.notes ?? [],
+      trustedMints: parts.mints,
+      settings: parts.settings,
+    },
+    linkingPubKeyHex(linkingPrivKey),
+  )
   return {
     ...result,
-    found: BACKUP_PARTS.filter(part => parts[part] !== undefined)
+    found: BACKUP_PARTS.filter((part) => parts[part] !== undefined),
   }
 }
