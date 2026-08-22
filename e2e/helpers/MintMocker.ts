@@ -40,8 +40,10 @@ interface MockNoteInfoOptions {
 }
 
 interface MockTargetMintOptions {
-  // the mint's signing pubkey (66 hex chars), advertised in the payRequest
-  // and note responses
+  // the mint's signing pubkey (66 hex chars), advertised on the mint-address
+  // (/.well-known/lnurlw/) and note-info responses - NEVER the payRequest:
+  // LUD-25 announces it on the withdraw side only, and a too-generous mock
+  // once masked a real bug
   mintPubkey: string;
   // the invoice this mint hands out (and reports back as settled) - keep it
   // amount-less (decodeBolt11AmountMsat returns null) so the kit skips the
@@ -97,24 +99,38 @@ export class MintMocker {
     );
   }
 
-  // A mint that never answers its mint-address discovery endpoint with
-  // anything usable - prepareMint treats that as "no mint-address support"
-  // and falls back to the plain LNURL-pay guess.
-  private async mockNoMintAddress(origin: string): Promise<void> {
+  // The mint-address discovery endpoint (LUD-25): announces the signing key
+  // and the node stats a real lnurl-mint advertises. `nodeCapacity` is msat
+  // under its WIRE name (no suffix) - the kit has to map it onto
+  // nodeCapacityMsat, which is exactly the 0.1.0 spread bug this exercises.
+  // The payLink points back at the lnurlp route below, as prepareMint treats
+  // it as the authoritative place to read the payRequest from.
+  private async mockMintAddress(options: MockTargetMintOptions, origin: string): Promise<void> {
     await this.page.route(
       new RegExp(`^${escapeRegExp(`${origin}/.well-known/lnurlw/`)}`),
       async (route: Route) => {
-        await fulfillJson(route, { status: 'ERROR', reason: 'not supported' });
+        await fulfillJson(route, {
+          tag: 'withdrawRequest',
+          callback: `${origin}${CALLBACK_PATH}`,
+          minWithdrawable: 1000,
+          maxWithdrawable: 100_000_000_000,
+          mintPubkey: options.mintPubkey,
+          payLink: `${origin}/.well-known/lnurlp/mint`,
+          nodeCapacity: 500_000_000,
+          nodeNumChannels: 4,
+          nodeNumPeers: 6,
+        });
       },
     );
   }
 
   // Everything the target side of a transfer (or a Lightning receive)
-  // needs: the payRequest at the standard mint@ address, the invoice
-  // callback, an immediately-settled verify endpoint revealing the
-  // preimage, and the note info + rotate the claim then performs.
+  // needs: the mint-address discovery endpoint carrying the mint metadata,
+  // the payRequest at the standard mint@ address, the invoice callback, an
+  // immediately-settled verify endpoint revealing the preimage, and the
+  // note info + rotate the claim then performs.
   async mockTargetMint(options: MockTargetMintOptions, origin = MINT2_ORIGIN): Promise<void> {
-    await this.mockNoMintAddress(origin);
+    await this.mockMintAddress(options, origin);
     await this.mockNoteInfo(
       { amountMsat: options.noteAmountMsat, mintPubkey: options.mintPubkey },
       origin,
@@ -129,7 +145,6 @@ export class MintMocker {
           minSendable: 1000,
           maxSendable: 100_000_000_000,
           withdrawLink: `${origin}${NOTE_PATH}`,
-          mintPubkey: options.mintPubkey,
           metadata: options.mintFeeMetadata ?? '[]',
         });
       },
