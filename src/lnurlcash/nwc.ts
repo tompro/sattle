@@ -37,17 +37,18 @@
 //                        per-connection request queues
 // Budget/connection persistence lives in storage/nwcConnections.ts.
 
-export type {
-  NwcBudget,
-  NwcBudgetSpend,
-  NwcConnectionRecord
-} from './storage/nwcConnections'
+export type {NwcBudget, NwcBudgetSpend, NwcConnectionRecord} from './storage/nwcConnections'
 export {
+  clearNwcStorageForOwner,
+  clearUnownedNwcStorage,
+  migrateLegacyNwcStorage,
   persistNwcConnection,
   readNwcConnections,
   removeNwcConnection,
-  writeNwcConnections
+  writeNwcConnections,
 } from './storage/nwcConnections'
+export {readNwcEnabled, writeNwcEnabled} from './storage/nwcEnabled'
+export type {NwcLegacyMigrationResult} from './storage/nwcConnections'
 
 export {
   buildConnectionString,
@@ -55,13 +56,13 @@ export {
   createConnection,
   deriveNwcWalletKey,
   nwcWalletPubkey,
-  parseConnectionString
+  parseConnectionString,
 } from './nwc/connection'
 export type {
   CreateConnectionOptions,
   CreatedConnection,
   NwcConnectionInfo,
-  ParsedConnectionString
+  ParsedConnectionString,
 } from './nwc/connection'
 
 export {
@@ -73,7 +74,7 @@ export {
   buildResponseEvent,
   decryptRequest,
   errResult,
-  okResult
+  okResult,
 } from './nwc/protocol'
 export type {
   DecryptedNwcRequest,
@@ -82,7 +83,7 @@ export type {
   NwcErrorCode,
   NwcMethod,
   NwcRequest,
-  NwcResponse
+  NwcResponse,
 } from './nwc/protocol'
 
 export {defaultNwcTransport} from './nwc/transport'
