@@ -43,7 +43,7 @@ export const BACKUP_PARTS: readonly BackupPart[] = ['notes', 'mints', 'settings'
 export const BACKUP_D_TAGS: Record<BackupPart, string> = {
   notes: 'notes',
   mints: 'mints',
-  settings: 'settings'
+  settings: 'settings',
 }
 
 // the decrypted payload of each part, without its envelope
@@ -62,8 +62,7 @@ export const deriveBackupKey = (linkingPrivKey: Uint8Array): Uint8Array =>
   sha256(new Uint8Array([...linkingPrivKey, ...utf8ToBytes(BACKUP_KEY_CONTEXT)]))
 
 // the x-only nostr pubkey identifying this wallet's backup events
-export const backupPubkey = (secretKey: Uint8Array): string =>
-  getPublicKey(secretKey)
+export const backupPubkey = (secretKey: Uint8Array): string => getPublicKey(secretKey)
 
 // NIP-44 "self-DM": the conversation key between the backup key and its own
 // pubkey - decryptable by the seed holder and nobody else
@@ -76,13 +75,9 @@ const selfConversationKey = (secretKey: Uint8Array): Uint8Array =>
 // per-record bounds still apply on top after decrypt)
 const MAX_BACKUP_CONTENT_CHARS = 16 * 1024 * 1024
 
-export const dTagOf = (event: NostrEvent): string =>
-  event.tags.find(t => t[0] === 'd')?.[1] ?? ''
+export const dTagOf = (event: NostrEvent): string => event.tags.find((t) => t[0] === 'd')?.[1] ?? ''
 
-const envelopeFor = (
-  part: BackupPart,
-  payload: BackupPartPayload[BackupPart]
-): string => {
+const envelopeFor = (part: BackupPart, payload: BackupPartPayload[BackupPart]): string => {
   switch (part) {
     case 'notes':
       return JSON.stringify({version: 1, bearers: payload})
@@ -98,26 +93,23 @@ export const buildBackupEvent = <P extends BackupPart>(
   secretKey: Uint8Array,
   part: P,
   payload: BackupPartPayload[P],
-  createdAt: number = Math.floor(Date.now() / 1000)
+  createdAt: number = Math.floor(Date.now() / 1000),
 ): NostrEvent =>
   finalizeEvent(
     {
       kind: BACKUP_EVENT_KIND,
       created_at: createdAt,
       tags: [['d', BACKUP_D_TAGS[part]]],
-      content: nip44v2.encrypt(
-        envelopeFor(part, payload),
-        selfConversationKey(secretKey)
-      )
+      content: nip44v2.encrypt(envelopeFor(part, payload), selfConversationKey(secretKey)),
     },
-    secretKey
+    secretKey,
   )
 
 // one event per part present in `parts`, all sharing one timestamp
 export const buildBackupEvents = (
   secretKey: Uint8Array,
   parts: Partial<BackupPartPayload>,
-  createdAt?: number
+  createdAt?: number,
 ): NostrEvent[] => {
   const at = createdAt ?? Math.floor(Date.now() / 1000)
   const events: NostrEvent[] = []
@@ -138,10 +130,7 @@ export type ParsedBackupEvent =
 // (record counts, field lengths, pubkey patterns) are enforced by
 // applyBackup / mergeTrustedMints on the restore path, same as file
 // backups.
-const parsePayload = (
-  dTag: BackupPart,
-  data: unknown
-): ParsedBackupEvent | null => {
+const parsePayload = (dTag: BackupPart, data: unknown): ParsedBackupEvent | null => {
   if (typeof data !== 'object' || data === null) return null
   const envelope = data as Record<string, unknown>
   if (envelope.version !== 1) return null
@@ -151,10 +140,10 @@ const parsePayload = (
       const bearers = envelope.bearers as unknown[]
       if (
         !bearers.every(
-          r =>
+          (r) =>
             typeof (r as EncryptedBearerRecord)?.id === 'string' &&
             typeof (r as EncryptedBearerRecord)?.iv === 'string' &&
-            typeof (r as EncryptedBearerRecord)?.ciphertext === 'string'
+            typeof (r as EncryptedBearerRecord)?.ciphertext === 'string',
         )
       ) {
         return null
@@ -166,9 +155,9 @@ const parsePayload = (
       const mints = envelope.trustedMints as unknown[]
       if (
         !mints.every(
-          m =>
+          (m) =>
             typeof (m as TrustedMint)?.server === 'string' &&
-            typeof (m as TrustedMint)?.mintPubkey === 'string'
+            typeof (m as TrustedMint)?.mintPubkey === 'string',
         )
       ) {
         return null
@@ -180,10 +169,7 @@ const parsePayload = (
         return null
       }
       const settings = envelope.settings as Record<string, unknown>
-      if (
-        settings.defaultMint !== undefined &&
-        typeof settings.defaultMint !== 'string'
-      ) {
+      if (settings.defaultMint !== undefined && typeof settings.defaultMint !== 'string') {
         return null
       }
       return {part: 'settings', settings: settings as WalletSettings}
@@ -197,7 +183,7 @@ const parsePayload = (
 // skip nulls - one junk event must never sink a restore.
 export const parseBackupEvent = (
   secretKey: Uint8Array,
-  event: NostrEvent
+  event: NostrEvent,
 ): ParsedBackupEvent | null => {
   if (event.kind !== BACKUP_EVENT_KIND) return null
   if (event.pubkey !== getPublicKey(secretKey)) return null
