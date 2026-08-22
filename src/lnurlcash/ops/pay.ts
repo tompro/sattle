@@ -16,14 +16,15 @@ import {
   resolveLnurlInput,
   rotateNote,
   sameInvoice,
-  withNewK1
+  withNewK1,
 } from 'lnurlcash-kit'
 import type {LnurlcashOptions, MeltResult} from 'lnurlcash-kit'
 import type {Bearer, NewBearer} from '../types'
 import type {CarveResult} from './carve'
 import {ensureExactAmount} from './carve'
 import type {PollOptions} from './shared'
-import {pollVerifyUntilSettled} from './shared'
+import type {FundOperationOptions} from './shared'
+import {assertFundOwner, pollVerifyUntilSettled} from './shared'
 
 export type PayOutcome =
   | 'settled'
@@ -54,6 +55,7 @@ export type PayOptions = {
   poll?: PollOptions
   // kit transport overrides (fetch injection, timeouts)
   kit?: LnurlcashOptions
+  assertOwner?: () => void
 }
 
 // A melt's resolved promise only means the payment is in flight; the
@@ -69,9 +71,9 @@ export type PayOptions = {
 export const payWithBearers = async (
   bearers: Bearer[],
   input: string,
-  {amountMsat, poll = {}, kit = {}}: PayOptions = {}
+  {amountMsat, poll = {}, kit = {}, assertOwner}: PayOptions = {},
 ): Promise<PayResult> => {
-  const options = kit
+  const options: FundOperationOptions = assertOwner ? {...kit, assertOwner} : kit
   let invoice: string
   let amount: number
   const trimmed = input.trim()
@@ -79,7 +81,7 @@ export const payWithBearers = async (
     const decoded = decodeBolt11AmountMsat(trimmed)
     if (decoded === null || decoded <= 0) {
       throw new Error(
-        'Could not read this invoice\'s amount - amount-less invoices are not supported.'
+        "Could not read this invoice's amount - amount-less invoices are not supported.",
       )
     }
     invoice = trimmed
@@ -97,7 +99,7 @@ export const payWithBearers = async (
     }
     const info = await fetchPayRequest(url, options)
     if (amountMsat < info.minSendable || amountMsat > info.maxSendable) {
-      throw new Error('Amount is outside the payee\'s sendable range.')
+      throw new Error("Amount is outside the payee's sendable range.")
     }
     const result = await requestInvoice(info.callback, amountMsat, options)
     invoice = result.pr
@@ -106,6 +108,7 @@ export const payWithBearers = async (
 
   const carve = await ensureExactAmount(bearers, amount, options)
   const k1 = requireNoteK1(carve.note.url)
+  if (carve.consumed.length === 0) assertFundOwner(options)
   let melt: MeltResult
   try {
     melt = await meltNote(carve.note.callback, k1, invoice, options)
@@ -136,11 +139,7 @@ export const payWithBearers = async (
     // either way (a service regenerating synthetic prs in proofs) and is
     // tolerated.
     const proofAmount = decodeBolt11AmountMsat(proof.pr)
-    if (
-      !sameInvoice(proof.pr, invoice) &&
-      proofAmount !== null &&
-      proofAmount !== amount
-    ) {
+    if (!sameInvoice(proof.pr, invoice) && proofAmount !== null && proofAmount !== amount) {
       return {outcome: 'unknown-still-pending', carve, invoice, amountMsat: amount, verifyUrl}
     }
     return {outcome: 'settled', carve, invoice, amountMsat: amount, verifyUrl}
@@ -158,12 +157,12 @@ export const payWithBearers = async (
           ...carve,
           note: {
             ...carve.note,
-            url: withNewK1(carve.note.url, rotated.k1, amount, rotated.signature)
-          }
+            url: withNewK1(carve.note.url, rotated.k1, amount, rotated.signature),
+          },
         },
         invoice,
         amountMsat: amount,
-        verifyUrl
+        verifyUrl,
       }
     } catch (err) {
       if (err instanceof PendingNoteError) {
@@ -183,7 +182,7 @@ export const payWithBearers = async (
           url: withNewK1(carve.note.url, err.newSecrets[0], amount),
           callback: carve.note.callback,
           amount,
-          verified: false
+          verified: false,
         }
         if (carve.note.mintPubkey) rescuedNote.mintPubkey = carve.note.mintPubkey
         return {
@@ -192,7 +191,7 @@ export const payWithBearers = async (
           invoice,
           amountMsat: amount,
           verifyUrl,
-          rescuedNote
+          rescuedNote,
         }
       }
       return {outcome: 'unknown-still-pending', carve, invoice, amountMsat: amount, verifyUrl}
