@@ -202,19 +202,8 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue';
-import { Notify } from 'quasar';
-
 import QrCode from '../QrCode.vue';
-import { writeClipboard } from '@/capabilities/clipboard';
-import { prepareMint, claimMintedNote } from '@/lnurlcash/ops';
-import type { ClaimedNote, PreparedMint } from '@/lnurlcash/ops';
-import type { NewBearer } from '@/lnurlcash/types';
-import { msatToSats, satsToMsat, floorMsatToSat, MSAT_PER_SAT } from '@/lnurlcash/units';
-import { mintAddressCacheInfo } from '@/lnurlcash/trustedMints';
-import { useWalletStore } from '@/stores/wallet';
-import { useMintsStore } from '@/stores/mints';
-import { useActivityStore } from '@/stores/activity';
+import { useReceiveLightningDialog } from '@/composables/useReceiveLightningDialog';
 
 const props = defineProps<{ modelValue: boolean }>();
 const emit = defineEmits<{
@@ -222,232 +211,36 @@ const emit = defineEmits<{
   received: [];
 }>();
 
-const wallet = useWalletStore();
-const mints = useMintsStore();
-const activity = useActivityStore();
-
-const CUSTOM_MINT = '__custom__';
-
-// whole-sat display for received amounts (msat remainder rounded down, per
-// units.ts's floorMsatToSat)
-const displaySats = (msat: number): number => floorMsatToSat(msat) / MSAT_PER_SAT;
-
-const errorMessage = (err: unknown): string =>
-  err instanceof Error ? err.message : 'Something went wrong.';
-
-type Step = 'form' | 'invoice' | 'success';
-const step = ref<Step>('form');
-
-// ---- form ----
-const amountSats = ref<number | null>(null);
-const mintChoice = ref('');
-const customMint = ref('');
-const preparing = ref(false);
-const formError = ref('');
-
-type MintOption = { label: string; value: string };
-
-const mintOptions = computed<MintOption[]>(() => {
-  const options: MintOption[] = [];
-  const seen = new Set<string>();
-  for (const mint of mints.mints) {
-    const address = mint.username ? `${mint.username}@${mint.server}` : `@${mint.server}`;
-    if (seen.has(address)) continue;
-    seen.add(address);
-    const label = mint.nodeAlias ? `${address} (${mint.nodeAlias})` : address;
-    options.push({ label, value: address });
-  }
-  for (const publicMint of mints.PUBLIC_MINTS) {
-    if (seen.has(publicMint)) continue;
-    seen.add(publicMint);
-    options.push({ label: publicMint, value: publicMint });
-  }
-  options.push({ label: 'Another mint…', value: CUSTOM_MINT });
-  return options;
-});
-
-const defaultChoice = (): string => {
-  const options = mintOptions.value;
-  if (mints.defaultMint) {
-    const match = options.find((o) => o.value.endsWith(`@${mints.defaultMint}`));
-    if (match) return match.value;
-  }
-  const first = options[0];
-  return first && first.value !== CUSTOM_MINT ? first.value : CUSTOM_MINT;
-};
-
-const formValid = computed(() => {
-  if (!Number.isInteger(amountSats.value) || (amountSats.value ?? 0) < 1) return false;
-  return mintChoice.value === CUSTOM_MINT
-    ? customMint.value.trim() !== ''
-    : mintChoice.value !== '';
-});
-
-const createInvoice = async () => {
-  const sats = amountSats.value;
-  if (!sats || preparing.value) return;
-  preparing.value = true;
-  formError.value = '';
-  try {
-    const mintInput = mintChoice.value === CUSTOM_MINT ? customMint.value.trim() : mintChoice.value;
-    const preparedMint = await prepareMint(mintInput, satsToMsat(sats));
-    if (!preparedMint.verifyUrl) {
-      // without a verify URL the payment can never be auto-claimed - showing
-      // a payable invoice here would strand the sats at the mint
-      formError.value =
-        'This mint does not support automatic claiming, so sattle cannot receive from it. Choose a different mint.';
-      return;
-    }
-    prepared.value = preparedMint;
-    claimRun = null;
-    claimError.value = '';
-    step.value = 'invoice';
-    beginClaim();
-  } catch (err) {
-    formError.value = errorMessage(err);
-    Notify.create({ type: 'negative', message: formError.value });
-  } finally {
-    preparing.value = false;
-  }
-};
-
-// ---- invoice ----
-const prepared = ref<PreparedMint | null>(null);
-const waiting = ref(false);
-const claimError = ref('');
-// single in-flight claim; "stop waiting" only detaches the UI from it - the
-// claim itself always runs to completion so a settled payment is never
-// abandoned unclaimed
-let claimRun: Promise<void> | null = null;
-
-const grossSats = computed(() => (prepared.value ? msatToSats(prepared.value.grossMsat) : 0));
-const netSats = computed(() =>
-  prepared.value ? msatToSats(prepared.value.expectedNoteValueMsat) : 0,
-);
-const feeSats = computed(() => grossSats.value - netSats.value);
-
-const copyInvoice = async () => {
-  if (!prepared.value) return;
-  try {
-    await writeClipboard(prepared.value.invoice);
-    Notify.create({ type: 'positive', message: 'Invoice copied.' });
-  } catch (err) {
-    Notify.create({ type: 'negative', message: errorMessage(err) });
-  }
-};
-
-const beginClaim = () => {
-  if (!prepared.value || claimRun) return;
-  waiting.value = true;
-  claimError.value = '';
-  const current = prepared.value;
-  claimRun = (async () => {
-    try {
-      const claimed = await claimMintedNote(current);
-      await onClaimed(claimed, current);
-    } catch (err) {
-      claimError.value = `${errorMessage(err)} The invoice stays valid — you can try again.`;
-      Notify.create({ type: 'negative', message: errorMessage(err) });
-    } finally {
-      waiting.value = false;
-    }
-  })();
-};
-
-// after a failed claim the run is over - allow a fresh attempt
-const retryClaim = () => {
-  claimRun = null;
-  beginClaim();
-};
-
-const stopWaiting = () => {
-  waiting.value = false;
-};
-
-const resumeWaiting = () => {
-  if (claimRun) waiting.value = true;
-};
-
-// ---- success ----
-const receivedSats = ref(0);
-const receivedServer = ref('');
-const rotationWarning = ref('');
-
-const onClaimed = async (claimed: ClaimedNote, from: PreparedMint) => {
-  const server = from.server;
-  const wasTrusted = mints.isTrusted(server);
-  const notes: NewBearer[] = claimed.possibleCopy
-    ? [claimed.note, claimed.possibleCopy]
-    : [claimed.note];
-  await wallet.addBearers(notes);
-  receivedSats.value = displaySats(claimed.note.amount);
-  receivedServer.value = server;
-  rotationWarning.value = claimed.rotationError ?? '';
-  activity.log(
-    'mint',
-    `Received ${receivedSats.value.toLocaleString()} sats from ${server} over Lightning.`,
-  );
-  const nodeInfo = mintAddressCacheInfo(from.nodeInfo, from.username);
-  if (nodeInfo) mints.cacheNodeInfo(server, nodeInfo);
-  Notify.create({
-    type: 'positive',
-    message: `Received ${receivedSats.value.toLocaleString()} sats.`,
-  });
-  emit('received');
-  if (props.modelValue) step.value = 'success';
-  if (!wasTrusted && claimed.note.mintPubkey) {
-    trustServer.value = server;
-    trustPubkey.value = claimed.note.mintPubkey;
-    trustNodeAlias.value = from.nodeInfo?.nodeAlias ?? '';
-    showTrust.value = true;
-  }
-};
-
-// ---- trust prompt ----
-const showTrust = ref(false);
-const trustServer = ref('');
-const trustPubkey = ref('');
-const trustNodeAlias = ref('');
-
-const trustMint = () => {
-  try {
-    mints.trust(trustServer.value, trustPubkey.value, {
-      ...(trustNodeAlias.value ? { nodeAlias: trustNodeAlias.value } : {}),
-    });
-    Notify.create({ type: 'positive', message: 'Mint trusted.' });
-  } catch (err) {
-    Notify.create({ type: 'negative', message: errorMessage(err) });
-  } finally {
-    showTrust.value = false;
-  }
-};
-
-const skipTrust = () => {
-  showTrust.value = false;
-  Notify.create({
-    type: 'warning',
-    message:
-      'Note added, but this mint is not in your trusted list yet — you can review it in Settings.',
-  });
-};
-
-// fresh form every time the dialog opens; a claim already in flight keeps
-// running in the background regardless
-watch(
-  () => props.modelValue,
-  (open) => {
-    if (!open) return;
-    step.value = 'form';
-    amountSats.value = null;
-    customMint.value = '';
-    mintChoice.value = defaultChoice();
-    preparing.value = false;
-    formError.value = '';
-    prepared.value = null;
-    waiting.value = false;
-    rotationWarning.value = '';
-  },
-);
+const {
+  CUSTOM_MINT,
+  amountSats,
+  claimError,
+  copyInvoice,
+  createInvoice,
+  customMint,
+  feeSats,
+  formError,
+  formValid,
+  grossSats,
+  mintChoice,
+  mintOptions,
+  netSats,
+  prepared,
+  preparing,
+  receivedSats,
+  receivedServer,
+  resumeWaiting,
+  retryClaim,
+  rotationWarning,
+  showTrust,
+  skipTrust,
+  step,
+  stopWaiting,
+  trustMint,
+  trustNodeAlias,
+  trustServer,
+  waiting,
+} = useReceiveLightningDialog(props, emit);
 </script>
 
 <style lang="scss" scoped>
