@@ -30,11 +30,13 @@ export type NwcServiceDeps = {
   // the mint make_invoice issues invoices against (the wallet's default
   // mint - NIP-47's make_invoice carries no mint choice)
   getDefaultMint: () => string | null
+  assertCurrentOwner: () => void
   applyChangeset: (
     changeset: NwcChangeset,
     connection: NwcConnectionInfo,
-    method: NwcMethod
-  ) => void
+    method: NwcMethod,
+    assertOwner: () => void,
+  ) => Promise<void>
   transport?: NwcTransport
   // kit transport overrides (fetch injection, timeouts)
   kit?: LnurlcashOptions
@@ -73,4 +75,13 @@ export type RequestContext = {
   updateRecord: (record: NwcConnectionRecord) => void
   invoices: Map<string, PendingInvoice>
   nowSeconds: () => number
+  assertOwner: () => void
+  // Starts service-owned work only while the service accepts new work.
+  // Accepted tasks become part of stop's drain before key cleanup.
+  startBackground: (work: () => Promise<void>) => boolean
+  // fires when the service stops: long OBSERVATION waits (the invoice
+  // claim poll) must interrupt themselves on it. Work that has already
+  // reached a fund-critical commit must NOT consult it - stop awaits
+  // those tasks through its drain
+  stopSignal: AbortSignal
 }

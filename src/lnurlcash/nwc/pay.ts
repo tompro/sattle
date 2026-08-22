@@ -9,7 +9,7 @@ import {
   decodeBolt11AmountMsat,
   fetchInvoiceVerification,
   isBolt11Invoice,
-  noteK1
+  noteK1,
 } from 'lnurlcash-kit'
 
 import type {Bearer, NewBearer} from '../types'
@@ -29,12 +29,9 @@ import {errResult, okResult} from './protocol'
 // rotate) is left for the next refresh to reconcile, exactly as the UI
 // leaves it - the money itself sits in the re-secured note, which IS
 // tracked.
-export const payChangeset = (
-  bearers: Bearer[],
-  result: PayResult
-): NwcChangeset => {
+export const payChangeset = (bearers: Bearer[], result: PayResult): NwcChangeset => {
   const add: NewBearer[] = []
-  const markSpent: string[] = result.carve.consumed.map(b => b.id)
+  const markSpent: string[] = result.carve.consumed.map((b) => b.id)
   if (result.carve.change) add.push(result.carve.change)
   if (result.outcome === 'failed-funds-returned') {
     add.push(result.carve.note)
@@ -44,9 +41,7 @@ export const payChangeset = (
     // carve), lock that bearer; a freshly carved note is never added -
     // it was born spent
     const carvedK1 = noteK1(result.carve.note.url)
-    const existing = carvedK1
-      ? bearers.find(b => noteK1(b.url) === carvedK1)
-      : undefined
+    const existing = carvedK1 ? bearers.find((b) => noteK1(b.url) === carvedK1) : undefined
     if (existing) markSpent.push(existing.id)
   }
   if (result.rescuedNote) add.push(result.rescuedNote)
@@ -55,10 +50,9 @@ export const payChangeset = (
 
 export const handlePayInvoice = async (
   ctx: RequestContext,
-  params: Record<string, unknown>
+  params: Record<string, unknown>,
 ): Promise<NwcResponse> => {
-  const invoice =
-    typeof params.invoice === 'string' ? params.invoice.trim() : ''
+  const invoice = typeof params.invoice === 'string' ? params.invoice.trim() : ''
   if (!isBolt11Invoice(invoice)) {
     return errResult('pay_invoice', 'OTHER', 'Missing or invalid bolt11 invoice.')
   }
@@ -69,23 +63,17 @@ export const handlePayInvoice = async (
     return errResult(
       'pay_invoice',
       'OTHER',
-      'Could not read this invoice\'s amount - amount-less invoices are not supported.'
+      "Could not read this invoice's amount - amount-less invoices are not supported.",
     )
   }
   if (params.amount !== undefined && params.amount !== amountMsat) {
-    return errResult(
-      'pay_invoice',
-      'OTHER',
-      'The request\'s amount does not match the invoice.'
-    )
+    return errResult('pay_invoice', 'OTHER', "The request's amount does not match the invoice.")
   }
-  if (
-    amountMsat > budgetRemainingMsat(ctx.connection().record, Date.now())
-  ) {
+  if (amountMsat > budgetRemainingMsat(ctx.connection().record, Date.now())) {
     return errResult(
       'pay_invoice',
       'QUOTA_EXCEEDED',
-      'This payment exceeds the connection\'s budget.'
+      "This payment exceeds the connection's budget.",
     )
   }
   const bearers = ctx.deps.getBearers()
@@ -93,77 +81,100 @@ export const handlePayInvoice = async (
   try {
     result = await payWithBearers(bearers, invoice, {
       poll: ctx.deps.poll ?? {},
-      kit: ctx.deps.kit ?? {}
+      kit: ctx.deps.kit ?? {},
+      assertOwner: ctx.assertOwner,
     })
   } catch (err) {
     if (err instanceof UncertainOutcomeError) {
       // the carve's answer was lost and the probe couldn't tell: the
       // possible outputs carry fresh secrets that may be the only money
       // left - tracked unverified, never dropped
-      ctx.deps.applyChangeset(
+      await ctx.deps.applyChangeset(
         {add: err.possibleOutputs, markSpent: []},
         ctx.connection(),
-        'pay_invoice'
+        'pay_invoice',
+        ctx.assertOwner,
       )
       return errResult(
         'pay_invoice',
         'INTERNAL',
-        'The payment preparation could not be confirmed; possible new notes were stored unverified.'
+        'The payment preparation could not be confirmed; possible new notes were stored unverified.',
       )
     }
     const message = err instanceof Error ? err.message : String(err)
     return errResult(
       'pay_invoice',
       /enough/i.test(message) ? 'INSUFFICIENT_BALANCE' : 'INTERNAL',
-      message
+      message,
     )
   }
   const spendRecorded = (): void => {
-    ctx.updateRecord(recordSpend(ctx.connection().record, amountMsat, Date.now()))
+    // This conservative budget debit is persisted separately from bearer
+    // storage. A later bearer commit failure does not roll it back.
+    const connection = ctx.connection().record
+    ctx.updateRecord(recordSpend(connection.ownerId, connection, amountMsat, Date.now()))
   }
   switch (result.outcome) {
     case 'settled': {
       spendRecorded()
-      ctx.deps.applyChangeset(payChangeset(bearers, result), ctx.connection(), 'pay_invoice')
+      await ctx.deps.applyChangeset(
+        payChangeset(bearers, result),
+        ctx.connection(),
+        'pay_invoice',
+        ctx.assertOwner,
+      )
       // the receipt NIP-47 clients expect: the melt's own payment
       // preimage, re-read from the settle proof. A mint that reveals
       // none yields an empty preimage rather than a fabricated one.
       let preimage = ''
       if (result.verifyUrl) {
         try {
-          const proof = await fetchInvoiceVerification(
-            result.verifyUrl,
-            ctx.deps.kit ?? {}
-          )
+          const proof = await fetchInvoiceVerification(result.verifyUrl, ctx.deps.kit ?? {})
           preimage = proof.preimage ?? ''
-        } catch {
+        } catch (error) {
           // the settle proof was already polled inside payWithBearers;
           // a failed re-read must not flip the outcome
+          if (!(error instanceof Error)) throw error
         }
       }
       return okResult('pay_invoice', {preimage})
     }
     case 'failed-funds-returned':
-      ctx.deps.applyChangeset(payChangeset(bearers, result), ctx.connection(), 'pay_invoice')
+      await ctx.deps.applyChangeset(
+        payChangeset(bearers, result),
+        ctx.connection(),
+        'pay_invoice',
+        ctx.assertOwner,
+      )
       return errResult(
         'pay_invoice',
         'PAYMENT_FAILED',
-        'The payment failed; the funds are back in the wallet.'
+        'The payment failed; the funds are back in the wallet.',
       )
     case 'note-already-spent':
-      ctx.deps.applyChangeset(payChangeset(bearers, result), ctx.connection(), 'pay_invoice')
+      await ctx.deps.applyChangeset(
+        payChangeset(bearers, result),
+        ctx.connection(),
+        'pay_invoice',
+        ctx.assertOwner,
+      )
       return errResult(
         'pay_invoice',
         'PAYMENT_FAILED',
-        'The note backing this payment was already spent; nothing was paid.'
+        'The note backing this payment was already spent; nothing was paid.',
       )
     case 'unknown-still-pending':
       spendRecorded()
-      ctx.deps.applyChangeset(payChangeset(bearers, result), ctx.connection(), 'pay_invoice')
+      await ctx.deps.applyChangeset(
+        payChangeset(bearers, result),
+        ctx.connection(),
+        'pay_invoice',
+        ctx.assertOwner,
+      )
       return errResult(
         'pay_invoice',
         'OTHER',
-        'The payment is still in flight; the note stays locked until it reconciles.'
+        'The payment is still in flight; the note stays locked until it reconciles.',
       )
   }
 }
