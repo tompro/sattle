@@ -22,7 +22,7 @@ import {
   grossUpForMintFee,
   mintAddressUrl,
   resolveMintInput,
-  serverOf
+  serverOf,
 } from 'lnurlcash-kit'
 import type {LnurlcashOptions, MintFee} from 'lnurlcash-kit'
 import {ceilMsatToSat, floorMsatToSat} from './units'
@@ -55,7 +55,7 @@ export const clearMintFeeQuoteCache = (): void => quoteCache.clear()
 // reached right now.
 export const quoteMintFee = async (
   mintInput: string,
-  options: LnurlcashOptions = {}
+  options: LnurlcashOptions = {},
 ): Promise<MintFee | null> => {
   const url = resolveMintInput(mintInput)
   if (!url) return null
@@ -69,8 +69,9 @@ export const quoteMintFee = async (
   if (addressUrl) {
     try {
       payUrl = (await fetchMintAddress(addressUrl, opts)).payLink
-    } catch {
+    } catch (error) {
       // no mint-address support - the plain payRequest guess still works
+      if (!(error instanceof Error)) throw error
     }
   }
   let fee: MintFee | null
