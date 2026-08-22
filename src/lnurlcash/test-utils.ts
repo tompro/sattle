@@ -2,6 +2,9 @@
 // a browser) plus the mock-mint helpers every suite uses.
 
 import {vi} from 'vitest'
+import {parseJsonArray, parseJsonObject, parseJsonObjectArray} from './jsonParsing'
+
+export {parseJsonArray, parseJsonObject, parseJsonObjectArray}
 
 export class LocalStorageStub {
   private map = new Map<string, string>()
@@ -25,4 +28,17 @@ export const stubLocalStorage = (): LocalStorageStub => {
   const stub = new LocalStorageStub()
   vi.stubGlobal('localStorage', stub)
   return stub
+}
+
+export const requiredValue = <T>(
+  value: T | null | undefined,
+  message = 'Expected test value to be present',
+): T => {
+  if (value === null || value === undefined) throw new TypeError(message)
+  return value
+}
+
+export const requiredString = (value: unknown, message = 'Expected a string value'): string => {
+  if (typeof value !== 'string') throw new TypeError(message)
+  return value
 }
