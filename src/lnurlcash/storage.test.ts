@@ -4,6 +4,7 @@
 import {beforeEach, describe, expect, it} from 'vitest'
 import {buildNoteUrl} from 'lnurlcash-kit'
 
+import './storage.changeset.cases'
 import type {Bearer} from './types'
 import {deriveBearerAesKey} from './keys'
 import {
@@ -18,10 +19,10 @@ import {
   persistActivityEvent,
   persistBearer,
   readEncryptedBearers,
-  MAX_ACTIVITY_ENTRIES
+  MAX_ACTIVITY_ENTRIES,
 } from './storage'
 import {saveLinkingKey} from './keys'
-import {stubLocalStorage} from './test-utils'
+import {requiredValue, stubLocalStorage} from './test-utils'
 
 const LINKING_KEY = new Uint8Array(32).fill(7)
 const OTHER_KEY = new Uint8Array(32).fill(9)
@@ -37,7 +38,7 @@ const bearerFixture = (overrides: Partial<Bearer> = {}): Bearer => ({
   verified: true,
   createdAt: 1000,
   updatedAt: 1000,
-  ...overrides
+  ...overrides,
 })
 
 beforeEach(() => {
@@ -51,7 +52,7 @@ describe('encrypted bearer records', () => {
     await persistBearer(key, bearer)
 
     // at rest, nothing plaintext leaks: no k1, no amounts
-    const raw = localStorage.getItem('sattle_bearers')!
+    const raw = requiredValue(localStorage.getItem('sattle_bearers'))
     expect(raw).not.toContain(K1_A)
     expect(raw).not.toContain('21000')
 
@@ -63,12 +64,19 @@ describe('encrypted bearer records', () => {
     const key = await deriveBearerAesKey(LINKING_KEY)
     const other = await deriveBearerAesKey(OTHER_KEY)
     await persistBearer(key, bearerFixture({id: 'mine'}))
-    await persistBearer(other, bearerFixture({id: 'foreign', url: buildNoteUrl('https://mint.example/w', K1_B, 5_000)}))
+    await persistBearer(
+      other,
+      bearerFixture({id: 'foreign', url: buildNoteUrl('https://mint.example/w', K1_B, 5_000)}),
+    )
 
     const loaded = await loadBearers(key)
-    expect(loaded.map(b => b.id)).toEqual(['mine'])
+    expect(loaded.map((b) => b.id)).toEqual(['mine'])
     // the foreign ciphertext is still there, untouched
-    expect(readEncryptedBearers().map(r => r.id).sort()).toEqual(['foreign', 'mine'])
+    expect(
+      readEncryptedBearers()
+        .map((r) => r.id)
+        .sort(),
+    ).toEqual(['foreign', 'mine'])
   })
 
   it('overwrites a record when the same id is persisted again', async () => {
@@ -79,7 +87,7 @@ describe('encrypted bearer records', () => {
 
     const loaded = await loadBearers(key)
     expect(loaded).toHaveLength(1)
-    expect(loaded[0]!.spent).toBe(true)
+    expect(requiredValue(loaded[0]).spent).toBe(true)
   })
 
   it('deletes a record by id and clears all', async () => {
@@ -90,7 +98,7 @@ describe('encrypted bearer records', () => {
     await persistBearer(key, b)
 
     await deleteBearerRecord('a')
-    expect((await loadBearers(key)).map(x => x.id)).toEqual(['b'])
+    expect((await loadBearers(key)).map((x) => x.id)).toEqual(['b'])
 
     clearAllBearers()
     expect(readEncryptedBearers()).toEqual([])
@@ -104,7 +112,7 @@ describe('activity log', () => {
     await persistActivityEvent(key, {id: '2', kind: 'melt', message: 'b', createdAt: 2000})
 
     const loaded = await loadActivity(key)
-    expect(loaded.map(e => e.id)).toEqual(['2', '1'])
+    expect(loaded.map((e) => e.id)).toEqual(['2', '1'])
   })
 
   it('caps the log, rolling the oldest entries off', async () => {
@@ -114,14 +122,14 @@ describe('activity log', () => {
         id: `ev-${i}`,
         kind: 'receive',
         message: `event ${i}`,
-        createdAt: i
+        createdAt: i,
       })
     }
     const loaded = await loadActivity(key)
     expect(loaded).toHaveLength(MAX_ACTIVITY_ENTRIES)
     // the five oldest rolled off; the newest is first
-    expect(loaded[0]!.id).toBe(`ev-${MAX_ACTIVITY_ENTRIES + 4}`)
-    expect(loaded.at(-1)!.id).toBe('ev-5')
+    expect(requiredValue(loaded[0]).id).toBe(`ev-${MAX_ACTIVITY_ENTRIES + 4}`)
+    expect(requiredValue(loaded.at(-1)).id).toBe('ev-5')
   }, 30_000)
 })
 
@@ -130,7 +138,7 @@ describe('mergeBearers (union by note id, spent-wins)', () => {
     const a = bearerFixture({id: 'a'})
     const b = bearerFixture({id: 'b', url: buildNoteUrl('https://mint.example/w', K1_B, 5_000)})
     const merged = mergeBearers([a], [b])
-    expect(merged.map(x => x.id).sort()).toEqual(['a', 'b'])
+    expect(merged.map((x) => x.id).sort()).toEqual(['a', 'b'])
   })
 
   it('lets the spent copy of a note win over a still-spendable one', () => {
@@ -141,8 +149,8 @@ describe('mergeBearers (union by note id, spent-wins)', () => {
     // would resurrect burned money
     const merged = mergeBearers([spendable], [spent])
     expect(merged).toHaveLength(1)
-    expect(merged[0]!.id).toBe('new-copy')
-    expect(merged[0]!.spent).toBe(true)
+    expect(requiredValue(merged[0]).id).toBe('new-copy')
+    expect(requiredValue(merged[0]).spent).toBe(true)
   })
 
   it('keeps the newer copy when both agree on spent state', () => {
@@ -150,14 +158,14 @@ describe('mergeBearers (union by note id, spent-wins)', () => {
     const fresh = bearerFixture({id: 'fresh', updatedAt: 2000, amount: 2})
     const merged = mergeBearers([stale], [fresh])
     expect(merged).toHaveLength(1)
-    expect(merged[0]!.id).toBe('fresh')
+    expect(requiredValue(merged[0]).id).toBe('fresh')
   })
 
   it('treats the same secret on different servers as different notes', () => {
     const here = bearerFixture({id: 'here'})
     const there = bearerFixture({
       id: 'there',
-      url: buildNoteUrl('https://other.example/w', K1_A, 21_000)
+      url: buildNoteUrl('https://other.example/w', K1_A, 21_000),
     })
     expect(mergeBearers([here], [there])).toHaveLength(2)
   })
@@ -191,16 +199,17 @@ describe('backup', () => {
       ...backup,
       bearers: [
         ...backup.bearers,
-        {id: 'from-backup', iv: '00'.repeat(12), ciphertext: 'ab'.repeat(40)}
-      ]
+        {id: 'from-backup', iv: '00'.repeat(12), ciphertext: 'ab'.repeat(40)},
+      ],
     }
-    const result = applyBackup(incoming)
+    const result = await applyBackup(incoming)
     expect(result.added).toBe(1)
     expect(result.skipped).toBe(1)
-    expect(readEncryptedBearers().map(r => r.id).sort()).toEqual([
-      'existing',
-      'from-backup'
-    ])
+    expect(
+      readEncryptedBearers()
+        .map((r) => r.id)
+        .sort(),
+    ).toEqual(['existing', 'from-backup'])
   })
 
   it('restores the linking key only onto a device that has none', async () => {
@@ -208,33 +217,35 @@ describe('backup', () => {
     const backup = buildBackup()
 
     // same device: a key already exists, so the backup's key is skipped
-    const here = applyBackup(backup)
+    const here = await applyBackup(backup)
     expect(here.linkingKeySkipped).toBe(true)
     expect(here.linkingKeyRestored).toBe(false)
 
     // fresh device: the key installs
     stubLocalStorage()
-    const fresh = applyBackup(backup)
+    const fresh = await applyBackup(backup)
     expect(fresh.linkingKeyRestored).toBe(true)
     expect(fresh.linkingKeySkipped).toBe(false)
   })
 
-  it('rejects a file that is not a sattle backup', () => {
-    expect(() => applyBackup({type: 'lnurlwallet-backup', version: 1, bearers: []})).toThrow()
-    expect(() => applyBackup(null)).toThrow()
-    expect(() => applyBackup({type: 'sattle-backup', version: 2, bearers: []})).toThrow()
+  it('rejects a file that is not a sattle backup', async () => {
+    await expect(
+      applyBackup({type: 'lnurlwallet-backup', version: 1, bearers: []}),
+    ).rejects.toThrow()
+    await expect(applyBackup(null)).rejects.toThrow()
+    await expect(applyBackup({type: 'sattle-backup', version: 2, bearers: []})).rejects.toThrow()
   })
 
-  it('skips malformed records instead of failing the whole restore', () => {
-    const result = applyBackup({
+  it('skips malformed records instead of failing the whole restore', async () => {
+    const result = await applyBackup({
       type: 'sattle-backup',
       version: 1,
       createdAt: 1,
       bearers: [
         {id: 'ok', iv: '00'.repeat(12), ciphertext: 'ab'.repeat(40)},
         {id: 42, iv: null, ciphertext: 'xx'},
-        'garbage'
-      ]
+        'garbage',
+      ],
     })
     expect(result.added).toBe(1)
     expect(result.skipped).toBe(2)
