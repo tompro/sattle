@@ -1,10 +1,11 @@
-import { MINT_KEY, OTHER_OWNER_ID, PASSWORD } from './wallet.lifecycle.testHarness';
+import { MINT_KEY, mocks, OTHER_OWNER_ID, PASSWORD } from './wallet.lifecycle.testHarness';
 import { describe, expect, it, vi } from 'vitest';
 
 import { savedKeyOwnerId } from '@/lnurlcash/keys';
 import { readNwcEnabled, writeNwcConnections, writeNwcEnabled } from '@/lnurlcash/nwc';
 import type { NwcConnectionRecord } from '@/lnurlcash/nwc';
 import { addTrustedMint, readTrustedMints } from '@/lnurlcash/trustedMints';
+import { useNwcStore } from './nwc';
 import { useWalletStore } from './wallet';
 
 describe('cross-tab owner invalidation', () => {
@@ -39,6 +40,36 @@ describe('cross-tab owner invalidation', () => {
     writeNwcEnabled(OTHER_OWNER_ID, false);
     expect(() => writeNwcEnabled(oldOwner, true)).toThrow(/owner/i);
     expect(readNwcEnabled(OTHER_OWNER_ID)).toBe(false);
+  });
+
+  it('surfaces a failed stale-tab drain without an unhandled rejection', async () => {
+    // Given an unlocked old-owner tab whose live NWC service rejects shutdown
+    const events = new EventTarget();
+    vi.stubGlobal('window', events);
+    const wallet = useWalletStore();
+    const nwc = useNwcStore();
+    await wallet.create(PASSWORD);
+    const serviceStop = vi.fn().mockRejectedValue(new Error('stale drain failed'));
+    mocks.startService.mockResolvedValue({ connections: [], stop: serviceStop });
+    await nwc.setEnabled(true);
+
+    // When another tab replaces the saved wallet owner
+    localStorage.setItem(
+      'sattle_linking_key',
+      JSON.stringify({ enc: false, value: '09'.repeat(32), ownerId: OTHER_OWNER_ID, version: 1 }),
+    );
+    events.dispatchEvent(
+      Object.defineProperties(new Event('storage'), {
+        key: { value: 'sattle_linking_key' },
+      }),
+    );
+    await vi.waitFor(() => expect(wallet.state).toBe('locked'));
+
+    // Then the stale runtime is cleared and the queue surfaces the drain failure
+    expect(wallet.lifecycleError).toMatch(/stale drain failed/i);
+    expect(() => wallet.requireLinkingKey()).toThrow('Wallet is locked.');
+    expect(nwc.running).toBe(false);
+    expect(serviceStop).toHaveBeenCalledTimes(1);
   });
 
   it('rejects old-owner trust and NWC writes during the markerless forget gap', async () => {

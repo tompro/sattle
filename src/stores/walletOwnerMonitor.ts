@@ -24,16 +24,18 @@ export const startWalletOwnerMonitor = (monitor: WalletOwnerMonitor): (() => voi
     ) {
       return;
     }
-    void monitor.runTransition(async () => {
-      const current = monitor.snapshot();
-      if (
-        current.token !== expected.token ||
-        current.state !== 'unlocked' ||
-        current.ownerId !== expected.ownerId ||
-        savedKeyOwnerId() === expected.ownerId
-      ) {
-        return;
-      }
-      await monitor.deactivate();
-    });
+    void monitor
+      .runTransition(async () => {
+        const current = monitor.snapshot();
+        if (
+          current.token !== expected.token ||
+          current.state !== 'unlocked' ||
+          current.ownerId !== expected.ownerId ||
+          savedKeyOwnerId() === expected.ownerId
+        ) {
+          return;
+        }
+        await monitor.deactivate();
+      })
+      .catch(() => undefined);
   });
