@@ -1,5 +1,58 @@
 # Changelog
 
+## [0.0.3](https://github.com/tompro/sattle/compare/sattle-v0.0.2...sattle-v0.0.3) (2026-08-24)
+
+
+### Features
+
+* activate only proven wallet owners ([c319e11](https://github.com/tompro/sattle/commit/c319e11d3eff2a4ae0bb42d23628750ed12de8fc))
+* add persisted owner guards and events ([69fbdb6](https://github.com/tompro/sattle/commit/69fbdb68ee3edccc7561fe4c201ef4497443d331))
+* apply owner-aware wallet backups ([7607e47](https://github.com/tompro/sattle/commit/7607e47358fe4d9736c04853b784e05b2bef20c1))
+* apply wallet fund changes atomically ([5b3a69e](https://github.com/tompro/sattle/commit/5b3a69e91055082e9c8cabb09d3c02302db05a37))
+* await owner-aware Nostr restores ([f55f208](https://github.com/tompro/sattle/commit/f55f20883671ccd0fd696f3696a76fa739738fa6))
+* await trusted mint management actions ([3c2a2cc](https://github.com/tompro/sattle/commit/3c2a2cc4a580126e8c199268aa543719ed771c2e))
+* bind saved keys to versioned wallet owners ([acfab83](https://github.com/tompro/sattle/commit/acfab8343897f69dd714474724f419eef569fe7a))
+* commit bearer changesets in one write ([586d12b](https://github.com/tompro/sattle/commit/586d12b666e13f040254ffbc1c618859cf7659b4))
+* converge trusted mints on storage events ([83c9e5b](https://github.com/tompro/sattle/commit/83c9e5b95ff6d7189534437180141bcfd86d282c))
+* create owner-bound NWC connections ([228a92b](https://github.com/tompro/sattle/commit/228a92b0f0f3238bee0cf0bcf7315f6b88dbae30))
+* drain tracked NWC handlers on stop ([3ed214c](https://github.com/tompro/sattle/commit/3ed214c157743dc6ba2c28be25022bf65765a904))
+* expose fund ownership assertions ([845ec41](https://github.com/tompro/sattle/commit/845ec410e506f1ba6a1c9c2666a9e6282d391755))
+* fence wallet mutations by lifecycle owner ([9fa4abd](https://github.com/tompro/sattle/commit/9fa4abdaf3f775512e6e9c1caed72bb0ade76544))
+* harden passkey ceremonies ([d9be457](https://github.com/tompro/sattle/commit/d9be457221a774d330c9d7c7cfa67487ece2a039))
+* invalidate stale wallet tabs ([2e0f003](https://github.com/tompro/sattle/commit/2e0f0038f756d935c3674fb85c0d042a946ff9d8))
+* preserve trusted mint rekey transitions ([d890a69](https://github.com/tompro/sattle/commit/d890a69c406b28a7f18bd6b356d9ad7eaab66341))
+* restore Nostr backups through wallet lifecycle ([3f6010b](https://github.com/tompro/sattle/commit/3f6010b31262f3ea7ee5ac65c1dd7bcf6fa15635))
+* scope NWC storage to wallet owners ([9f6bcad](https://github.com/tompro/sattle/commit/9f6bcad706760cd428e462ae28557f28362fddcf))
+* scope passkey slots to proven owners ([12e4ec9](https://github.com/tompro/sattle/commit/12e4ec9199bfd78b741ae38d0fd49135594d85eb))
+* scope trusted mint state in Pinia ([81c28ec](https://github.com/tompro/sattle/commit/81c28ec16dee42b7705ac97dc047a3486045c9ab))
+* serialize trusted mint transactions ([d735aca](https://github.com/tompro/sattle/commit/d735aca885a63ff2bf9d96dd6732f02e63c382d4))
+* serialize wallet lifecycle transitions ([62b93ba](https://github.com/tompro/sattle/commit/62b93baa05789961f2e8ed336c1d079e666f311e))
+* validate trusted mint registry envelopes ([82f008b](https://github.com/tompro/sattle/commit/82f008b33f0843b8c999d26f1f7d4dd62e6c45b2))
+
+
+### Bug Fixes
+
+* await NWC payment bearer commits ([09b7b63](https://github.com/tompro/sattle/commit/09b7b63c9ddf5f19bc14bd35f253387b7862cece))
+* await wallet commits in the NWC store ([99e6ae1](https://github.com/tompro/sattle/commit/99e6ae1b12de9f269c456ef015774cbe64c2b205))
+* clear runtime state after lifecycle failures ([3acc63e](https://github.com/tompro/sattle/commit/3acc63e96866bd8c7f690499322f6cc631c0e329))
+* commit carved wallet funds atomically ([c59521a](https://github.com/tompro/sattle/commit/c59521a421a3a8b40afd9d3e6088a2c36bc56354))
+* consume owner monitor transition failures ([e892a33](https://github.com/tompro/sattle/commit/e892a330fc386e68f5ff11237cd3fd54534d68c6))
+* drain accepted NWC work before wallet lock ([e983734](https://github.com/tompro/sattle/commit/e98373491fe7295cfc2a817d64ebdab0b1895a18))
+* fence carve operations before mutation ([6fa4283](https://github.com/tompro/sattle/commit/6fa4283ed65cd3943beb4486aee8e876732b73c5))
+* fence inter-mint transfer operations ([02f901c](https://github.com/tompro/sattle/commit/02f901c87c0f983b67ea50619e0f8a42585acf0a))
+* fence invoice payment operations ([c4c9d8a](https://github.com/tompro/sattle/commit/c4c9d8a94ae4856d8e81ca6faa6b1d0a4d871b60))
+* fence mint and receive operations ([7f69f78](https://github.com/tompro/sattle/commit/7f69f781f55239de5502d8c17954d582a0ee45e6))
+* fence send and pay flows ([401a26d](https://github.com/tompro/sattle/commit/401a26dc6b1221641bcdcbc1aa1e5464025ec41c))
+* hide invoice settlement until commit ([513c67f](https://github.com/tompro/sattle/commit/513c67fc143d27c1e57c3c2c6771a0f622152382))
+* mirror trusted mint commits across tabs ([e9bbb35](https://github.com/tompro/sattle/commit/e9bbb358aae79d3ce1fa6690749e9d63d3c748ff))
+* normalize storage lock failures ([1dbf578](https://github.com/tompro/sattle/commit/1dbf5788f9b82162122eea205ea3d6e9c5badf1a))
+* preserve conservative NWC budget debits ([fff24a7](https://github.com/tompro/sattle/commit/fff24a75b24f7a80e4f3f517525c7eb0c2d93155))
+* publish activity only after persistence ([54031dc](https://github.com/tompro/sattle/commit/54031dc8de03448aa3cee6c2a8a9d035d92c752c))
+* surface receive post-commit trust failures ([f087ebe](https://github.com/tompro/sattle/commit/f087ebe2f2e28bbd0e4c3cfe3407e77c0a78a7aa))
+* validate auxiliary wallet storage ([0862a10](https://github.com/tompro/sattle/commit/0862a10b01d33fd9c0f7f7a3f69a738e89af8c19))
+* validate NWC requests before dispatch ([b52172c](https://github.com/tompro/sattle/commit/b52172c0cb28884b0d00636f601cac0a52e6d504))
+* **wallet:** enforce owner-bound integrity and durable commits ([338b281](https://github.com/tompro/sattle/commit/338b2812e357f01027800985051e62dea6c207d8))
+
 ## [0.0.2](https://github.com/tompro/sattle/compare/sattle-v0.0.1...sattle-v0.0.2) (2026-08-20)
 
 
