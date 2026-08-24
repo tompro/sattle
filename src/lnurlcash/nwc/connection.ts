@@ -24,6 +24,7 @@ import {sha256} from '@noble/hashes/sha2.js'
 import {bytesToHex, hexToBytes, utf8ToBytes} from '@noble/hashes/utils.js'
 import {getPublicKey} from 'nostr-tools/pure'
 
+import {linkingPubKeyHex} from '../keys'
 import type {NwcBudget, NwcConnectionRecord} from '../storage/nwcConnections'
 import {persistNwcConnection} from '../storage/nwcConnections'
 
@@ -35,16 +36,13 @@ const HEX_64 = /^[0-9a-f]{64}$/i
 // result is a secp256k1 secret key used ONLY as this connection's
 // wallet-service identity - it signs and decrypts NIP-47 events for this
 // one client, nothing else.
-export const deriveNwcWalletKey = (
-  linkingPrivKey: Uint8Array,
-  clientPubkey: string
-): Uint8Array =>
+export const deriveNwcWalletKey = (linkingPrivKey: Uint8Array, clientPubkey: string): Uint8Array =>
   sha256(
     new Uint8Array([
       ...linkingPrivKey,
       ...utf8ToBytes(NWC_WALLET_KEY_CONTEXT),
-      ...hexToBytes(clientPubkey)
-    ])
+      ...hexToBytes(clientPubkey),
+    ]),
   )
 
 // the x-only nostr pubkey the client addresses its requests to
@@ -60,12 +58,10 @@ export type NwcConnectionInfo = {
 // wallet-service identity
 export const connectionInfoOf = (
   linkingPrivKey: Uint8Array,
-  record: NwcConnectionRecord
+  record: NwcConnectionRecord,
 ): NwcConnectionInfo => ({
   record,
-  walletServicePubkey: nwcWalletPubkey(
-    deriveNwcWalletKey(linkingPrivKey, record.clientPubkey)
-  )
+  walletServicePubkey: nwcWalletPubkey(deriveNwcWalletKey(linkingPrivKey, record.clientPubkey)),
 })
 
 export type CreatedConnection = NwcConnectionInfo & {
@@ -86,20 +82,22 @@ export type CreateConnectionOptions = {
 // default; the wallet-service key falls out of the derivation above.
 export const createConnection = (
   linkingPrivKey: Uint8Array,
-  options: CreateConnectionOptions
+  options: CreateConnectionOptions,
 ): CreatedConnection => {
   if (options.relays.length === 0) {
     throw new Error('A connection needs at least one relay.')
   }
-  const clientSecret =
-    options.clientSecret ?? crypto.getRandomValues(new Uint8Array(32))
+  const clientSecret = options.clientSecret ?? crypto.getRandomValues(new Uint8Array(32))
   const clientPubkey = getPublicKey(clientSecret)
-  const record = persistNwcConnection({
+  const ownerId = linkingPubKeyHex(linkingPrivKey)
+  const record = persistNwcConnection(ownerId, {
+    version: 1,
+    ownerId,
     clientPubkey,
     relays: options.relays,
     budget: options.budget,
     spent: {periodStart: options.now ?? Date.now(), msat: 0},
-    createdAt: options.now ?? Date.now()
+    createdAt: options.now ?? Date.now(),
   })
   const info = connectionInfoOf(linkingPrivKey, record)
   return {
@@ -107,19 +105,17 @@ export const createConnection = (
     connectionString: buildConnectionString(
       info.walletServicePubkey,
       bytesToHex(clientSecret),
-      record.relays
-    )
+      record.relays,
+    ),
   }
 }
 
 export const buildConnectionString = (
   walletServicePubkey: string,
   clientSecretHex: string,
-  relays: string[]
+  relays: string[],
 ): string => {
-  const query = relays
-    .map(relay => `relay=${encodeURIComponent(relay)}`)
-    .join('&')
+  const query = relays.map((relay) => `relay=${encodeURIComponent(relay)}`).join('&')
   return `nostr+walletconnect://${walletServicePubkey}?${query}&secret=${clientSecretHex}`
 }
 
@@ -132,9 +128,7 @@ export type ParsedConnectionString = {
 // parses a NIP-47 connection string; returns null for anything that isn't
 // exactly one (a client-side counterpart of buildConnectionString, here so
 // the format has a tested inverse)
-export const parseConnectionString = (
-  uri: string
-): ParsedConnectionString | null => {
+export const parseConnectionString = (uri: string): ParsedConnectionString | null => {
   let url: URL
   try {
     url = new URL(uri.trim())
@@ -149,9 +143,7 @@ export const parseConnectionString = (
   if (!HEX_64.test(walletServicePubkey)) return null
   const secret = url.searchParams.get('secret')
   if (!secret || !HEX_64.test(secret)) return null
-  const relays = url.searchParams
-    .getAll('relay')
-    .filter(relay => /^wss?:\/\//.test(relay))
+  const relays = url.searchParams.getAll('relay').filter((relay) => /^wss?:\/\//.test(relay))
   if (relays.length === 0) return null
   return {walletServicePubkey, clientSecret: secret.toLowerCase(), relays}
 }

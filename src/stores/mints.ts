@@ -1,11 +1,7 @@
-import {computed, ref} from 'vue'
-import {defineStore} from 'pinia'
+import { computed, onScopeDispose, ref, watch } from 'vue';
+import { defineStore } from 'pinia';
 
-import type {
-  TrustedMint,
-  TrustedMintNodeInfo,
-  TrustKeyResult
-} from '@/lnurlcash/trustedMints'
+import type { TrustedMint, TrustedMintNodeInfo, TrustKeyResult } from '@/lnurlcash/trustedMints';
 import {
   PUBLIC_MINTS,
   readTrustedMints,
@@ -17,9 +13,10 @@ import {
   removeTrustedMint,
   cacheTrustedMintNodeInfo,
   isMintTrusted,
-  getTrustedMintPubkey
-} from '@/lnurlcash/trustedMints'
-import {loadSettings, persistSettings} from '@/lnurlcash/storage'
+  getTrustedMintPubkey,
+} from '@/lnurlcash/trustedMints';
+import { loadSettings, persistSettings } from '@/lnurlcash/storage';
+import { useWalletStore } from './wallet';
 
 // The trusted-mint registry as reactive state. The domain logic (pinning,
 // rekey staging, backup merge rules) lives framework-free in
@@ -28,51 +25,90 @@ import {loadSettings, persistSettings} from '@/lnurlcash/storage'
 // staged for review (pendingRekeys), never auto-applied: a silently
 // rotated key would defeat the entire pinning model.
 export const useMintsStore = defineStore('mints', () => {
-  const mints = ref<TrustedMint[]>(readTrustedMints())
-  onTrustedMintsChange(updated => {
-    mints.value = updated
-  })
+  const wallet = useWalletStore();
+  const mints = ref<TrustedMint[]>([]);
+  const activeOwner = (): string | null => (wallet.state === 'unlocked' ? wallet.pubkey : null);
+  let stopTrustedMintsChanges: (() => void) | null = null;
+  watch(
+    () => [wallet.state, wallet.pubkey] as const,
+    () => {
+      stopTrustedMintsChanges?.();
+      stopTrustedMintsChanges = null;
+      const ownerId = activeOwner();
+      if (ownerId === null) {
+        mints.value = [];
+        return;
+      }
+      mints.value = readTrustedMints(ownerId);
+      stopTrustedMintsChanges = onTrustedMintsChange(() => {
+        if (activeOwner() !== ownerId) return;
+        mints.value = readTrustedMints(ownerId);
+      });
+    },
+    { immediate: true, flush: 'sync' },
+  );
+  onScopeDispose(() => stopTrustedMintsChanges?.());
+
+  const requireOwner = (): string => {
+    const ownerId = activeOwner();
+    if (ownerId === null) throw new Error('Wallet is locked.');
+    return ownerId;
+  };
+
+  const isTrusted = (server: string): boolean => {
+    const ownerId = activeOwner();
+    return ownerId === null ? false : isMintTrusted(server, ownerId);
+  };
+
+  const trustedPubkey = (server: string): string | null => {
+    const ownerId = activeOwner();
+    return ownerId === null ? null : getTrustedMintPubkey(server, ownerId);
+  };
 
   // mints with a staged rekey awaiting holder review - the UI should
   // surface these loudly
-  const pendingRekeys = computed(() =>
-    mints.value.filter(m => m.pendingMintPubkey)
-  )
+  const pendingRekeys = computed(() => mints.value.filter((m) => m.pendingMintPubkey));
 
   // ---- default-mint selection (onboarding quick start) ----
-  const defaultMint = ref<string | null>(loadSettings().defaultMint ?? null)
+  const defaultMint = ref<string | null>(loadSettings().defaultMint ?? null);
   const setDefaultMint = (server: string | null): void => {
-    defaultMint.value = server
-    const settings = loadSettings()
+    defaultMint.value = server;
+    const settings = loadSettings();
     if (server === null) {
-      persistSettings({...settings, defaultMint: undefined})
+      persistSettings({ ...settings, defaultMint: undefined });
     } else {
-      persistSettings({...settings, defaultMint: server})
+      persistSettings({ ...settings, defaultMint: server });
     }
-  }
+  };
 
   // manual add from the mints settings, or a user-confirmed first
   // encounter - validates and throws on junk input
   const trust = (
     server: string,
     mintPubkey: string,
-    nodeInfo?: TrustedMintNodeInfo
-  ): TrustKeyResult => addTrustedMint(server, mintPubkey, nodeInfo)
+    nodeInfo?: TrustedMintNodeInfo,
+  ): Promise<TrustKeyResult> =>
+    addTrustedMint(server, mintPubkey, {
+      ownerId: requireOwner(),
+      nodeInfo,
+    });
 
   // the silent path: this wallet holds (or just came to hold) a bearer from
   // this server - trust follows holding funds, never asks, and only ever
   // STAGES a differing advertised key
-  const lockFromBearer = (server: string, mintPubkey: string): TrustKeyResult =>
-    lockTrustedMint(server, mintPubkey)
+  const lockFromBearer = (server: string, mintPubkey: string): Promise<TrustKeyResult> =>
+    lockTrustedMint(server, mintPubkey, requireOwner());
 
-  const confirmRekey = (server: string): void => confirmTrustedMintRekey(server)
-  const dismissRekey = (server: string): void => dismissTrustedMintRekey(server)
+  const confirmRekey = (server: string): Promise<void> =>
+    confirmTrustedMintRekey(server, requireOwner());
+  const dismissRekey = (server: string): Promise<void> =>
+    dismissTrustedMintRekey(server, requireOwner());
 
   // throws for a mint locked by a held bearer
-  const remove = (server: string): void => removeTrustedMint(server)
+  const remove = (server: string): Promise<void> => removeTrustedMint(server, requireOwner());
 
-  const cacheNodeInfo = (server: string, nodeInfo: TrustedMintNodeInfo): void =>
-    cacheTrustedMintNodeInfo(server, nodeInfo)
+  const cacheNodeInfo = (server: string, nodeInfo: TrustedMintNodeInfo): Promise<void> =>
+    cacheTrustedMintNodeInfo(server, nodeInfo, requireOwner());
 
   return {
     mints,
@@ -86,7 +122,7 @@ export const useMintsStore = defineStore('mints', () => {
     dismissRekey,
     remove,
     cacheNodeInfo,
-    isTrusted: isMintTrusted,
-    trustedPubkey: getTrustedMintPubkey
-  }
-})
+    isTrusted,
+    trustedPubkey,
+  };
+});

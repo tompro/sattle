@@ -7,7 +7,6 @@ import {
   createBackupPublisher,
   deriveBackupKey,
   publishBackup,
-  restoreFromNostr,
 } from '@/lnurlcash/nostrBackup';
 import type { NostrRestoreResult } from '@/lnurlcash/nostrBackup';
 import { loadSettings, persistSettings, readEncryptedBearers } from '@/lnurlcash/storage';
@@ -65,7 +64,7 @@ export const useNostrBackupStore = defineStore('nostrBackup', () => {
 
   const currentPayload = (): BackupPartPayload => ({
     notes: readEncryptedBearers(),
-    mints: readTrustedMints(),
+    mints: readTrustedMints(wallet.pubkey ?? undefined),
     settings: loadSettings(),
   });
 
@@ -148,9 +147,7 @@ export const useNostrBackupStore = defineStore('nostrBackup', () => {
   // pulls the newest backup for THIS wallet's key and merges it through the
   // same applyBackup path as a file restore, then reloads the live list
   const restore = async (): Promise<NostrRestoreResult> => {
-    const result = await restoreFromNostr(wallet.requireLinkingKey(), relays.value);
-    await wallet.reloadBearers();
-    return result;
+    return wallet.restoreCurrentFromNostr(relays.value);
   };
 
   return {

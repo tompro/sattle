@@ -8,7 +8,7 @@ import {
   withNewK1,
   NoteSpentError,
   NoteUnknownError,
-  PendingNoteError
+  PendingNoteError,
 } from 'lnurlcash-kit'
 import type {Bearer, NewBearer} from './types'
 
@@ -17,20 +17,13 @@ import type {Bearer, NewBearer} from './types'
 // always puts k1 on the wire, so receive.ts's caller should rotate right
 // after, see secureReceivedNote). Returns the note even when the info fetch
 // fails - a bearer is better stored unverified than dropped.
-export const receiveNote = async (
-  input: string,
-  existing: Bearer[]
-): Promise<NewBearer> => {
+export const receiveNote = async (input: string, existing: Bearer[]): Promise<NewBearer> => {
   const url = resolveNoteInput(input)
   if (!url) {
     throw new Error('Not an LNURLcash bearer note (needs a k1).')
   }
   const k1 = noteK1(url)
-  if (
-    existing.some(
-      b => noteK1(b.url) === k1 && serverOf(b.url) === serverOf(url)
-    )
-  ) {
+  if (existing.some((b) => noteK1(b.url) === k1 && serverOf(b.url) === serverOf(url))) {
     throw new Error('This note is already in your wallet.')
   }
   try {
@@ -40,7 +33,7 @@ export const receiveNote = async (
       callback: info.callback,
       amount: info.maxWithdrawable,
       verified: true,
-      mintPubkey: info.mintPubkey
+      mintPubkey: info.mintPubkey,
     }
   } catch (err) {
     // the service positively told us this k1 is dead, unknown, or locked
@@ -62,7 +55,7 @@ export const receiveNote = async (
       url,
       callback: '',
       amount: noteDeclaredAmount(url) ?? 0,
-      verified: false
+      verified: false,
     }
   }
 }

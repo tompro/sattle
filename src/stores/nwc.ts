@@ -14,12 +14,15 @@ import type {
 import {
   createConnection,
   persistNwcConnection,
+  readNwcEnabled,
   readNwcConnections,
   removeNwcConnection,
   startService,
+  writeNwcEnabled,
 } from '@/lnurlcash/nwc';
+import { linkingPubKeyHex } from '@/lnurlcash/keys';
 import { msatToSats } from '@/lnurlcash/units';
-import { useWalletStore } from './wallet';
+import { TrustedMintPostCommitError, useWalletStore } from './wallet';
 import { useMintsStore } from './mints';
 import { useActivityStore } from './activity';
 
@@ -34,12 +37,6 @@ export const NWC_DEFAULT_BUDGET: NwcBudget = {
   periodMs: NWC_PERIOD_DAY_MS,
 };
 
-// the enabled flag lives outside wallet settings on purpose: settings are
-// part of the nostr-backup payload, and a restored device must not start
-// answering payment requests before its holder opted in there
-const NWC_ENABLED_KEY = 'sattle_nwc_enabled';
-const readNwcEnabled = (): boolean => localStorage.getItem(NWC_ENABLED_KEY) === 'true';
-
 // e2e test hook: a fake transport so the suite never touches a real relay.
 // Set before enabling; production never calls this (exposed on window only
 // in dev builds, at the bottom of this file).
@@ -47,6 +44,14 @@ let transportOverride: NwcTransport | null = null;
 export const setNwcTransportForTests = (transport: NwcTransport | null): void => {
   transportOverride = transport;
 };
+
+declare global {
+  interface Window {
+    __sattleNwcTest?: {
+      readonly setTransport: typeof setNwcTransportForTests;
+    };
+  }
+}
 
 const fingerprint = (pubkey: string): string =>
   pubkey.length > 18 ? `${pubkey.slice(0, 10)}…${pubkey.slice(-8)}` : pubkey;
@@ -64,48 +69,60 @@ export const useNwcStore = defineStore('nwc', () => {
   const mints = useMintsStore();
   const activity = useActivityStore();
 
-  const enabled = ref(readNwcEnabled());
-  const connections = ref<NwcConnectionRecord[]>(readNwcConnections());
+  const enabled = ref(false);
+  const connections = ref<NwcConnectionRecord[]>([]);
   const running = ref(false);
   // background failures (a rejected publish, a lost claim) have no caller
   // to throw to - the page surfaces them here
   const lastError = ref('');
 
-  const refresh = (): void => {
-    connections.value = readNwcConnections();
+  const ownerFromWallet = (): string => linkingPubKeyHex(wallet.requireLinkingKey());
+
+  const refresh = (ownerId: string = ownerFromWallet()): void => {
+    connections.value = readNwcConnections(ownerId);
   };
 
   // ---- changeset application ----
   // the engine hands money-moving deltas here after an op ran: new notes to
   // persist, bearer ids to lock spent. Both go through the wallet store's
-  // one entry points (persist-then-state); failures surface as lastError
-  // rather than vanishing, since the engine already committed its side.
-  const applyChangeset = (
+  // one entry points (persist-then-state) and are awaited: the engine holds
+  // its success answer until this resolves, so a failure rejects back into
+  // the engine's onError (surfaced as lastError) instead of a false success.
+  const applyChangeset = async (
     changeset: NwcChangeset,
     connection: NwcConnectionInfo,
     method: NwcMethod,
-  ): void => {
+    ownerFence: () => void,
+  ): Promise<void> => {
     const client = fingerprint(connection.record.clientPubkey);
+    try {
+      await wallet.applyChangeset(changeset, ownerFence);
+    } catch (error) {
+      if (!(error instanceof TrustedMintPostCommitError)) throw error;
+      lastError.value = error.message;
+    }
     if (method === 'pay_invoice') {
-      // the melt's amount, from the bearers about to be locked spent
       const spentMsat = changeset.markSpent.reduce(
         (sum, id) => sum + (wallet.bearers.find((b) => b.id === id)?.amount ?? 0),
         0,
       );
-      activity.log('nwc', `NWC client ${client} paid ${formatSats(spentMsat)} sats.`);
+      await activity.log(
+        'nwc',
+        `NWC client ${client} paid ${formatSats(spentMsat)} sats.`,
+        (error) => {
+          lastError.value = error.message;
+        },
+      );
     }
     if (method === 'make_invoice' && changeset.add.length > 0) {
       const mintedMsat = changeset.add.reduce((sum, note) => sum + note.amount, 0);
-      activity.log('nwc', `Received ${formatSats(mintedMsat)} sats via NWC client ${client}.`);
-    }
-    const onFailure = (error: unknown) => {
-      lastError.value = error instanceof Error ? error.message : 'Applying an NWC change failed.';
-    };
-    if (changeset.add.length > 0) {
-      void wallet.addBearers(changeset.add).catch(onFailure);
-    }
-    for (const id of changeset.markSpent) {
-      void wallet.markSpent(id).catch(onFailure);
+      await activity.log(
+        'nwc',
+        `Received ${formatSats(mintedMsat)} sats via NWC client ${client}.`,
+        (error) => {
+          lastError.value = error.message;
+        },
+      );
     }
   };
 
@@ -115,15 +132,21 @@ export const useNwcStore = defineStore('nwc', () => {
   // a start that is still in flight when stop (or a restart) lands.
   let service: NwcService | null = null;
   let startToken = 0;
+  const pendingStarts = new Set<Promise<void>>();
+  let stopping: Promise<void> = Promise.resolve();
+  let pendingStop: Promise<void> | null = null;
 
-  const start = async (): Promise<void> => {
-    const token = ++startToken;
+  const startNow = async (token: number): Promise<void> => {
+    await stopping;
+    if (token !== startToken || wallet.state !== 'unlocked' || !enabled.value) return;
     lastError.value = '';
     try {
+      const ownerFence = wallet.captureOwnerFence();
       const started = await startService(wallet.requireLinkingKey(), {
         // only spendable notes may back an NWC payment
         getBearers: () => wallet.unspentBearers,
         getDefaultMint: () => mints.defaultMint,
+        assertCurrentOwner: ownerFence,
         applyChangeset,
         transport: transportOverride ?? undefined,
         onError: (error) => {
@@ -133,7 +156,7 @@ export const useNwcStore = defineStore('nwc', () => {
       });
       if (token !== startToken) {
         // stopped (or restarted) while we were subscribing
-        started.stop();
+        await started.stop();
         return;
       }
       service = started;
@@ -146,34 +169,74 @@ export const useNwcStore = defineStore('nwc', () => {
     }
   };
 
-  const stop = (): void => {
-    startToken++;
-    service?.stop();
+  const start = (): Promise<void> => {
+    pendingStop = null;
+    const token = ++startToken;
+    const operation = startNow(token);
+    pendingStarts.add(operation);
+    void operation.then(
+      () => pendingStarts.delete(operation),
+      () => pendingStarts.delete(operation),
+    );
+    return operation;
+  };
+
+  const stop = (): Promise<void> => {
+    if (service === null && pendingStarts.size === 0 && pendingStop !== null) {
+      const result = pendingStop;
+      pendingStop = null;
+      return result;
+    }
+    startToken += 1;
+    const active = service;
     service = null;
     running.value = false;
+    const priorStop = stopping;
+    const activeStop = active?.stop() ?? Promise.resolve();
+    const completion = Promise.all([priorStop, activeStop, ...pendingStarts]).then(() => undefined);
+    pendingStop = completion;
+    stopping = completion.catch(() => undefined);
+    return completion;
   };
 
   watch(
-    () => [wallet.state, enabled.value] as const,
-    ([state, on]) => {
-      if (state === 'unlocked' && on) void start();
-      else stop();
+    () => wallet.state,
+    (state) => {
+      void stop()
+        .then(() => {
+          if (state !== 'unlocked') {
+            enabled.value = false;
+            connections.value = [];
+            return;
+          }
+          const ownerId = ownerFromWallet();
+          refresh(ownerId);
+          enabled.value = readNwcEnabled(ownerId);
+          if (enabled.value) return start();
+        })
+        .catch((error: unknown) => {
+          lastError.value =
+            error instanceof Error ? error.message : 'The NWC service failed to stop.';
+        });
     },
     { immediate: true },
   );
 
   // the served set is a startup snapshot, so any change to the connection
   // records (create / budget edit / revoke) restarts the service to match
-  const restartIfRunning = (): void => {
+  const restartIfRunning = async (): Promise<void> => {
     if (!running.value) return;
-    stop();
-    if (wallet.state === 'unlocked' && enabled.value) void start();
+    await stop();
+    if (wallet.state === 'unlocked' && enabled.value) await start();
   };
 
   // ---- settings ----
-  const setEnabled = (value: boolean): void => {
+  const setEnabled = async (value: boolean): Promise<void> => {
+    const ownerId = ownerFromWallet();
+    writeNwcEnabled(ownerId, value);
     enabled.value = value;
-    localStorage.setItem(NWC_ENABLED_KEY, String(value));
+    if (value) await start();
+    else await stop();
   };
 
   // ---- connection management ----
@@ -183,22 +246,24 @@ export const useNwcStore = defineStore('nwc', () => {
   const create = (relays: string[], budget: NwcBudget): CreatedConnection => {
     const created = createConnection(wallet.requireLinkingKey(), { relays, budget });
     refresh();
-    restartIfRunning();
+    void restartIfRunning();
     return created;
   };
 
   const updateBudget = (clientPubkey: string, budget: NwcBudget): void => {
-    const record = readNwcConnections().find((r) => r.clientPubkey === clientPubkey);
+    const ownerId = ownerFromWallet();
+    const record = readNwcConnections(ownerId).find((r) => r.clientPubkey === clientPubkey);
     if (!record) return;
-    persistNwcConnection({ ...record, budget });
-    refresh();
-    restartIfRunning();
+    persistNwcConnection(ownerId, { ...record, budget });
+    refresh(ownerId);
+    void restartIfRunning();
   };
 
   const revoke = (clientPubkey: string): void => {
-    removeNwcConnection(clientPubkey);
-    refresh();
-    restartIfRunning();
+    const ownerId = ownerFromWallet();
+    removeNwcConnection(ownerId, clientPubkey);
+    refresh(ownerId);
+    void restartIfRunning();
   };
 
   return {
@@ -206,6 +271,7 @@ export const useNwcStore = defineStore('nwc', () => {
     connections,
     running,
     lastError,
+    stop,
     setEnabled,
     create,
     updateBudget,
@@ -216,7 +282,7 @@ export const useNwcStore = defineStore('nwc', () => {
 // dev-only e2e hook: lets a spec inject a fake relay transport before
 // enabling the service, so the suite opens no real WebSocket
 if (import.meta.env.DEV && typeof window !== 'undefined') {
-  (window as unknown as Record<string, unknown>).__sattleNwcTest = {
+  window.__sattleNwcTest = {
     setTransport: setNwcTransportForTests,
   };
 }

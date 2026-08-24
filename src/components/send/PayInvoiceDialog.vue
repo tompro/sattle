@@ -7,18 +7,8 @@
 //
 // Fund-safety order when applying the carve: fresh notes are added to the
 // wallet BEFORE consumed inputs are marked spent.
-import { computed, ref, watch } from 'vue';
-import { useQuasar } from 'quasar';
-import { decodeBolt11AmountMsat, isBolt11Invoice, resolveLnurlInput } from 'lnurlcash-kit';
-
 import QrScanner from '@/components/QrScanner.vue';
-import { readClipboard } from '@/capabilities/clipboard';
-import { payWithBearers, UncertainOutcomeError } from '@/lnurlcash/ops';
-import type { CarveResult, PayOutcome } from '@/lnurlcash/ops';
-import type { NewBearer } from '@/lnurlcash/types';
-import { msatToSats, satsToMsat } from '@/lnurlcash/units';
-import { useWalletStore } from '@/stores/wallet';
-import { useActivityStore } from '@/stores/activity';
+import { usePayInvoiceDialog } from '@/composables/usePayInvoiceDialog';
 
 const props = defineProps<{ modelValue: boolean; initialInput?: string }>();
 const emit = defineEmits<{
@@ -26,231 +16,28 @@ const emit = defineEmits<{
   sent: [];
 }>();
 
-const $q = useQuasar();
-const wallet = useWalletStore();
-const activity = useActivityStore();
-
-const toast = (type: 'positive' | 'negative' | 'warning' | 'info', message: string): void => {
-  // guarded: the Notify plugin registration lives in quasar.config, outside
-  // this component's control - a missing registration must not break a flow
-  if (typeof $q.notify === 'function') {
-    $q.notify({ type, message, position: 'top', timeout: 3000 });
-  }
-};
-
-const show = computed({
-  get: () => props.modelValue,
-  set: (value: boolean) => emit('update:modelValue', value),
-});
-
-type Step = 'input' | 'confirm' | 'working' | 'result';
-type TargetKind = 'invoice' | 'address';
-
-type PendingPayment = {
-  kind: TargetKind;
-  input: string;
-  amountMsat: number;
-};
-
-type Result = {
-  outcome: PayOutcome;
-  amountMsat: number;
-};
-
-const step = ref<Step>('input');
-const input = ref('');
-const addressAmountSats = ref('');
-const showScanner = ref(false);
-const inlineError = ref<string | null>(null);
-const stage = ref('');
-const pendingPayment = ref<PendingPayment | null>(null);
-const result = ref<Result | null>(null);
-
-const formatSats = (sats: number): string =>
-  sats.toLocaleString(undefined, { maximumFractionDigits: 3 });
-
-const classify = (value: string): TargetKind | null => {
-  const trimmed = value.trim();
-  if (!trimmed) return null;
-  if (isBolt11Invoice(trimmed)) return 'invoice';
-  // resolveLnurlInput also accepts Lightning Addresses, bech32 LNURLs and
-  // lightning= deep links - anything it resolves can be paid
-  if (resolveLnurlInput(trimmed) !== null) return 'address';
-  return null;
-};
-
-const targetKind = computed<TargetKind | null>(() => classify(input.value));
-
-const truncatedInput = computed(() => {
-  const p = pendingPayment.value;
-  if (!p) return '';
-  if (p.kind === 'address') return p.input;
-  return p.input.length > 30 ? `${p.input.slice(0, 18)}…${p.input.slice(-8)}` : p.input;
-});
-
-const resultAmountSats = computed(() =>
-  result.value ? formatSats(msatToSats(result.value.amountMsat)) : '',
-);
-
-const reset = () => {
-  step.value = 'input';
-  input.value = props.initialInput ?? '';
-  addressAmountSats.value = '';
-  showScanner.value = false;
-  inlineError.value = null;
-  stage.value = '';
-  pendingPayment.value = null;
-  result.value = null;
-};
-
-watch(
-  () => props.modelValue,
-  (open) => {
-    if (open) reset();
-  },
-);
-
-const onScan = (text: string) => {
-  input.value = text.replace(/^lightning:/i, '').trim();
-  showScanner.value = false;
-};
-
-const onScanError = (message: string) => {
-  showScanner.value = false;
-  toast('negative', message);
-};
-
-const paste = async () => {
-  try {
-    const text = await readClipboard();
-    if (text) input.value = text.trim();
-  } catch {
-    toast('negative', "Couldn't read the clipboard - paste manually.");
-  }
-};
-
-// input -> confirm: classify and validate everything that can be checked
-// before any network call (amount present, within balance)
-const proceed = () => {
-  inlineError.value = null;
-  const value = input.value.trim();
-  if (!value) {
-    inlineError.value = 'Paste an invoice or a Lightning Address first.';
-    return;
-  }
-  const kind = classify(value);
-  if (kind === null) {
-    inlineError.value = "That doesn't look like a Lightning invoice or address.";
-    return;
-  }
-  let amountMsat: number;
-  if (kind === 'invoice') {
-    const decoded = decodeBolt11AmountMsat(value);
-    if (decoded === null || decoded <= 0) {
-      inlineError.value = "This invoice doesn't have an amount, which this wallet can't pay yet.";
-      return;
-    }
-    amountMsat = decoded;
-  } else {
-    const sats = Number(addressAmountSats.value);
-    if (!Number.isInteger(sats) || sats <= 0) {
-      inlineError.value = 'Enter how many sats to send to this address.';
-      return;
-    }
-    amountMsat = satsToMsat(sats);
-  }
-  if (amountMsat > wallet.balanceMsat) {
-    inlineError.value = `That's more than your spendable balance (${formatSats(wallet.balanceSats)} sats).`;
-    return;
-  }
-  pendingPayment.value = { kind, input: value, amountMsat };
-  step.value = 'confirm';
-};
-
-const friendlyError = (err: unknown): string => {
-  const message = err instanceof Error ? err.message : 'Something went wrong.';
-  if (message.startsWith('No mint holds enough')) {
-    return 'Not enough spendable balance to cover that payment.';
-  }
-  return message;
-};
-
-// Applies a carve to the wallet in the only safe order: add the fresh
-// note(s) first, mark the consumed inputs spent after. Returns the wallet
-// id of the carved note (for the exact-match path the note already exists
-// in the wallet, so it is found by url instead of re-added).
-const applyCarve = async (carve: CarveResult): Promise<string> => {
-  const existing = wallet.bearers.find((b) => b.url === carve.note.url);
-  const toAdd: NewBearer[] = [];
-  if (!existing) toAdd.push(carve.note);
-  if (carve.change) toAdd.push(carve.change);
-  const added = toAdd.length > 0 ? await wallet.addBearers(toAdd) : [];
-  for (const consumed of carve.consumed) {
-    await wallet.markSpent(consumed.id);
-  }
-  return existing ? existing.id : added[0].id;
-};
-
-const pay = async () => {
-  const p = pendingPayment.value;
-  if (!p) return;
-  step.value = 'working';
-  stage.value = 'Preparing the exact amount and sending the payment…';
-  try {
-    const payResult = await payWithBearers(
-      wallet.bearers,
-      p.input,
-      p.kind === 'address' ? { amountMsat: p.amountMsat } : {},
-    );
-    stage.value = 'Confirming the result…';
-    const noteId = await applyCarve(payResult.carve);
-    if (payResult.rescuedNote) {
-      await wallet.addBearers([payResult.rescuedNote]);
-    }
-    const sats = formatSats(msatToSats(payResult.amountMsat));
-    if (payResult.outcome === 'settled') {
-      await wallet.markSpent(noteId);
-      activity.log('melt', `Paid ${sats} sats over Lightning.`);
-      toast('positive', `Paid ${sats} sats.`);
-      emit('sent');
-    } else if (payResult.outcome === 'failed-funds-returned') {
-      // the payment never happened and the note is spendable again - it
-      // stays in the wallet, deliberately NOT marked spent
-      activity.log('transfer', `A ${sats} sat payment failed - funds are back in your wallet.`);
-      toast('warning', 'Payment failed - funds are back in your wallet.');
-    } else if (payResult.outcome === 'unknown-still-pending') {
-      await wallet.markSpent(noteId);
-      activity.log('melt', `Payment of ${sats} sats is still in flight - the note is locked.`);
-      emit('sent');
-    } else {
-      // note-already-spent: the mint says the note is gone; nothing was
-      // paid. Lock it locally so it can't be tried again.
-      await wallet.markSpent(noteId);
-      activity.log('spent', `A ${sats} sat note was already spent at the mint.`);
-    }
-    result.value = { outcome: payResult.outcome, amountMsat: payResult.amountMsat };
-    step.value = 'result';
-  } catch (err) {
-    if (err instanceof UncertainOutcomeError) {
-      await wallet.addBearers(err.possibleOutputs);
-      activity.log(
-        'transfer',
-        'A payment preparation could not be confirmed - possible notes stored unverified.',
-      );
-      inlineError.value =
-        "Couldn't confirm with the mint. Your original notes are untouched, and the possible new notes are stored unverified - refresh your wallet later to reconcile.";
-      toast('warning', 'Payment preparation uncertain - see the notice in the dialog.');
-    } else {
-      inlineError.value = friendlyError(err);
-      toast('negative', inlineError.value);
-    }
-    step.value = 'input';
-  }
-};
-
-const closeResult = () => {
-  show.value = false;
-};
+const {
+  addressAmountSats,
+  closeResult,
+  formatSats,
+  inlineError,
+  input,
+  msatToSats,
+  onScan,
+  onScanError,
+  paste,
+  pay,
+  pendingPayment,
+  proceed,
+  result,
+  resultAmountSats,
+  show,
+  showScanner,
+  stage,
+  step,
+  targetKind,
+  truncatedInput,
+} = usePayInvoiceDialog(props, emit);
 </script>
 
 <template>

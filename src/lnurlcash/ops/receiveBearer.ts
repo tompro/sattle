@@ -10,12 +10,13 @@ import {
   NoteUnknownError,
   PendingNoteError,
   probeBurnedNote,
-  withNewK1
+  withNewK1,
 } from 'lnurlcash-kit'
-import type {LnurlcashOptions} from 'lnurlcash-kit'
 import type {Bearer, NewBearer} from '../types'
 import {receiveNote, secureReceivedNote} from '../receive'
 import type {ClaimedNote} from './mint'
+import type {FundOperationOptions} from './shared'
+import {assertFundOwner} from './shared'
 
 // NoteSpentError / NoteUnknownError / PendingNoteError from the service are
 // definitive and propagate; an unreachable service still yields the note,
@@ -23,13 +24,14 @@ import type {ClaimedNote} from './mint'
 export const receiveBearer = async (
   input: string,
   existing: Bearer[],
-  options: LnurlcashOptions = {}
+  options: FundOperationOptions = {},
 ): Promise<ClaimedNote> => {
   const note = await receiveNote(input, existing)
   if (!note.verified || !note.callback) {
     return {note, rotated: false}
   }
   try {
+    assertFundOwner(options)
     const rotatedUrl = await secureReceivedNote(note)
     return {note: {...note, url: rotatedUrl}, rotated: true}
   } catch (err) {
@@ -49,9 +51,9 @@ export const receiveBearer = async (
         return {
           note: {
             ...note,
-            url: withNewK1(note.url, err.newSecrets[0], note.amount)
+            url: withNewK1(note.url, err.newSecrets[0], note.amount),
           },
-          rotated: true
+          rotated: true,
         }
       }
       if (outcome === 'unknown') {
@@ -59,14 +61,14 @@ export const receiveBearer = async (
           url: withNewK1(note.url, err.newSecrets[0], note.amount),
           callback: note.callback,
           amount: note.amount,
-          verified: false
+          verified: false,
         }
         if (note.mintPubkey) possibleCopy.mintPubkey = note.mintPubkey
         return {
           note,
           rotated: false,
           possibleCopy,
-          rotationError: `${err.message} The rotation may still have gone through - the possible rotated copy is tracked unverified alongside this one.`
+          rotationError: `${err.message} The rotation may still have gone through - the possible rotated copy is tracked unverified alongside this one.`,
         }
       }
     }
@@ -75,7 +77,7 @@ export const receiveBearer = async (
     return {
       note,
       rotated: false,
-      rotationError: err instanceof Error ? err.message : String(err)
+      rotationError: err instanceof Error ? err.message : String(err),
     }
   }
 }

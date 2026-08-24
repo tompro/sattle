@@ -36,15 +36,9 @@
             color="warning"
             text-color="dark"
             label="Confirm new key"
-            @click="mints.confirmRekey(mint.server)"
+            @click="confirmRekey(mint.server)"
           />
-          <q-btn
-            flat
-            dense
-            color="grey-5"
-            label="Dismiss"
-            @click="mints.dismissRekey(mint.server)"
-          />
+          <q-btn flat dense color="grey-5" label="Dismiss" @click="dismissRekey(mint.server)" />
         </div>
       </q-item>
     </q-list>
@@ -195,146 +189,27 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue';
-import { useRouter } from 'vue-router';
-import { useQuasar } from 'quasar';
-import {
-  fetchMintAddress,
-  fetchPayRequest,
-  lightningAddressUsername,
-  mintAddressUrl,
-  resolveMintInput,
-  serverOf,
-} from 'lnurlcash-kit';
+import { useManageMintsPage } from '@/composables/useManageMintsPage';
 
-import { mintAddressCacheInfo } from '@/lnurlcash/trustedMints';
-import { useMintsStore } from '@/stores/mints';
-import { useWalletStore } from '@/stores/wallet';
-
-const router = useRouter();
-const $q = useQuasar();
-const mints = useMintsStore();
-const wallet = useWalletStore();
-
-const toast = (type: 'positive' | 'negative' | 'warning' | 'info', message: string): void => {
-  // guarded: the Notify plugin registration lives in quasar.config, outside
-  // this component's control - a missing registration must not break a flow
-  if (typeof $q.notify === 'function') {
-    $q.notify({ type, message, position: 'top', timeout: 3000 });
-  }
-};
-
-const fingerprint = (pubkey: string): string =>
-  pubkey.length > 18 ? `${pubkey.slice(0, 10)}…${pubkey.slice(-8)}` : pubkey;
-
-const balanceAt = (server: string): string =>
-  (wallet.balanceByMintSats.get(server) ?? 0).toLocaleString(undefined, {
-    maximumFractionDigits: 3,
-  });
-
-// ---- suggestions (PUBLIC_MINTS not yet trusted) ----
-const suggestions = computed(() =>
-  mints.PUBLIC_MINTS.filter(
-    (address) => !mints.mints.some((m) => m.server === address.replace(/^@/, '')),
-  ),
-);
-
-const banner = ref('');
-
-// ---- manual add ----
-const addServer = ref('');
-const addPubkey = ref('');
-
-const trustResult = (result: string, server: string): void => {
-  if (result === 'rekey-pending') {
-    toast('warning', `${server} advertised a different signing key - review it above.`);
-  } else if (result === 'unchanged') {
-    toast('info', `${server} is already trusted.`);
-  } else {
-    toast('positive', `${server} is now trusted.`);
-  }
-};
-
-const trustManual = () => {
-  banner.value = '';
-  try {
-    const result = mints.trust(addServer.value, addPubkey.value);
-    trustResult(result, addServer.value.trim());
-    addServer.value = '';
-    addPubkey.value = '';
-  } catch (err) {
-    banner.value = err instanceof Error ? err.message : 'Could not trust that mint.';
-  }
-};
-
-// ---- one-tap suggestion: discover the mint's signing key live, then trust ----
-const discovering = ref('');
-
-const trustSuggestion = async (address: string) => {
-  if (discovering.value) return;
-  banner.value = '';
-  discovering.value = address;
-  try {
-    const url = resolveMintInput(address);
-    if (!url) throw new Error('That mint address cannot be resolved.');
-    // best-effort mint-address discovery, same shape-narrowing as the
-    // receive flow - its payLink is authoritative when present
-    let nodeInfo = null;
-    let payUrl = url;
-    const addressUrl = mintAddressUrl(url);
-    if (addressUrl) {
-      try {
-        nodeInfo = await fetchMintAddress(addressUrl);
-        payUrl = nodeInfo.payLink;
-      } catch {
-        // no mint-address support here - proceed with just the guess
-      }
-    }
-    const info = await fetchPayRequest(payUrl);
-    // the signing key is announced on the mint-address (lnurlw discovery)
-    // response, not the payRequest: per the reference mint (lnurl-mint) a
-    // wallet paying the mint invoice recovers the node id from the invoice
-    // itself, so LUD-25 advertises mintPubkey on the withdraw side only
-    const announcedKey = nodeInfo?.nodePubkey ?? info.mintPubkey;
-    if (!announcedKey) {
-      throw new Error("This mint didn't announce its signing key - add it manually instead.");
-    }
-    const server = serverOf(payUrl);
-    const result = mints.trust(
-      server,
-      announcedKey,
-      mintAddressCacheInfo(nodeInfo, lightningAddressUsername(payUrl)),
-    );
-    trustResult(result, server);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : 'Could not reach that mint.';
-    banner.value = `Could not add ${address}: ${message}`;
-  } finally {
-    discovering.value = '';
-  }
-};
-
-// ---- remove ----
-const confirmingRemove = ref(false);
-const removeTarget = ref('');
-
-const askRemove = (server: string) => {
-  banner.value = '';
-  removeTarget.value = server;
-  confirmingRemove.value = true;
-};
-
-const doRemove = () => {
-  confirmingRemove.value = false;
-  try {
-    mints.remove(removeTarget.value);
-    if (mints.defaultMint === removeTarget.value) mints.setDefaultMint(null);
-    toast('positive', `${removeTarget.value} removed.`);
-  } catch {
-    // a mint you hold notes from is locked against removal - say why
-    banner.value = `${removeTarget.value} can't be removed while you hold notes from it - move or spend them first.`;
-  }
-};
+const {
+  addPubkey,
+  addServer,
+  askRemove,
+  balanceAt,
+  banner,
+  confirmingRemove,
+  confirmRekey,
+  discovering,
+  dismissRekey,
+  doRemove,
+  fingerprint,
+  mints,
+  removeTarget,
+  router,
+  suggestions,
+  trustManual,
+  trustSuggestion,
+} = useManageMintsPage();
 </script>
 
 <style lang="scss" scoped>

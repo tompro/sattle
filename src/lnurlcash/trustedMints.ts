@@ -1,10 +1,24 @@
 import type {MintAddressInfo} from 'lnurlcash-kit'
-
-// allow: SIZE_OK — one indivisible registry: every operation below reads
-// and writes the same pinned-key cache through the same persist/notify
-// path, and the file is a deliberate verbatim-behavior port of
-// lnurl-wallet's trustedMints.ts so the two wallets' pinning semantics
-// stay auditable side by side.
+import {
+  adoptLegacyStoredTrustedMints,
+  mutateStoredTrustedMints,
+  onStoredTrustedMintsChange,
+  readOwnedTrustedMints,
+  removeStoredTrustedMintsForOwner,
+  resetStoredTrustedMints,
+} from './trustedMintsRepository'
+import {linkingPubKeyHex, savedKeyOwnerId} from './keys'
+import {
+  addMint,
+  cacheMintNodeInfo,
+  clearMints,
+  confirmMintRekey,
+  dismissMintRekey,
+  grandfatherMint,
+  lockMint,
+  removeMint,
+} from './trustedMintTransitions'
+import {mergeMints} from './trustedMintMerge'
 
 // A mint's signing key (LUD-25 Offline verification's `mintPubkey`) - not a
 // secret, just a public identity, so this is plain unencrypted localStorage,
@@ -74,7 +88,7 @@ export type TrustedMintNodeInfo = {
 // resolved, not from that endpoint's response.
 export const mintAddressCacheInfo = (
   info: MintAddressInfo | null,
-  username: string | null
+  username: string | null,
 ): TrustedMintNodeInfo | undefined => {
   if (!info && !username) return undefined
   return {
@@ -83,7 +97,7 @@ export const mintAddressCacheInfo = (
     nodeCapacityMsat: info?.nodeCapacityMsat,
     nodeNumChannels: info?.nodeNumChannels,
     nodeNumPeers: info?.nodeNumPeers,
-    username: username ?? undefined
+    username: username ?? undefined,
   }
 }
 
@@ -99,81 +113,36 @@ export const PUBLIC_MINTS = [
   '@lnurl.21mint.me',
   '@mint.forgesworn.dev',
   '@lnurl.21linz.at',
-  '@minty.exe.xyz'
+  '@minty.exe.xyz',
 ]
-
-const STORAGE_KEY = 'sattle_trusted_mints'
-
-// 33-byte compressed secp256k1 pubkey, hex
-const PUBKEY_PATTERN = /^[0-9a-f]{66}$/
-
-const readStored = (): TrustedMint[] => {
-  const raw = localStorage.getItem(STORAGE_KEY)
-  if (!raw) return []
-  try {
-    const parsed: unknown = JSON.parse(raw)
-    if (!Array.isArray(parsed)) return []
-    // shape-check every entry - this is the wallet's own persisted state
-    // (so locked/pendingMintPubkey/unconfirmed are all kept), but a
-    // tampered or corrupt record must not plant junk entries
-    return parsed.filter(
-      (m): m is TrustedMint =>
-        typeof m?.server === 'string' &&
-        typeof m?.mintPubkey === 'string' &&
-        PUBKEY_PATTERN.test(m.mintPubkey.toLowerCase()) &&
-        typeof m?.addedAt === 'number' &&
-        typeof m?.locked === 'boolean'
-    )
-  } catch {
-    return []
-  }
-}
-
-// lazily initialized on first access: importing this module must not touch
-// localStorage (plain-Node test environments have none until stubbed)
-let cache: TrustedMint[] | null = null
-const readCache = (): TrustedMint[] => {
-  cache ??= readStored()
-  return cache
-}
-const listeners = new Set<(mints: TrustedMint[]) => void>()
 
 // the Pinia mints store subscribes here to mirror the registry into
 // reactive state; returns the unsubscribe
-export const onTrustedMintsChange = (
-  listener: (mints: TrustedMint[]) => void
-): (() => void) => {
-  listeners.add(listener)
-  return () => listeners.delete(listener)
-}
+export const onTrustedMintsChange = (listener: () => void): (() => void) =>
+  onStoredTrustedMintsChange(listener)
 
-export const readTrustedMints = (): TrustedMint[] => readCache()
+export const readTrustedMints = (ownerId?: string): TrustedMint[] => readOwnedTrustedMints(ownerId)
 
-const persist = (mints: TrustedMint[]): void => {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(mints))
-  cache = mints
-  for (const listener of listeners) listener(mints)
-}
+export const isMintTrusted = (server: string, ownerId?: string): boolean =>
+  readTrustedMints(ownerId).some((mint) => mint.server === server)
 
-export const isMintTrusted = (server: string): boolean =>
-  readCache().some(m => m.server === server)
-
-export const getTrustedMintPubkey = (server: string): string | null =>
-  readCache().find(m => m.server === server && !m.unconfirmed)?.mintPubkey ?? null
+export const getTrustedMintPubkey = (server: string, ownerId?: string): string | null =>
+  readTrustedMints(ownerId).find((mint) => mint.server === server && !mint.unconfirmed)
+    ?.mintPubkey ?? null
 
 // true when a server has a pin that came from a file/storage rather than a
 // live response (see TrustedMint.unconfirmed) - callers should treat a
 // bearer's own cached mintPubkey for such a server as equally
 // uncorroborated
-export const isMintUnconfirmed = (server: string): boolean =>
-  readCache().some(m => m.server === server && m.unconfirmed)
+export const isMintUnconfirmed = (server: string, ownerId?: string): boolean =>
+  readTrustedMints(ownerId).some((mint) => mint.server === server && mint.unconfirmed)
 
 // this mint's self-reported node color, for tinting its notes' background -
 // purely cosmetic. Mint-supplied, so it's only ever handed out as a plain
 // hex color - anything else (a style sink can take far more than colors) is
 // treated as absent
-export const getTrustedMintNodeColor = (server: string): string | null => {
-  const color = readCache().find(m => m.server === server)?.nodeColor
+export const getTrustedMintNodeColor = (server: string, ownerId?: string): string | null => {
+  const color = readTrustedMints(ownerId).find((mint) => mint.server === server)?.nodeColor
   return color && /^#[0-9a-f]{3}([0-9a-f]{3})?$/i.test(color) ? color : null
 }
 
@@ -182,8 +151,8 @@ export const getTrustedMintNodeColor = (server: string): string | null => {
 // guessing "mint@<server>" - null for a mint with no cached username
 // (looked up as a bech32 LNURL, or trusted before this wallet learned to
 // remember one)
-export const getTrustedMintAddress = (server: string): string | null => {
-  const username = readCache().find(m => m.server === server)?.username
+export const getTrustedMintAddress = (server: string, ownerId?: string): string | null => {
+  const username = readTrustedMints(ownerId).find((mint) => mint.server === server)?.username
   return username ? `${username}@${server}` : null
 }
 
@@ -192,6 +161,14 @@ export const getTrustedMintAddress = (server: string): string | null => {
 // pinned one, which was staged for review (pendingMintPubkey) instead of
 // silently replacing it. Callers should surface that loudly.
 export type TrustKeyResult = 'added' | 'unchanged' | 'rekey-pending'
+
+export type TrustedMintMutationContext = {
+  readonly ownerId: string
+}
+
+export type AddTrustedMintContext = TrustedMintMutationContext & {
+  readonly nodeInfo?: TrustedMintNodeInfo
+}
 
 // Called whenever this wallet ends up holding (or already holds) a bearer
 // from `server` - minting, receiving, splitting, merging all route through
@@ -204,32 +181,10 @@ export type TrustKeyResult = 'added' | 'unchanged' | 'rekey-pending'
 // or dismiss (see confirmTrustedMintRekey).
 export const lockTrustedMint = (
   server: string,
-  mintPubkey: string
-): TrustKeyResult => {
-  const key = mintPubkey.trim().toLowerCase()
-  if (!server || !PUBKEY_PATTERN.test(key)) return 'unchanged'
-  const existing = readCache().find(m => m.server === server)
-  if (existing) {
-    if (existing.mintPubkey === key) {
-      if (existing.locked && !existing.unconfirmed) return 'unchanged'
-      // a match here is a live response from the server advertising this
-      // exact key - it corroborates an unconfirmed (file-sourced) pin
-      persist(
-        readCache().map(m =>
-          m.server === server ? {...m, locked: true, unconfirmed: undefined} : m
-        )
-      )
-      return 'unchanged'
-    }
-    if (existing.pendingMintPubkey === key) return 'rekey-pending'
-    persist(
-      readCache().map(m => (m.server === server ? {...m, pendingMintPubkey: key} : m))
-    )
-    return 'rekey-pending'
-  }
-  persist([...readCache(), {server, mintPubkey: key, addedAt: Date.now(), locked: true}])
-  return 'added'
-}
+  mintPubkey: string,
+  ownerId?: string,
+): Promise<TrustKeyResult> =>
+  mutateStoredTrustedMints(ownerId, (mints) => lockMint(mints, {server, mintPubkey}))
 
 // unlock-time grandfathering of the mints behind already-stored bearers -
 // the key claims come from local storage, not a live response, so an
@@ -240,25 +195,10 @@ export const lockTrustedMint = (
 // lockTrustedMint instead, which is what corroborates and re-locks.
 export const grandfatherTrustedMint = (
   server: string,
-  mintPubkey: string
-): TrustKeyResult => {
-  const key = mintPubkey.trim().toLowerCase()
-  if (!server || !PUBKEY_PATTERN.test(key)) return 'unchanged'
-  const existing = readCache().find(m => m.server === server)
-  if (existing) {
-    if (existing.mintPubkey === key) return 'unchanged'
-    if (existing.pendingMintPubkey === key) return 'rekey-pending'
-    persist(
-      readCache().map(m => (m.server === server ? {...m, pendingMintPubkey: key} : m))
-    )
-    return 'rekey-pending'
-  }
-  persist([
-    ...readCache(),
-    {server, mintPubkey: key, addedAt: Date.now(), locked: false, unconfirmed: true}
-  ])
-  return 'added'
-}
+  mintPubkey: string,
+  ownerId?: string,
+): Promise<TrustKeyResult> =>
+  mutateStoredTrustedMints(ownerId, (mints) => grandfatherMint(mints, {server, mintPubkey}))
 
 // Manual add from the mints settings, or a user-confirmed first encounter -
 // unlocked, since no bearer necessarily backs it yet. Validates and throws
@@ -270,81 +210,26 @@ export const grandfatherTrustedMint = (
 export const addTrustedMint = (
   server: string,
   mintPubkey: string,
-  nodeInfo?: TrustedMintNodeInfo
-): TrustKeyResult => {
-  const trimmedServer = server.trim()
-  const key = mintPubkey.trim().toLowerCase()
-  if (!trimmedServer) {
-    throw new Error('Enter a server.')
-  }
-  if (!PUBKEY_PATTERN.test(key)) {
-    throw new Error(
-      'Signing key must be a 33-byte compressed pubkey (66 hex characters).'
-    )
-  }
-  const existing = readCache().find(m => m.server === trimmedServer)
-  if (existing) {
-    if (existing.mintPubkey === key) {
-      // a match here is a live lookup corroborating the pin - it clears an
-      // unconfirmed (file-sourced) flag
-      persist(
-        readCache().map(m =>
-          m.server === trimmedServer
-            ? {...m, ...nodeInfo, unconfirmed: undefined}
-            : m
-        )
-      )
-      return 'unchanged'
-    }
-    persist(
-      readCache().map(m =>
-        m.server === trimmedServer
-          ? {...m, pendingMintPubkey: key, ...nodeInfo}
-          : m
-      )
-    )
-    return 'rekey-pending'
-  }
-  persist([
-    ...readCache(),
-    {
-      server: trimmedServer,
-      mintPubkey: key,
-      addedAt: Date.now(),
-      locked: false,
-      ...nodeInfo
-    }
-  ])
-  return 'added'
+  context?: TrustedMintNodeInfo | AddTrustedMintContext,
+): Promise<TrustKeyResult> => {
+  const ownerId = context && 'ownerId' in context ? context.ownerId : undefined
+  const nodeInfo = context && 'ownerId' in context ? context.nodeInfo : context
+  return mutateStoredTrustedMints(ownerId, (mints) =>
+    addMint(mints, {server, mintPubkey, nodeInfo}),
+  )
 }
 
 // the holder confirms a mint's advertised new signing key - the pending key
 // becomes the pinned one. Legitimate rotations (a mint moving to a new
 // node) go through here; nothing else ever replaces a pin.
-export const confirmTrustedMintRekey = (server: string): void => {
-  const existing = readCache().find(m => m.server === server)
-  if (!existing?.pendingMintPubkey) return
-  const pending = existing.pendingMintPubkey
-  persist(
-    readCache().map(m =>
-      m.server === server
-        ? {...m, mintPubkey: pending, pendingMintPubkey: undefined, unconfirmed: undefined}
-        : m
-    )
-  )
-}
+export const confirmTrustedMintRekey = (server: string, ownerId?: string): Promise<void> =>
+  mutateStoredTrustedMints(ownerId, (mints) => confirmMintRekey(mints, server))
 
 // the holder rejects the advertised new key - the staged candidate is
 // dropped, the original pin stays. Worth doing only when the change is
 // unexpected; the old key stays authoritative either way until confirmed.
-export const dismissTrustedMintRekey = (server: string): void => {
-  if (!readCache().some(m => m.server === server)) return
-  persist(
-    readCache().map(m =>
-      m.server === server ? {...m, pendingMintPubkey: undefined} : m
-    )
-  )
-}
+export const dismissTrustedMintRekey = (server: string, ownerId?: string): Promise<void> =>
+  mutateStoredTrustedMints(ownerId, (mints) => dismissMintRekey(mints, server))
 
 // refreshes just the cached display info for a server already in the list -
 // never touches mintPubkey/addedAt/locked, and no-ops for a server that
@@ -355,31 +240,34 @@ export const dismissTrustedMintRekey = (server: string): void => {
 // whatever was known the moment trust was first established.
 export const cacheTrustedMintNodeInfo = (
   server: string,
-  nodeInfo: TrustedMintNodeInfo
-): void => {
-  if (!readCache().some(m => m.server === server)) return
-  persist(readCache().map(m => (m.server === server ? {...m, ...nodeInfo} : m)))
-}
+  nodeInfo: TrustedMintNodeInfo,
+  ownerId?: string,
+): Promise<void> =>
+  mutateStoredTrustedMints(ownerId, (mints) => cacheMintNodeInfo(mints, server, nodeInfo))
 
 // only succeeds for entries not backed by a held bearer - see
 // TrustedMint.locked
-export const removeTrustedMint = (server: string): void => {
-  const entry = readCache().find(m => m.server === server)
-  if (!entry) return
-  if (entry.locked) {
-    throw new Error("Can't remove - you hold a bearer note from this mint.")
-  }
-  persist(readCache().filter(m => m.server !== server))
-}
+export const removeTrustedMint = (server: string, ownerId?: string): Promise<void> =>
+  mutateStoredTrustedMints(ownerId, (mints) => removeMint(mints, server))
 
 // wipes the whole registry - part of forgetting a wallet: nothing about a
 // wallet's mints (including otherwise-irremovable locked pins) should
 // linger on the device after it
-export const clearTrustedMints = (): void => {
-  localStorage.removeItem(STORAGE_KEY)
-  cache = []
-  for (const listener of listeners) listener([])
+export const clearTrustedMints = (ownerId?: string): Promise<void> =>
+  mutateStoredTrustedMints(ownerId, clearMints)
+
+export const migrateLegacyTrustedMints = (linkingKey: Uint8Array): Promise<number> => {
+  const ownerId = linkingPubKeyHex(linkingKey)
+  if (savedKeyOwnerId() !== ownerId) {
+    throw new Error('Legacy trusted-mint migration requires a proven owner.')
+  }
+  return adoptLegacyStoredTrustedMints(ownerId)
 }
+
+export const removeTrustedMintsForOwner = (ownerId: string): Promise<void> =>
+  removeStoredTrustedMintsForOwner(ownerId)
+
+export const resetTrustedMintsForReplacement = (): Promise<void> => resetStoredTrustedMints()
 
 // merges a backup's trusted mints in by server - a server already known on
 // this device keeps its own current entry rather than being overwritten by
@@ -391,43 +279,5 @@ export const clearTrustedMints = (): void => {
 // and every merged entry is marked `unconfirmed`, keeping it out of offline
 // signature verification until a live response from that server advertises
 // the same key (a crafted backup could otherwise forge "signed" badges)
-export const mergeTrustedMints = (incoming: TrustedMint[]): number => {
-  const knownServers = new Set(readCache().map(m => m.server))
-  const merged = [...readCache()]
-  let added = 0
-  for (const mint of incoming) {
-    if (
-      typeof mint?.server !== 'string' ||
-      typeof mint?.mintPubkey !== 'string' ||
-      typeof mint?.addedAt !== 'number' ||
-      !PUBKEY_PATTERN.test(mint.mintPubkey.toLowerCase())
-    ) {
-      continue
-    }
-    if (knownServers.has(mint.server)) continue
-    merged.push({
-      server: mint.server,
-      mintPubkey: mint.mintPubkey.toLowerCase(),
-      addedAt: mint.addedAt,
-      locked: false,
-      unconfirmed: true,
-      nodeAlias: typeof mint.nodeAlias === 'string' ? mint.nodeAlias : undefined,
-      nodeColor: typeof mint.nodeColor === 'string' ? mint.nodeColor : undefined,
-      nodeCapacityMsat:
-        typeof mint.nodeCapacityMsat === 'number'
-          ? mint.nodeCapacityMsat
-          : undefined,
-      nodeNumChannels:
-        typeof mint.nodeNumChannels === 'number'
-          ? mint.nodeNumChannels
-          : undefined,
-      nodeNumPeers:
-        typeof mint.nodeNumPeers === 'number' ? mint.nodeNumPeers : undefined,
-      username: typeof mint.username === 'string' ? mint.username : undefined
-    })
-    knownServers.add(mint.server)
-    added++
-  }
-  if (added > 0) persist(merged)
-  return added
-}
+export const mergeTrustedMints = (incoming: unknown[], ownerId?: string): Promise<number> =>
+  mutateStoredTrustedMints(ownerId, (mints) => mergeMints(mints, incoming))

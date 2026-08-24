@@ -19,13 +19,14 @@ import {
   rotateNote,
   sameInvoice,
   serverOf,
-  withNewK1
+  withNewK1,
 } from 'lnurlcash-kit'
-import type {LnurlcashOptions, MintAddressInfo} from 'lnurlcash-kit'
+import type {MintAddressInfo} from 'lnurlcash-kit'
 import type {NewBearer} from '../types'
 import {ceilMsatToSat} from '../units'
 import type {PollOptions} from './shared'
-import {pollVerifyUntilSettled} from './shared'
+import type {FundOperationOptions} from './shared'
+import {assertFundOwner, pollVerifyUntilSettled} from './shared'
 
 export type PreparedMint = {
   invoice: string
@@ -52,7 +53,7 @@ export type PreparedMint = {
 export const prepareMint = async (
   mintInput: string,
   amountMsat: number,
-  options: LnurlcashOptions = {}
+  options: FundOperationOptions = {},
 ): Promise<PreparedMint> => {
   if (!Number.isInteger(amountMsat) || amountMsat <= 0) {
     throw new Error('Amount must be a positive whole number of msat.')
@@ -69,21 +70,20 @@ export const prepareMint = async (
     try {
       nodeInfo = await fetchMintAddress(addressUrl, options)
       payUrl = nodeInfo.payLink
-    } catch {
+    } catch (error) {
       // no mint-address support here - proceed with just the guess
+      if (!(error instanceof Error)) throw error
     }
   }
   const info = await fetchPayRequest(payUrl, options)
   if (!info.withdrawLink) {
-    throw new Error(
-      'This payRequest does not advertise lnurlcash minting (no withdrawLink).'
-    )
+    throw new Error('This payRequest does not advertise lnurlcash minting (no withdrawLink).')
   }
   const grossMsat = ceilMsatToSat(
-    info.mintFee ? grossUpForMintFee(amountMsat, info.mintFee) : amountMsat
+    info.mintFee ? grossUpForMintFee(amountMsat, info.mintFee) : amountMsat,
   )
   if (grossMsat < info.minSendable || grossMsat > info.maxSendable) {
-    throw new Error('Amount is outside this mint\'s sendable range.')
+    throw new Error("Amount is outside this mint's sendable range.")
   }
   const invoice = await requestInvoice(info.callback, grossMsat, options)
   const prepared: PreparedMint = {
@@ -95,7 +95,7 @@ export const prepareMint = async (
     withdrawLink: info.withdrawLink,
     server: serverOf(payUrl),
     username: lightningAddressUsername(payUrl),
-    nodeInfo
+    nodeInfo,
   }
   if (info.mintPubkey) prepared.mintPubkey = info.mintPubkey
   return prepared
@@ -123,11 +123,11 @@ export type ClaimedNote = {
 export const claimMintedNote = async (
   prepared: PreparedMint,
   poll: PollOptions = {},
-  options: LnurlcashOptions = {}
+  options: FundOperationOptions = {},
 ): Promise<ClaimedNote> => {
   if (!prepared.verifyUrl) {
     throw new Error(
-      'This mint did not advertise a verify URL - the invoice cannot be auto-claimed.'
+      'This mint did not advertise a verify URL - the invoice cannot be auto-claimed.',
     )
   }
   const verifyUrl = prepared.verifyUrl
@@ -135,15 +135,11 @@ export const claimMintedNote = async (
   // a settled report only means this wallet's invoice was paid if it's for
   // the invoice this wallet actually requested
   if (!sameInvoice(result.pr, prepared.invoice)) {
-    throw new Error(
-      "The service's verify response is for a different invoice than requested."
-    )
+    throw new Error("The service's verify response is for a different invoice than requested.")
   }
   const preimage = result.preimage
   if (!preimage || !isPreimage(preimage)) {
-    throw new Error(
-      'The payment settled but the service did not reveal the preimage.'
-    )
+    throw new Error('The payment settled but the service did not reveal the preimage.')
   }
   return claimFromPreimage(prepared, preimage, options)
 }
@@ -168,15 +164,12 @@ export type ClaimTarget = {
 export const claimFromPreimage = async (
   claim: ClaimTarget,
   preimage: string,
-  options: LnurlcashOptions = {}
+  options: FundOperationOptions = {},
 ): Promise<ClaimedNote> => {
   // declare the invoiced amount (a claim - not yet confirmed) so the note
   // is self-describing even before the verifying GET below
-  const declaredUrl = buildNoteUrl(
-    claim.withdrawLink,
-    preimage,
-    claim.expectedNoteValueMsat
-  )
+  const declaredUrl = buildNoteUrl(claim.withdrawLink, preimage, claim.expectedNoteValueMsat)
+  assertFundOwner(options)
   // the service's maxWithdrawable is authoritative - SERVICE's own fee
   // math might not match this wallet's estimate, and the note is worth
   // exactly maxWithdrawable regardless
@@ -186,7 +179,7 @@ export const claimFromPreimage = async (
     url: withNewK1(declaredUrl, noteInfo.k1, noteInfo.maxWithdrawable),
     callback: noteInfo.callback,
     amount: noteInfo.maxWithdrawable,
-    verified: true
+    verified: true,
   }
   if (mintPubkey) base.mintPubkey = mintPubkey
 
@@ -196,12 +189,7 @@ export const claimFromPreimage = async (
   let rotationError: string | undefined
   try {
     const rotatedNote = await rotateNote(noteInfo.callback, noteInfo.k1, options)
-    url = withNewK1(
-      declaredUrl,
-      rotatedNote.k1,
-      noteInfo.maxWithdrawable,
-      rotatedNote.signature
-    )
+    url = withNewK1(declaredUrl, rotatedNote.k1, noteInfo.maxWithdrawable, rotatedNote.signature)
   } catch (err) {
     rotated = false
     if (err instanceof AmbiguousMutationError) {
@@ -210,24 +198,16 @@ export const claimFromPreimage = async (
       const outcome = await probeBurnedNote(declaredUrl, options)
       if (outcome === 'gone') {
         // the burn landed - adopt the fresh secret as the note
-        url = withNewK1(
-          declaredUrl,
-          err.newSecrets[0],
-          noteInfo.maxWithdrawable
-        )
+        url = withNewK1(declaredUrl, err.newSecrets[0], noteInfo.maxWithdrawable)
         rotated = true
       } else if (outcome === 'unknown') {
         // can't tell: the preimage note is returned either way - the
         // possible rotated copy goes alongside it, both refreshable
         possibleCopy = {
-          url: withNewK1(
-            declaredUrl,
-            err.newSecrets[0],
-            noteInfo.maxWithdrawable
-          ),
+          url: withNewK1(declaredUrl, err.newSecrets[0], noteInfo.maxWithdrawable),
           callback: noteInfo.callback,
           amount: noteInfo.maxWithdrawable,
-          verified: false
+          verified: false,
         }
         if (mintPubkey) possibleCopy.mintPubkey = mintPubkey
         rotationError = `${err.message} The rotation may still have gone through - the possible rotated copy is tracked unverified alongside this one.`

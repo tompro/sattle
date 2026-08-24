@@ -5,6 +5,7 @@ import { MINT_ORIGIN, NOTE_PATH } from '../helpers/MintMocker';
 import { createFreshWallet } from '../helpers/wallet';
 
 const AMOUNT_MSAT = 21_000; // 21 sats
+const MINT_PUBKEY = `02${'aa'.repeat(32)}`;
 
 // a syntactically valid bearer note against the mock mint - the k1 is a
 // fresh random secret, so every test redeems a distinct note
@@ -57,5 +58,55 @@ test.describe('Receive bearer note', () => {
     // nothing was stored: back on the main page the balance is still 0
     await page.keyboard.press('Escape');
     await expect(page.locator('.balance-card .text-h2')).toHaveText('0');
+  });
+
+  test('an already trusted current-owner mint bypasses the first-contact prompt', async ({
+    page,
+    mint,
+  }) => {
+    await mint.mockNoteInfo({ amountMsat: AMOUNT_MSAT, mintPubkey: MINT_PUBKEY });
+    await mint.mockRotateOk();
+    await createFreshWallet(page);
+    const receiveDialog = page.locator('.q-dialog', { hasText: 'Receive bearer note' });
+    await redeemNote(page, freshNoteUrl());
+    const trustDialog = page.locator('.q-dialog', { hasText: 'New mint' });
+    await expect(trustDialog).toBeVisible();
+    await trustDialog.getByRole('button', { name: 'Just this once' }).click();
+    await expect(trustDialog).toHaveCount(0);
+    await page.keyboard.press('Escape');
+    await expect(receiveDialog).toHaveCount(0);
+
+    await redeemNote(page, freshNoteUrl());
+
+    await expect(receiveDialog.getByText('Received 21 sats')).toBeVisible();
+    await expect(trustDialog).toHaveCount(0);
+    await expect(page.locator('.balance-card .text-h2')).toHaveText('42');
+  });
+
+  test('trust failure after commit keeps received funds and warns against retry', async ({
+    page,
+    mint,
+  }) => {
+    await mint.mockNoteInfo({ amountMsat: AMOUNT_MSAT, mintPubkey: MINT_PUBKEY });
+    await mint.mockRotateOk();
+    await createFreshWallet(page);
+    await page.evaluate(() => {
+      localStorage.setItem('sattle_trusted_mints', '{"version":1,"ownerId":"malformed"}');
+    });
+
+    const dialog = page.locator('.q-dialog', { hasText: 'Receive bearer note' });
+    await redeemNote(page, freshNoteUrl());
+
+    await expect(dialog.getByText('Received 21 sats')).toBeVisible();
+    await expect(
+      page.getByText(/Funds were saved.*receive succeeded.*do not retry/i),
+    ).toBeVisible();
+    await expect(dialog.locator('.q-banner')).toHaveCount(0);
+    const trustDialog = page.locator('.q-dialog', { hasText: 'New mint' });
+    await trustDialog.getByRole('button', { name: 'Just this once' }).click();
+    await dialog.getByRole('button', { name: 'Done' }).click();
+    await page.reload();
+
+    await expect(page.locator('.balance-card .text-h2')).toHaveText('21');
   });
 });

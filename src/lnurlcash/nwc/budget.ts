@@ -8,10 +8,7 @@
 import type {NwcConnectionRecord} from '../storage/nwcConnections'
 import {persistNwcConnection} from '../storage/nwcConnections'
 
-export const budgetRemainingMsat = (
-  record: NwcConnectionRecord,
-  nowMs: number
-): number => {
+export const budgetRemainingMsat = (record: NwcConnectionRecord, nowMs: number): number => {
   const {maxMsat, periodMs} = record.budget
   if (nowMs - record.spent.periodStart >= periodMs) return maxMsat
   return Math.max(0, maxMsat - record.spent.msat)
@@ -20,18 +17,19 @@ export const budgetRemainingMsat = (
 // rolls the period when it expired, then adds the spend; persists (the
 // caller's queue serialized this read-modify-write)
 export const recordSpend = (
+  ownerId: string,
   record: NwcConnectionRecord,
   amountMsat: number,
-  nowMs: number
+  nowMs: number,
 ): NwcConnectionRecord => {
   const expired = nowMs - record.spent.periodStart >= record.budget.periodMs
-  return persistNwcConnection({
+  return persistNwcConnection(ownerId, {
     ...record,
     spent: expired
       ? {periodStart: nowMs, msat: amountMsat}
       : {
           periodStart: record.spent.periodStart,
-          msat: record.spent.msat + amountMsat
-        }
+          msat: record.spent.msat + amountMsat,
+        },
   })
 }

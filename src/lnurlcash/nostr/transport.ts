@@ -23,10 +23,10 @@ export const defaultTransport = async (): Promise<BackupTransport> => {
       const results = await Promise.allSettled(pool.publish(relays, event))
       // one honest relay keeping the event is enough - addressable events
       // are re-publishable, and the next debounced publish retries anyway
-      if (!results.some(r => r.status === 'fulfilled')) {
+      if (!results.some((r) => r.status === 'fulfilled')) {
         throw new Error('No relay accepted the backup event.')
       }
     },
-    fetch: (relays, filter) => pool.querySync(relays, filter)
+    fetch: (relays, filter) => pool.querySync(relays, filter),
   }
 }

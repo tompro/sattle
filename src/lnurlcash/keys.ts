@@ -1,14 +1,24 @@
-import {
-  mnemonicToSeedSync,
-  generateMnemonic,
-  validateMnemonic
-} from '@scure/bip39'
+import {mnemonicToSeedSync, generateMnemonic, validateMnemonic} from '@scure/bip39'
 import {wordlist} from '@scure/bip39/wordlists/english.js'
 import {HDKey, HARDENED_OFFSET} from '@scure/bip32'
 import {hmac} from '@noble/hashes/hmac.js'
 import {sha256} from '@noble/hashes/sha2.js'
 import {secp256k1} from '@noble/curves/secp256k1.js'
 import {bytesToHex, hexToBytes, utf8ToBytes} from '@noble/hashes/utils.js'
+
+import {
+  parseStoredSecret,
+  stampStoredSecretOwner,
+  storedSecretClaimedOwnerId,
+  storedSecretOwnerId,
+  stripStoredSecretOwner,
+  STORED_SECRET_VERSION,
+  type StoredSecret,
+} from './storage/storedSecret'
+import {LINKING_KEY_STORAGE_KEY} from './storage/walletOwnerEvents'
+
+export {isValidStoredSecret} from './storage/storedSecret'
+export type {StoredSecret} from './storage/storedSecret'
 
 // The wallet's identity is derived against this fixed domain rather than
 // window.location.hostname, so the same seed phrase always yields the same
@@ -30,16 +40,12 @@ const readUint32BE = (bytes: Uint8Array, offset: number): number =>
 
 // LUD-05: BIP32-based linking-key derivation, same scheme as lnurl_server -
 // a seed restored there or here produces the same identity for a given domain
-export const deriveLud05LinkingKey = (
-  seedPhrase: string,
-  domain: string
-): Uint8Array => {
+export const deriveLud05LinkingKey = (seedPhrase: string, domain: string): Uint8Array => {
   const seed = mnemonicToSeedSync(seedPhrase.trim().toLowerCase())
   const master = HDKey.fromMasterSeed(seed)
 
   const hashingKeyNode = master.derive("m/138'/0")
-  if (!hashingKeyNode.privateKey)
-    throw new Error('Could not derive hashing key')
+  if (!hashingKeyNode.privateKey) throw new Error('Could not derive hashing key')
   const suffix = lud05PathSuffix(hashingKeyNode.privateKey, domain)
 
   // path suffix longs are raw BIP32 child indices: whether each level ends up
@@ -55,12 +61,9 @@ export const deriveLud05LinkingKey = (
 // the HMAC half of the derivation, split out so the LUD-05 test vector
 // (which starts from a fixed hashingPrivKey, not a seed phrase) can pin it
 // directly - see keys.test.ts
-export const lud05PathSuffix = (
-  hashingKey: Uint8Array,
-  domain: string
-): number[] => {
+export const lud05PathSuffix = (hashingKey: Uint8Array, domain: string): number[] => {
   const material = hmac(sha256, hashingKey, utf8ToBytes(domain))
-  return [0, 4, 8, 12].map(i => readUint32BE(material, i))
+  return [0, 4, 8, 12].map((i) => readUint32BE(material, i))
 }
 
 export const deriveWalletLinkingKey = (seedPhrase: string): Uint8Array =>
@@ -75,56 +78,21 @@ export const linkingPubKeyHex = (linkingPrivKey: Uint8Array): string =>
 // GCM's auth tag doubles as the "wrong password" check on decrypt.
 const PBKDF2_ITERATIONS = 210_000
 
-export type StoredSecret =
-  | {enc: false; value: string}
-  | {enc: true; salt: string; iv: string; ciphertext: string}
-
-// strict shape check on a StoredSecret - a plaintext form must be exactly a
-// 32-byte hex key, an encrypted form must carry hex salt/iv/ciphertext of
-// the sizes encryptSecretParts produces. Guards the backup-restore path
-// (storage.ts's applyBackup), where a crafted file would otherwise get an
-// arbitrary "linking key" installed verbatim.
-export const isValidStoredSecret = (
-  stored: unknown
-): stored is StoredSecret => {
-  if (typeof stored !== 'object' || stored === null) return false
-  const s = stored as Record<string, unknown>
-  if (s.enc === false) {
-    return typeof s.value === 'string' && /^[0-9a-f]{64}$/i.test(s.value)
-  }
-  if (s.enc === true) {
-    return (
-      typeof s.salt === 'string' &&
-      /^[0-9a-f]{32}$/i.test(s.salt) &&
-      typeof s.iv === 'string' &&
-      /^[0-9a-f]{24}$/i.test(s.iv) &&
-      typeof s.ciphertext === 'string' &&
-      s.ciphertext.length > 0 &&
-      s.ciphertext.length % 2 === 0 &&
-      /^[0-9a-f]+$/i.test(s.ciphertext)
-    )
-  }
-  return false
-}
-
 const readSecret = (storageKey: string): StoredSecret | null => {
   const raw = localStorage.getItem(storageKey)
   if (!raw) return null
   try {
     const parsed: unknown = JSON.parse(raw)
-    return isValidStoredSecret(parsed) ? parsed : null
+    return parseStoredSecret(parsed)?.secret ?? null
   } catch {
     return null
   }
 }
 
-const deriveAesKeyFromPassword = (
-  password: string,
-  salt: Uint8Array
-): Promise<CryptoKey> =>
+const deriveAesKeyFromPassword = (password: string, salt: Uint8Array): Promise<CryptoKey> =>
   crypto.subtle
     .importKey('raw', utf8ToBytes(password), 'PBKDF2', false, ['deriveKey'])
-    .then(baseKey =>
+    .then((baseKey) =>
       crypto.subtle.deriveKey(
         // the copy pins the TS type to Uint8Array<ArrayBuffer> - hexToBytes
         // returns Uint8Array<ArrayBufferLike>, which BufferSource rejects
@@ -132,13 +100,13 @@ const deriveAesKeyFromPassword = (
           name: 'PBKDF2',
           salt: new Uint8Array(salt),
           iterations: PBKDF2_ITERATIONS,
-          hash: 'SHA-256'
+          hash: 'SHA-256',
         },
         baseKey,
         {name: 'AES-GCM', length: 256},
         false,
-        ['encrypt', 'decrypt']
-      )
+        ['encrypt', 'decrypt'],
+      ),
     )
 
 export type EncryptedSecretParts = {
@@ -149,29 +117,25 @@ export type EncryptedSecretParts = {
 
 export const encryptSecretParts = async (
   value: string,
-  password: string
+  password: string,
 ): Promise<EncryptedSecretParts> => {
   const salt = crypto.getRandomValues(new Uint8Array(16))
   const iv = crypto.getRandomValues(new Uint8Array(12))
   const aesKey = await deriveAesKeyFromPassword(password, salt)
   const ciphertext = new Uint8Array(
-    await crypto.subtle.encrypt(
-      {name: 'AES-GCM', iv},
-      aesKey,
-      utf8ToBytes(value)
-    )
+    await crypto.subtle.encrypt({name: 'AES-GCM', iv}, aesKey, utf8ToBytes(value)),
   )
   return {
     salt: bytesToHex(salt),
     iv: bytesToHex(iv),
-    ciphertext: bytesToHex(ciphertext)
+    ciphertext: bytesToHex(ciphertext),
   }
 }
 
 // rejects (WebCrypto's own auth-tag check) if the password is wrong
 export const decryptSecretParts = async (
   parts: EncryptedSecretParts,
-  password: string
+  password: string,
 ): Promise<string> => {
   const salt = hexToBytes(parts.salt)
   const iv = hexToBytes(parts.iv)
@@ -179,7 +143,7 @@ export const decryptSecretParts = async (
   const plaintext = await crypto.subtle.decrypt(
     {name: 'AES-GCM', iv},
     aesKey,
-    hexToBytes(parts.ciphertext)
+    hexToBytes(parts.ciphertext),
   )
   return new TextDecoder().decode(plaintext)
 }
@@ -188,16 +152,63 @@ export const decryptSecretParts = async (
 // it was derived from is shown once at setup and never stored. Everything
 // else at rest (the bearer tokens) is encrypted with a key derived from it,
 // so protecting this one record with a password protects the whole wallet.
-const LINKING_KEY_STORAGE_KEY = 'sattle_linking_key'
+//
+// The record also carries an ownerId marker: the lowercase compressed
+// pubkey hex of the key itself (storage/walletOwner.ts), binding every
+// other wallet-owned record (passkeys, NWC, trusted mints) to this exact
+// identity. Failure modes of the marker API:
+// - new writes always carry the marker derived from the key being saved;
+// - a record restored from a backup/relay is installed OWNERLESS - its
+//   file-carried marker is an unproven claim and is stripped on restore;
+// - an ownerless legacy record stays usable but cannot establish ownership;
+//   malformed or unsupported owner-bearing metadata rejects the whole record;
+// - ensureSavedKeyOwner stamps the marker after the caller proved the key
+//   (successful password/plaintext unlock or matching biometric unwrap),
+//   preserving ciphertext byte-for-byte; it refuses to restamp a record
+//   already owned by a different valid owner, and refuses a key that
+//   contradicts a plaintext record.
+export const savedKeyExists = (): boolean => readSecret(LINKING_KEY_STORAGE_KEY) !== null
 
-export const savedKeyExists = (): boolean =>
-  readSecret(LINKING_KEY_STORAGE_KEY) !== null
-
-export const savedKeyIsEncrypted = (): boolean =>
-  readSecret(LINKING_KEY_STORAGE_KEY)?.enc === true
+export const savedKeyIsEncrypted = (): boolean => readSecret(LINKING_KEY_STORAGE_KEY)?.enc === true
 
 export const getSavedLinkingKeyStored = (): StoredSecret | null =>
   readSecret(LINKING_KEY_STORAGE_KEY)
+
+// the proven owner of the saved key, or null when there is no record or it
+// carries no current version-1 marker (ownerless or compatible unversioned)
+export const savedKeyOwnerId = (): string | null => {
+  const stored = readSecret(LINKING_KEY_STORAGE_KEY)
+  return stored === null ? null : storedSecretOwnerId(stored)
+}
+
+// Compares only against an owner freshly derived from a linking key. An
+// ownerless or unversioned saved marker never matches.
+export const savedKeyOwnerMatches = (linkingKey: Uint8Array): boolean =>
+  savedKeyOwnerId() === linkingPubKeyHex(linkingKey)
+
+// Stamps the owner marker onto the existing record. Call ONLY with the key
+// just proven against this record (decryptSavedLinkingKey / a plaintext
+// read / a biometric unwrap whose stored pubkey matched) - the marker is
+// derived from that key, never from a stored claim. No saved record or an
+// already-correct marker: no write. A DIFFERENT valid owner, or a key that
+// contradicts a plaintext record, throws and leaves storage untouched.
+export const ensureSavedKeyOwner = (linkingKey: Uint8Array): void => {
+  const stored = readSecret(LINKING_KEY_STORAGE_KEY)
+  if (stored === null) return
+  const ownerId = linkingPubKeyHex(linkingKey)
+  if (stored.enc === false && stored.value.toLowerCase() !== bytesToHex(linkingKey)) {
+    throw new Error('Proven key does not match the saved wallet key.')
+  }
+  const claimedOwnerId = storedSecretClaimedOwnerId(stored)
+  if (storedSecretOwnerId(stored) === ownerId) return
+  if (claimedOwnerId !== null && claimedOwnerId !== ownerId) {
+    throw new Error('Saved wallet key is owned by a different wallet.')
+  }
+  localStorage.setItem(
+    LINKING_KEY_STORAGE_KEY,
+    JSON.stringify(stampStoredSecretOwner(stored, ownerId)),
+  )
+}
 
 export const getPlainLinkingKey = (): Uint8Array | null => {
   const stored = readSecret(LINKING_KEY_STORAGE_KEY)
@@ -207,30 +218,33 @@ export const getPlainLinkingKey = (): Uint8Array | null => {
 
 export const saveLinkingKey = async (
   linkingPrivKey: Uint8Array,
-  password?: string
+  password?: string,
 ): Promise<void> => {
   const hex = bytesToHex(linkingPrivKey)
+  const ownerId = linkingPubKeyHex(linkingPrivKey)
   if (!password) {
     localStorage.setItem(
       LINKING_KEY_STORAGE_KEY,
-      JSON.stringify({enc: false, value: hex})
+      JSON.stringify({enc: false, value: hex, ownerId, version: STORED_SECRET_VERSION}),
     )
     return
   }
   const parts = await encryptSecretParts(hex, password)
   localStorage.setItem(
     LINKING_KEY_STORAGE_KEY,
-    JSON.stringify({enc: true, ...parts})
+    JSON.stringify({enc: true, ...parts, ownerId, version: STORED_SECRET_VERSION}),
   )
 }
 
+// installs a record from a backup/relay. Any ownerId it carries is an
+// unproven claim by whoever produced that file, so the marker is stripped
+// here - the first proven unlock re-establishes it (see the failure-model
+// comment above)
 export const restoreLinkingKeyStored = (stored: StoredSecret): void => {
-  localStorage.setItem(LINKING_KEY_STORAGE_KEY, JSON.stringify(stored))
+  localStorage.setItem(LINKING_KEY_STORAGE_KEY, JSON.stringify(stripStoredSecretOwner(stored)))
 }
 
-export const decryptSavedLinkingKey = async (
-  password: string
-): Promise<Uint8Array> => {
+export const decryptSavedLinkingKey = async (password: string): Promise<Uint8Array> => {
   const stored = readSecret(LINKING_KEY_STORAGE_KEY)
   if (!stored || !stored.enc) throw new Error('No encrypted linking key saved.')
   return hexToBytes(await decryptSecretParts(stored, password))
@@ -246,43 +260,32 @@ export const clearSavedLinkingKey = (): void => {
 // a fresh device and every previously exported ciphertext decrypts again.
 const BEARER_KEY_CONTEXT = 'lnurlcash-bearer-encryption-v1'
 
-export const deriveBearerAesKey = (
-  linkingPrivKey: Uint8Array
-): Promise<CryptoKey> => {
-  const material = sha256(
-    new Uint8Array([...linkingPrivKey, ...utf8ToBytes(BEARER_KEY_CONTEXT)])
-  )
-  return crypto.subtle.importKey('raw', material, 'AES-GCM', false, [
-    'encrypt',
-    'decrypt'
-  ])
+export const deriveBearerAesKey = (linkingPrivKey: Uint8Array): Promise<CryptoKey> => {
+  const material = sha256(new Uint8Array([...linkingPrivKey, ...utf8ToBytes(BEARER_KEY_CONTEXT)]))
+  return crypto.subtle.importKey('raw', material, 'AES-GCM', false, ['encrypt', 'decrypt'])
 }
 
 export type EncryptedRecordParts = {iv: string; ciphertext: string}
 
 export const encryptRecord = async (
   aesKey: CryptoKey,
-  value: object
+  value: object,
 ): Promise<EncryptedRecordParts> => {
   const iv = crypto.getRandomValues(new Uint8Array(12))
   const ciphertext = new Uint8Array(
-    await crypto.subtle.encrypt(
-      {name: 'AES-GCM', iv},
-      aesKey,
-      utf8ToBytes(JSON.stringify(value))
-    )
+    await crypto.subtle.encrypt({name: 'AES-GCM', iv}, aesKey, utf8ToBytes(JSON.stringify(value))),
   )
   return {iv: bytesToHex(iv), ciphertext: bytesToHex(ciphertext)}
 }
 
-export const decryptRecord = async <T>(
+export const decryptRecord = async (
   aesKey: CryptoKey,
-  parts: EncryptedRecordParts
-): Promise<T> => {
+  parts: EncryptedRecordParts,
+): Promise<unknown> => {
   const plaintext = await crypto.subtle.decrypt(
     {name: 'AES-GCM', iv: hexToBytes(parts.iv)},
     aesKey,
-    hexToBytes(parts.ciphertext)
+    hexToBytes(parts.ciphertext),
   )
-  return JSON.parse(new TextDecoder().decode(plaintext)) as T
+  return JSON.parse(new TextDecoder().decode(plaintext))
 }

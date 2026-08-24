@@ -24,14 +24,9 @@ export {
   backupPubkey,
   buildBackupEvent,
   buildBackupEvents,
-  parseBackupEvent
+  parseBackupEvent,
 } from './nostr/events'
-export type {
-  NostrEvent,
-  BackupPart,
-  BackupPartPayload,
-  ParsedBackupEvent
-} from './nostr/events'
+export type {NostrEvent, BackupPart, BackupPartPayload, ParsedBackupEvent} from './nostr/events'
 
 export type {BackupTransport, NostrFilter} from './nostr/transport'
 
@@ -40,7 +35,7 @@ export type {
   PublishBackupOptions,
   PublishBackupResult,
   FetchBackupOptions,
-  NostrRestoreResult
+  NostrRestoreResult,
 } from './nostr/sync'
 
 export {createBackupPublisher} from './nostr/publisher'

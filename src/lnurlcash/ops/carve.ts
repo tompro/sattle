@@ -11,11 +11,11 @@ import {
   serverOf,
   settleNote,
   splitNote,
-  withNewK1
+  withNewK1,
 } from 'lnurlcash-kit'
-import type {LnurlcashOptions} from 'lnurlcash-kit'
 import type {Bearer, NewBearer} from '../types'
-import {UncertainOutcomeError} from './shared'
+import type {FundOperationOptions} from './shared'
+import {assertFundOwner, UncertainOutcomeError} from './shared'
 
 // the changeset stores apply after a mutation: `note`/`change` BEFORE
 // `consumed` - the mint call already burned every consumed input
@@ -49,13 +49,13 @@ export type CarveResult = {
 export const ensureExactAmount = async (
   bearers: Bearer[],
   amountMsat: number,
-  options: LnurlcashOptions = {}
+  options: FundOperationOptions = {},
 ): Promise<CarveResult> => {
   if (!Number.isInteger(amountMsat) || amountMsat <= 0) {
     throw new Error('Amount must be a positive whole number of msat.')
   }
   const eligible = bearers.filter(
-    b => !b.spent && b.callback !== '' && !b.deviceId && noteK1(b.url)
+    (b) => !b.spent && b.callback !== '' && !b.deviceId && noteK1(b.url),
   )
   // per-server greedy pick: smallest notes first until the target is
   // covered (an exact single-note match short-circuits - no mutation at
@@ -68,19 +68,17 @@ export const ensureExactAmount = async (
   let pick: Bearer[] | null = null
   for (const group of byServer.values()) {
     const sorted = [...group].sort((a, b) => a.amount - b.amount)
-    const exact = sorted.find(b => b.amount === amountMsat)
+    const exact = sorted.find((b) => b.amount === amountMsat)
     const candidate = exact ? [exact] : accumulate(sorted, amountMsat)
     if (!candidate) continue
     if (!pick || better(candidate, pick, amountMsat)) pick = candidate
   }
   if (!pick) {
-    throw new Error(
-      'No mint holds enough verified, unspent balance to cover that amount.'
-    )
+    throw new Error('No mint holds enough verified, unspent balance to cover that amount.')
   }
   const base = pick[0]
   const total = pick.reduce((sum, b) => sum + b.amount, 0)
-  const k1s = pick.map(b => requireNoteK1(b.url))
+  const k1s = pick.map((b) => requireNoteK1(b.url))
 
   if (pick.length === 1 && total === amountMsat) {
     // already exact - hand over the note itself, untouched
@@ -90,9 +88,9 @@ export const ensureExactAmount = async (
         callback: base.callback,
         amount: base.amount,
         verified: base.verified,
-        mintPubkey: base.mintPubkey
+        mintPubkey: base.mintPubkey,
       },
-      consumed: []
+      consumed: [],
     }
   }
 
@@ -100,13 +98,14 @@ export const ensureExactAmount = async (
     // merge path: many notes, exact sum - merge into one, then settle it
     // (true value + fresh secret; a failed settle leaves an unverified
     // note a refresh can repair, not a lost secret)
+    assertFundOwner(options)
     const merged = await mergeAmbiguitySafe(base, k1s, total, options)
     const unverified: NewBearer = {
       url: withNewK1(base.url, merged.k1, total, merged.signature),
       callback: base.callback,
       amount: total,
       verified: false,
-      mintPubkey: base.mintPubkey
+      mintPubkey: base.mintPubkey,
     }
     // a merge whose answer was lost leaves the service in an unknown
     // state from here - settling fires another mutation (the rotate
@@ -115,27 +114,16 @@ export const ensureExactAmount = async (
     // refresh repair.
     if (merged.rescued) return {note: unverified, consumed: pick}
     try {
-      const settled = await settleNote(
-        base.url,
-        merged.k1,
-        total,
-        merged.signature,
-        options
-      )
+      const settled = await settleNote(base.url, merged.k1, total, merged.signature, options)
       return {
         note: {
-          url: withNewK1(
-            base.url,
-            settled.k1,
-            settled.amountMsat,
-            settled.signature
-          ),
+          url: withNewK1(base.url, settled.k1, settled.amountMsat, settled.signature),
           callback: settled.callback,
           amount: settled.amountMsat,
           verified: true,
-          mintPubkey: base.mintPubkey
+          mintPubkey: base.mintPubkey,
         },
-        consumed: pick
+        consumed: pick,
       }
     } catch {
       return {note: unverified, consumed: pick}
@@ -154,6 +142,7 @@ export const ensureExactAmount = async (
   // state, so the change is NOT settled (that would fire another mutation
   // at it, whose own ambiguous failure would strand the rescued secret)
   let rescued = false
+  assertFundOwner(options)
   try {
     const parts = await splitNote(base.callback, k1s, amountMsat, options)
     partK1 = parts.k1
@@ -178,16 +167,16 @@ export const ensureExactAmount = async (
             callback: base.callback,
             amount: amountMsat,
             verified: false,
-            mintPubkey: base.mintPubkey
+            mintPubkey: base.mintPubkey,
           },
           {
             url: withNewK1(base.url, err.newSecrets[1], total - amountMsat),
             callback: base.callback,
             amount: total - amountMsat,
             verified: false,
-            mintPubkey: base.mintPubkey
-          }
-        ]
+            mintPubkey: base.mintPubkey,
+          },
+        ],
       )
     }
     // 'gone': the burn landed - the carried secrets are the only money
@@ -200,7 +189,7 @@ export const ensureExactAmount = async (
     callback: base.callback,
     amount: amountMsat,
     verified: partVerified,
-    mintPubkey: base.mintPubkey
+    mintPubkey: base.mintPubkey,
   }
   // settleNote: the change may be worth less than total - amount if this
   // mint charges split fees (LUD-25 deducts them from change, never the
@@ -211,7 +200,7 @@ export const ensureExactAmount = async (
     callback: base.callback,
     amount: total - amountMsat,
     verified: false,
-    mintPubkey: base.mintPubkey
+    mintPubkey: base.mintPubkey,
   }
   if (!rescued) {
     try {
@@ -220,22 +209,18 @@ export const ensureExactAmount = async (
         changeK1,
         total - amountMsat,
         changeSignature,
-        options
+        options,
       )
       change = {
-        url: withNewK1(
-          base.url,
-          settled.k1,
-          settled.amountMsat,
-          settled.signature
-        ),
+        url: withNewK1(base.url, settled.k1, settled.amountMsat, settled.signature),
         callback: settled.callback,
         amount: settled.amountMsat,
         verified: true,
-        mintPubkey: base.mintPubkey
+        mintPubkey: base.mintPubkey,
       }
-    } catch {
+    } catch (error) {
       // settle is best-effort - the unverified change above is still tracked
+      if (!(error instanceof Error)) throw error
     }
   }
   return {note, change, consumed: pick}
@@ -270,7 +255,7 @@ const mergeAmbiguitySafe = async (
   base: Bearer,
   k1s: string[],
   total: number,
-  options: LnurlcashOptions
+  options: FundOperationOptions,
 ): Promise<{k1: string; signature?: string; rescued: boolean}> => {
   try {
     const merged = await mergeNotes(base.callback, k1s, options)
@@ -288,9 +273,9 @@ const mergeAmbiguitySafe = async (
             callback: base.callback,
             amount: total,
             verified: false,
-            mintPubkey: base.mintPubkey
-          }
-        ]
+            mintPubkey: base.mintPubkey,
+          },
+        ],
       )
     }
     // 'gone': the burn landed - the carried secret is the only money left

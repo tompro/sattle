@@ -10,34 +10,49 @@ import {
   savedKeyExists,
   savedKeyIsEncrypted,
   restoreLinkingKeyStored,
-  isValidStoredSecret
+  isValidStoredSecret,
 } from '../keys'
 import type {TrustedMint} from '../trustedMints'
 import {readTrustedMints, mergeTrustedMints} from '../trustedMints'
+import {isWalletOwnerId} from './walletOwner'
 import type {EncryptedBearerRecord} from './bearers'
 import {readEncryptedBearers, writeEncryptedBearers} from './bearers'
 import type {WalletSettings} from './settings'
 import {loadSettings, persistSettings} from './settings'
+import {isJsonObject} from '../jsonParsing'
 
 export type BackupFile = {
   type: 'sattle-backup'
   version: 1
   createdAt: number
+  ownerId?: unknown
   linkingKey?: StoredSecret
   bearers: EncryptedBearerRecord[]
   trustedMints?: TrustedMint[]
   settings?: WalletSettings
 }
 
-export const buildBackup = (): BackupFile => {
+type ParsedBackupFile = {
+  type: 'sattle-backup'
+  version: 1
+  createdAt?: unknown
+  ownerId?: unknown
+  linkingKey?: unknown
+  bearers: unknown[]
+  trustedMints?: unknown
+  settings?: unknown
+}
+
+export const buildBackup = (ownerId?: string): BackupFile => {
   const backup: BackupFile = {
     type: 'sattle-backup',
     version: 1,
     createdAt: Date.now(),
     bearers: readEncryptedBearers(),
-    trustedMints: readTrustedMints(),
-    settings: loadSettings()
+    trustedMints: readTrustedMints(ownerId),
+    settings: loadSettings(),
   }
+  if (isWalletOwnerId(ownerId)) backup.ownerId = ownerId
   const storedKey = getSavedLinkingKeyStored()
   if (savedKeyIsEncrypted() && storedKey) {
     backup.linkingKey = storedKey
@@ -73,14 +88,17 @@ export const MAX_BACKUP_FILE_BYTES = 10 * 1024 * 1024
 const MAX_BACKUP_RECORDS = 10_000
 const MAX_BACKUP_FIELD_LENGTH = 64 * 1024
 
-const isBackupFile = (data: unknown): data is BackupFile => {
-  if (typeof data !== 'object' || data === null) return false
-  const backup = data as Record<string, unknown>
-  return (
-    backup.type === 'sattle-backup' &&
-    backup.version === 1 &&
-    Array.isArray(backup.bearers)
-  )
+const isBackupFile = (data: unknown): data is ParsedBackupFile =>
+  isJsonObject(data) &&
+  data.type === 'sattle-backup' &&
+  data.version === 1 &&
+  Array.isArray(data.bearers)
+
+export const parseBackupFile = (data: unknown): ParsedBackupFile => {
+  if (!isBackupFile(data)) {
+    throw new Error('Not a valid sattle backup file.')
+  }
+  return data
 }
 
 // merges a backup into localStorage: bearer records are added by id
@@ -94,25 +112,23 @@ const isBackupFile = (data: unknown): data is BackupFile => {
 // different key. See linkingKeySkipped above. The note-level dedupe (same
 // note arriving under a different record id, spent-wins) happens after
 // decrypt, in bearers.ts's mergeBearers.
-export const applyBackup = (data: unknown): RestoreResult => {
-  if (!isBackupFile(data)) {
-    throw new Error('Not a valid sattle backup file.')
-  }
-  const backup = data
+export const applyBackup = async (data: unknown, ownerId?: string): Promise<RestoreResult> => {
+  const backup = parseBackupFile(data)
   const existing = readEncryptedBearers()
-  const existingIds = new Set(existing.map(r => r.id))
+  const existingIds = new Set(existing.map((r) => r.id))
   if (backup.bearers.length > MAX_BACKUP_RECORDS) {
     throw new Error(
-      `Backup holds ${backup.bearers.length} records - more than the ${MAX_BACKUP_RECORDS} a real wallet could produce.`
+      `Backup holds ${backup.bearers.length} records - more than the ${MAX_BACKUP_RECORDS} a real wallet could produce.`,
     )
   }
   let added = 0
   let skipped = 0
   for (const record of backup.bearers) {
     if (
-      typeof record?.id !== 'string' ||
-      typeof record?.iv !== 'string' ||
-      typeof record?.ciphertext !== 'string' ||
+      !isJsonObject(record) ||
+      typeof record.id !== 'string' ||
+      typeof record.iv !== 'string' ||
+      typeof record.ciphertext !== 'string' ||
       record.id.length > MAX_BACKUP_FIELD_LENGTH ||
       record.iv.length > MAX_BACKUP_FIELD_LENGTH ||
       record.ciphertext.length > MAX_BACKUP_FIELD_LENGTH
@@ -132,14 +148,14 @@ export const applyBackup = (data: unknown): RestoreResult => {
     writeEncryptedBearers(existing)
   } catch {
     throw new Error(
-      'Local storage is full - the backup could not be written. Free up space (or forget unused wallets) and try again.'
+      'Local storage is full - the backup could not be written. Free up space (or forget unused wallets) and try again.',
     )
   }
 
   let linkingKeyRestored = false
   let linkingKeySkipped = false
   // an invalid key record reads as "no key in this backup", never as skipped
-  if (backup.linkingKey && isValidStoredSecret(backup.linkingKey)) {
+  if (isValidStoredSecret(backup.linkingKey)) {
     if (savedKeyExists()) {
       linkingKeySkipped = true
     } else {
@@ -148,16 +164,20 @@ export const applyBackup = (data: unknown): RestoreResult => {
     }
   }
 
-  const trustedMintsAdded = Array.isArray(backup.trustedMints)
-    ? mergeTrustedMints(backup.trustedMints)
-    : 0
+  // A file-carried owner marker is not identity proof, so it cannot namespace
+  // imported trust. Fresh file restores drop pins until key proof; active-wallet
+  // and Nostr restores supply an owner derived from their already-proven key.
+  const trustedMintsAdded =
+    ownerId && Array.isArray(backup.trustedMints)
+      ? await mergeTrustedMints(backup.trustedMints, ownerId)
+      : 0
 
   // settings merge: fill only fields this device has never set. Flat
   // optional fields (see settings.ts), so the merge is field by field -
   // today that is just defaultMint
   let settingsRestored = false
-  if (typeof backup.settings === 'object' && backup.settings !== null) {
-    const incoming = (backup.settings as Record<string, unknown>).defaultMint
+  if (isJsonObject(backup.settings)) {
+    const incoming = backup.settings.defaultMint
     const local = loadSettings()
     if (
       local.defaultMint === undefined &&
@@ -175,6 +195,6 @@ export const applyBackup = (data: unknown): RestoreResult => {
     linkingKeyRestored,
     linkingKeySkipped,
     trustedMintsAdded,
-    settingsRestored
+    settingsRestored,
   }
 }

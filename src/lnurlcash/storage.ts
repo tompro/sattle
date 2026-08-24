@@ -5,7 +5,8 @@
 // the Pinia mints store and this module's backup both use it.
 //
 // Split by concern; this façade re-exports everything:
-//   storage/bearers.ts     - encrypted bearer records + mergeBearers
+//   storage/bearers.ts     - encrypted bearer records, changeset commits,
+//                            mergeBearers
 //   storage/activityLog.ts - the append-only encrypted activity log
 //   storage/settings.ts    - plaintext wallet settings
 //   storage/backup.ts      - buildBackup / applyBackup
@@ -19,10 +20,11 @@ export {
   loadBearers,
   persistBearer,
   deleteBearerRecord,
+  applyBearerChangeset,
   clearAllBearers,
-  mergeBearers
+  mergeBearers,
 } from './storage/bearers'
-export type {EncryptedBearerRecord} from './storage/bearers'
+export type {BearerChangeset, EncryptedBearerRecord} from './storage/bearers'
 
 export {
   newActivityId,
@@ -30,16 +32,12 @@ export {
   loadActivity,
   persistActivityEvent,
   clearAllActivity,
-  MAX_ACTIVITY_ENTRIES
+  MAX_ACTIVITY_ENTRIES,
 } from './storage/activityLog'
-export type {
-  ActivityKind,
-  ActivityEvent,
-  EncryptedActivityRecord
-} from './storage/activityLog'
+export type {ActivityKind, ActivityEvent, EncryptedActivityRecord} from './storage/activityLog'
 
 export {loadSettings, persistSettings, clearSettings} from './storage/settings'
 export type {WalletSettings} from './storage/settings'
 
-export {buildBackup, applyBackup, MAX_BACKUP_FILE_BYTES} from './storage/backup'
+export {buildBackup, applyBackup, parseBackupFile, MAX_BACKUP_FILE_BYTES} from './storage/backup'
 export type {BackupFile, RestoreResult} from './storage/backup'

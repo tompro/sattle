@@ -30,22 +30,21 @@
 import {sha256} from '@noble/hashes/sha2.js'
 import {bytesToHex, hexToBytes, utf8ToBytes} from '@noble/hashes/utils.js'
 
+import {linkingPubKeyHex, savedKeyOwnerId} from './keys'
 import {withStorageLock} from './storageLock'
 import type {PasskeySlot} from './storage/passkeySlots'
 import {
   PASSKEY_SLOTS_STORAGE_KEY,
+  PASSKEY_SLOT_VERSION,
   readPasskeySlots,
-  writePasskeySlots
+  writePasskeySlots,
 } from './storage/passkeySlots'
 import {unwrapLinkingKeyWithPrf, wrapLinkingKeyWithPrf} from './passkeyWrap'
 
 export type {PasskeySlot, PasskeyWrap} from './storage/passkeySlots'
 export {readPasskeySlots, hasPasskeySlots} from './storage/passkeySlots'
-export {
-  derivePasskeyWrapKey,
-  wrapLinkingKeyWithPrf,
-  unwrapLinkingKeyWithPrf
-} from './passkeyWrap'
+export {migrateLegacyPasskeySlots} from './passkeyOwnership'
+export {derivePasskeyWrapKey, wrapLinkingKeyWithPrf, unwrapLinkingKeyWithPrf} from './passkeyWrap'
 
 // 32 bytes, fixed - the authenticator requires exactly 32
 const PASSKEY_PRF_SALT = sha256(utf8ToBytes('sattle-passkey-prf-v1'))
@@ -62,9 +61,7 @@ export type CeremonyCredential = {
 
 // the slice of navigator.credentials the ceremonies need
 export type PasskeyCredentials = {
-  create(
-    options?: CredentialCreationOptions
-  ): Promise<CeremonyCredential | null>
+  create(options?: CredentialCreationOptions): Promise<CeremonyCredential | null>
   get(options?: CredentialRequestOptions): Promise<CeremonyCredential | null>
 }
 
@@ -76,13 +73,11 @@ export type PasskeySupportProbe = {
 // the one runtime narrow at the browser boundary: navigator.credentials
 // resolves to the Credential supertype, but a publicKey ceremony always
 // produces a PublicKeyCredential
-const asCeremonyCredential = (
-  credential: Credential | null
-): CeremonyCredential | null => {
-  if (!credential || credential.type !== 'public-key') return null
-  if (!('rawId' in credential)) return null
-  if (!('getClientExtensionResults' in credential)) return null
-  return credential as unknown as CeremonyCredential
+const asCeremonyCredential = (credential: Credential | null): CeremonyCredential | null => {
+  if (typeof PublicKeyCredential === 'undefined' || !(credential instanceof PublicKeyCredential)) {
+    return null
+  }
+  return credential
 }
 
 const defaultCredentials = (): PasskeyCredentials => {
@@ -91,8 +86,8 @@ const defaultCredentials = (): PasskeyCredentials => {
   }
   const container = navigator.credentials
   return {
-    create: options => container.create(options).then(asCeremonyCredential),
-    get: options => container.get(options).then(asCeremonyCredential)
+    create: (options) => container.create(options).then(asCeremonyCredential),
+    get: (options) => container.get(options).then(asCeremonyCredential),
   }
 }
 
@@ -101,14 +96,8 @@ const defaultCredentials = (): PasskeyCredentials => {
 // direct pre-flight check on older clients - where getClientCapabilities
 // exists we can ask for it, elsewhere this returns true optimistically and
 // registration itself fails with a clear error.
-export const passkeySupported = async (
-  probe?: PasskeySupportProbe
-): Promise<boolean> => {
-  const p =
-    probe ??
-    (typeof PublicKeyCredential !== 'undefined'
-      ? PublicKeyCredential
-      : undefined)
+export const passkeySupported = async (probe?: PasskeySupportProbe): Promise<boolean> => {
+  const p = probe ?? (typeof PublicKeyCredential !== 'undefined' ? PublicKeyCredential : undefined)
   if (!p) return false
   if (!(await p.isUserVerifyingPlatformAuthenticatorAvailable())) return false
   if (p.getClientCapabilities) {
@@ -135,25 +124,21 @@ const prfOutputOf = (credential: CeremonyCredential): Uint8Array | null => {
 // rotation
 export const getPasskeyPrfOutput = async (
   credentialId: string,
-  options: {credentials?: PasskeyCredentials} = {}
+  options: {credentials?: PasskeyCredentials} = {},
 ): Promise<Uint8Array> => {
   const credentials = options.credentials ?? defaultCredentials()
   const assertion = await credentials.get({
     publicKey: {
       challenge: crypto.getRandomValues(new Uint8Array(32)),
-      allowCredentials: [
-        {type: 'public-key', id: new Uint8Array(hexToBytes(credentialId))}
-      ],
+      allowCredentials: [{type: 'public-key', id: new Uint8Array(hexToBytes(credentialId))}],
       userVerification: 'required',
-      extensions: {prf: {eval: {first: PASSKEY_PRF_SALT}}}
-    }
+      extensions: {prf: {eval: {first: PASSKEY_PRF_SALT}}},
+    },
   })
   if (!assertion) throw new Error('Passkey ceremony was cancelled.')
   const prfOutput = prfOutputOf(assertion)
   if (!prfOutput) {
-    throw new Error(
-      'This passkey did not return a PRF secret - it cannot unlock this wallet.'
-    )
+    throw new Error('This passkey did not return a PRF secret - it cannot unlock this wallet.')
   }
   return prfOutput
 }
@@ -172,8 +157,12 @@ export type RegisterPasskeyOptions = {
 // those get a follow-up get() against the fresh credential.
 export const registerPasskey = async (
   linkingKey: Uint8Array,
-  options: RegisterPasskeyOptions = {}
+  options: RegisterPasskeyOptions = {},
 ): Promise<PasskeySlot> => {
+  const ownerId = savedKeyOwnerId()
+  if (ownerId === null || linkingPubKeyHex(linkingKey) !== ownerId) {
+    throw new Error('Passkey registration requires the proven saved wallet owner.')
+  }
   const credentials = options.credentials ?? defaultCredentials()
   const credential = await credentials.create({
     publicKey: {
@@ -184,29 +173,27 @@ export const registerPasskey = async (
         // discoverable-credential login is used
         id: crypto.getRandomValues(new Uint8Array(16)),
         name: 'sattle wallet',
-        displayName: 'sattle wallet'
+        displayName: 'sattle wallet',
       },
       pubKeyCredParams: [
         {type: 'public-key', alg: -7}, // ES256
-        {type: 'public-key', alg: -257} // RS256
+        {type: 'public-key', alg: -257}, // RS256
       ],
       authenticatorSelection: {
         authenticatorAttachment: options.authenticatorAttachment ?? 'platform',
         residentKey: 'preferred',
-        userVerification: 'required'
+        userVerification: 'required',
       },
       attestation: 'none',
-      extensions: {prf: {eval: {first: PASSKEY_PRF_SALT}}}
-    }
+      extensions: {prf: {eval: {first: PASSKEY_PRF_SALT}}},
+    },
   })
   if (!credential) throw new Error('Passkey registration was cancelled.')
   const credentialId = bytesToHex(toBytes(credential.rawId))
   let prfOutput = prfOutputOf(credential)
   if (!prfOutput) {
     if (credential.getClientExtensionResults().prf?.enabled !== true) {
-      throw new Error(
-        'This authenticator does not support the WebAuthn PRF extension.'
-      )
+      throw new Error('This authenticator does not support the WebAuthn PRF extension.')
     }
     prfOutput = await getPasskeyPrfOutput(credentialId, {credentials})
   }
@@ -215,14 +202,14 @@ export const registerPasskey = async (
     credentialId,
     ...wrap,
     createdAt: Date.now(),
-    ...(options.name !== undefined ? {name: options.name} : {})
+    ...(options.name !== undefined ? {name: options.name} : {}),
+    ownerId,
+    version: PASSKEY_SLOT_VERSION,
   }
   await withStorageLock(PASSKEY_SLOTS_STORAGE_KEY, () => {
-    const slots = readPasskeySlots().filter(
-      s => s.credentialId !== credentialId
-    )
+    const slots = readPasskeySlots().filter((s) => s.credentialId !== credentialId)
     slots.push(slot)
-    writePasskeySlots(slots)
+    writePasskeySlots(ownerId, slots)
   })
   return slot
 }
@@ -231,85 +218,88 @@ export const registerPasskey = async (
 // slot's credential, then unwrap. Yields the exact same linking key
 // unlock(password) yields - the caller activates the wallet with it.
 export const unlockWithPasskey = async (
-  options: {credentials?: PasskeyCredentials} = {}
+  options: {credentials?: PasskeyCredentials} = {},
 ): Promise<Uint8Array> => {
+  const ownerId = savedKeyOwnerId()
   const slots = readPasskeySlots()
-  if (slots.length === 0) {
+  if (ownerId === null || slots.length === 0) {
     throw new Error('No passkeys registered on this device.')
   }
   const credentials = options.credentials ?? defaultCredentials()
   const assertion = await credentials.get({
     publicKey: {
       challenge: crypto.getRandomValues(new Uint8Array(32)),
-      allowCredentials: slots.map(slot => ({
+      allowCredentials: slots.map((slot) => ({
         type: 'public-key',
-        id: new Uint8Array(hexToBytes(slot.credentialId))
+        id: new Uint8Array(hexToBytes(slot.credentialId)),
       })),
       userVerification: 'required',
-      extensions: {prf: {eval: {first: PASSKEY_PRF_SALT}}}
-    }
+      extensions: {prf: {eval: {first: PASSKEY_PRF_SALT}}},
+    },
   })
   if (!assertion) throw new Error('Passkey ceremony was cancelled.')
   const credentialId = bytesToHex(toBytes(assertion.rawId))
-  const slot = slots.find(s => s.credentialId === credentialId)
+  const slot = slots.find((s) => s.credentialId === credentialId)
   if (!slot) {
     throw new Error('The passkey used is not registered with this wallet.')
   }
   const prfOutput = prfOutputOf(assertion)
   if (!prfOutput) {
-    throw new Error(
-      'This passkey did not return a PRF secret - it cannot unlock this wallet.'
-    )
+    throw new Error('This passkey did not return a PRF secret - it cannot unlock this wallet.')
   }
-  return unwrapLinkingKeyWithPrf(prfOutput, slot)
+  const linkingKey = await unwrapLinkingKeyWithPrf(prfOutput, slot)
+  if (savedKeyOwnerId() !== ownerId || linkingPubKeyHex(linkingKey) !== ownerId) {
+    throw new Error('This passkey belongs to a different wallet.')
+  }
+  return linkingKey
 }
 
 // Removes the slot only: WebAuthn has no API to delete the credential from
 // the authenticator - an orphaned passkey simply finds nothing to unwrap.
 // Returns whether a slot was actually removed.
-export const removePasskey = async (
-  credentialId: string
-): Promise<boolean> => {
+export const removePasskey = async (credentialId: string): Promise<boolean> => {
+  const ownerId = savedKeyOwnerId()
+  if (ownerId === null) return false
   let removed = false
   await withStorageLock(PASSKEY_SLOTS_STORAGE_KEY, () => {
     const slots = readPasskeySlots()
-    const kept = slots.filter(s => s.credentialId !== credentialId)
+    const kept = slots.filter((s) => s.credentialId !== credentialId)
     removed = kept.length !== slots.length
-    if (removed) writePasskeySlots(kept)
+    if (removed) writePasskeySlots(ownerId, kept)
   })
   return removed
 }
 
-// Re-wraps every slot around NEW key material - needed on linking-key
-// rotation (restoring a different seed while keeping the passkeys). Each
-// slot's wrap secret lives only inside its authenticator, so the caller
+// Refreshes every current-owner slot around the same proven key material.
+// Each slot's wrap secret lives only inside its authenticator, so the caller
 // must supply a fresh PRF output per credential (one getPasskeyPrfOutput
 // ceremony each). All-or-nothing: a slot without a PRF output aborts the
-// whole re-wrap before anything is written, since a half-rewrapped set
-// would keep unlocking the OLD key with the uncovered passkeys.
+// whole refresh before anything is written.
 //
 // A password change does NOT need this: the password wrap (keys.ts) and the
 // passkey slots wrap the same linking key independently, so re-encrypting
 // the stored key under a new password leaves every slot valid.
 export const rewrapAllSlots = async (
   linkingKey: Uint8Array,
-  prfOutputs: ReadonlyMap<string, Uint8Array>
+  prfOutputs: ReadonlyMap<string, Uint8Array>,
 ): Promise<void> => {
+  const ownerId = savedKeyOwnerId()
+  if (ownerId === null || linkingPubKeyHex(linkingKey) !== ownerId) {
+    throw new Error('Passkey re-wrap requires the proven saved wallet owner.')
+  }
   await withStorageLock(PASSKEY_SLOTS_STORAGE_KEY, async () => {
     const slots = readPasskeySlots()
     const rewrapped: PasskeySlot[] = []
     for (const slot of slots) {
       const prfOutput = prfOutputs.get(slot.credentialId)
       if (!prfOutput) {
-        throw new Error(
-          'Missing fresh PRF output for a passkey slot - refusing a partial re-wrap.'
-        )
+        throw new Error('Missing fresh PRF output for a passkey slot - refusing a partial re-wrap.')
       }
       rewrapped.push({
         ...slot,
-        ...(await wrapLinkingKeyWithPrf(prfOutput, linkingKey))
+        ...(await wrapLinkingKeyWithPrf(prfOutput, linkingKey)),
       })
     }
-    writePasskeySlots(rewrapped)
+    writePasskeySlots(ownerId, rewrapped)
   })
 }
