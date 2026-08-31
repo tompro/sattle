@@ -108,6 +108,13 @@ export type TransferResult = {
   targetServer: string
   // the fresh target note, on 'settled'
   mintedAtTarget?: ClaimedNote
+  // on failed-funds-returned, when the source-probe rotate succeeded: the
+  // returned funds re-secured at a fresh secret. Kept OUT of `carve`
+  // (which always describes the carve as committed by the onCarve
+  // checkpoint) so an early-committed carve and a post-wait rotation can
+  // both be persisted - the carved note the rotate burned must be marked
+  // spent, this note added
+  rotatedNote?: NewBearer
   // present whenever the claim could still complete later
   claimMaterial?: TransferClaimMaterial
   // a fresh secret rescued from an ambiguous rotate while classifying the
@@ -121,6 +128,10 @@ export type TransferOptions = {
   // kit transport overrides (fetch injection, timeouts)
   kit?: LnurlcashOptions
   assertOwner?: () => void
+  // carve checkpoint - committed before the melt and the target
+  // settlement wait, so an abort mid-wait never strands the carve (see
+  // FundOperationOptions.onCarve)
+  onCarve?: FundOperationOptions['onCarve']
 }
 
 // the claim retry material for a named target: the note at the wallet's
@@ -140,9 +151,13 @@ export const transferBetweenMints = async (
   bearers: Bearer[],
   amountMsat: number,
   targetMint: string,
-  {poll = {}, kit = {}, assertOwner}: TransferOptions = {},
+  {poll = {}, kit = {}, assertOwner, onCarve}: TransferOptions = {},
 ): Promise<TransferResult> => {
-  const options: FundOperationOptions = assertOwner ? {...kit, assertOwner} : kit
+  const options: FundOperationOptions = {
+    ...kit,
+    ...(assertOwner ? {assertOwner} : {}),
+    ...(onCarve ? {onCarve} : {}),
+  }
   if (!Number.isInteger(amountMsat) || amountMsat <= 0) {
     throw new Error('Amount must be a positive whole number of msat.')
   }
@@ -331,15 +346,20 @@ export const transferBetweenMints = async (
     // as the way back to the money if the invoice settles later
     try {
       const rotated = await rotateNote(carve.note.callback, k1, options)
+      // the rotate succeeded: the melt provably never landed, and the
+      // funds are back - re-secured, since the melt attempt put k1 on the
+      // wire. Reported separately from `carve` (see rotatedNote): the
+      // carve may already be committed, and its note is what this rotate
+      // burned
       return {
         ...base,
         outcome: 'failed-funds-returned',
-        carve: {
-          ...carve,
-          note: {
-            ...carve.note,
-            url: withNewK1(carve.note.url, rotated.k1, carve.note.amount, rotated.signature),
-          },
+        rotatedNote: {
+          url: withNewK1(carve.note.url, rotated.k1, carve.note.amount, rotated.signature),
+          callback: carve.note.callback,
+          amount: carve.note.amount,
+          verified: true,
+          ...(carve.note.mintPubkey ? {mintPubkey: carve.note.mintPubkey} : {}),
         },
       }
     } catch (err) {

@@ -23,18 +23,19 @@ import {errResult, okResult} from './protocol'
 
 // maps a PayResult onto the store delta, mirroring PayInvoiceDialog's
 // semantics: carve inputs lock spent, change is tracked, returned funds
-// are tracked UNMARKED, rescued secrets are tracked unverified. One
+// are tracked UNMARKED, rescued secrets are tracked unverified. The
+// returned funds live in `rotatedNote` when the classification rotate
+// re-secured them (burning the carved note in the process); one
 // deliberate divergence: in the exact-match + funds-returned case the
-// original bearer (old k1, burned server-side by the classification
-// rotate) is left for the next refresh to reconcile, exactly as the UI
-// leaves it - the money itself sits in the re-secured note, which IS
-// tracked.
+// original bearer (old k1, burned server-side by that rotate) is left for
+// the next refresh to reconcile, exactly as the UI leaves it - the money
+// itself sits in the re-secured note, which IS tracked.
 export const payChangeset = (bearers: Bearer[], result: PayResult): NwcChangeset => {
   const add: NewBearer[] = []
   const markSpent: string[] = result.carve.consumed.map((b) => b.id)
   if (result.carve.change) add.push(result.carve.change)
   if (result.outcome === 'failed-funds-returned') {
-    add.push(result.carve.note)
+    add.push(result.rotatedNote ?? result.carve.note)
   } else {
     // settled / still-pending / already-spent: the carved note is gone or
     // locked. When it was one of the wallet's own bearers (an exact-match

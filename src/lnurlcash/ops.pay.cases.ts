@@ -51,9 +51,14 @@ describe('payWithBearers', () => {
     })
     expect(result.outcome).toBe('failed-funds-returned')
     expect(instance.state.noteState(secret('33'))).toBe('burned')
-    const returnedK1 = requiredValue(noteK1(result.carve.note.url))
+    // the returned funds come back re-secured at the classification
+    // rotate's fresh secret - carried as rotatedNote, NOT folded into the
+    // carve (which an onCarve checkpoint may already have committed)
+    const rotatedNote = requiredValue(result.rotatedNote)
+    expect(rotatedNote.verified).toBe(true)
+    const returnedK1 = requiredValue(noteK1(rotatedNote.url))
     expect(instance.state.noteState(returnedK1)).toBe('outstanding')
-    expect(result.carve.note.amount).toBe(21_000)
+    expect(rotatedNote.amount).toBe(21_000)
   })
 
   it('classifies a never-settling melt as unknown-still-pending', async () => {
@@ -71,5 +76,23 @@ describe('payWithBearers', () => {
     const bearer = await makeBearer(instance, secret('35'), 21_000)
     await expect(payWithBearers([bearer], 'lnbc1pjqrstuvwxyz')).rejects.toThrow(/amount/)
     await expect(payWithBearers([bearer], 'not-an-invoice')).rejects.toThrow(/not a valid/i)
+  })
+
+  it('aborts before the melt when the carve commit hook fails', async () => {
+    const instance = await mint()
+    const bearer = await makeBearer(instance, secret('36'), 21_000)
+    // paying 10_500 off a 21_000 note forces a split, which must commit
+    // through the hook before the melt may start
+    await expect(
+      payWithBearers([bearer], 'lnbc105n1pjqrstuvwxyz', {
+        onCarve: () => {
+          throw new Error('commit failed')
+        },
+      }),
+    ).rejects.toThrow(/commit failed/)
+    // the split landed (the input is burned) but the melt never happened:
+    // nothing sits pending at the mint
+    expect(instance.state.noteState(secret('36'))).toBe('burned')
+    expect([...instance.state.notes.values()].every((note) => note.state !== 'pending')).toBe(true)
   })
 })
