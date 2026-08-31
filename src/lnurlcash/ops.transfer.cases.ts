@@ -3,6 +3,7 @@ import {createMockMint} from 'lnurlcash-conformance/mock-mint'
 import {hashK1, noteK1} from 'lnurlcash-kit'
 
 import {transferBetweenMints} from './ops'
+import type {CarveResult} from './ops'
 import {requiredValue} from './test-utils'
 import {expectBurned, makeBearer, mint, secret, settleWhenRequested} from './ops.testHarness'
 
@@ -128,10 +129,15 @@ describe('transferBetweenMints', () => {
     expect(result.outcome).toBe('failed-funds-returned')
     expect(result.mintedAtTarget).toBeUndefined()
     expect(source.state.noteState(k1)).toBe('burned')
-    const returnedK1 = requiredValue(noteK1(result.carve.note.url))
+    // the returned funds come back re-secured at the source-probe rotate's
+    // fresh secret - carried as rotatedNote, NOT folded into the carve
+    // (which an onCarve checkpoint may already have committed)
+    const rotatedNote = requiredValue(result.rotatedNote)
+    expect(rotatedNote.verified).toBe(true)
+    const returnedK1 = requiredValue(noteK1(rotatedNote.url))
     expect(returnedK1).not.toBe(k1)
     expect(source.state.noteState(returnedK1)).toBe('outstanding')
-    expect(result.carve.note.amount).toBe(21_000)
+    expect(rotatedNote.amount).toBe(21_000)
   })
 
   it('moves value to a NAMED target: the note lands at the wallet secret, no rotate', async () => {
@@ -211,5 +217,44 @@ describe('transferBetweenMints', () => {
     const newK1 = requiredValue(noteK1(claimed.note.url))
     expect(newK1).not.toBe(preimage)
     expect(target.state.noteState(newK1)).toBe('outstanding')
+  })
+
+  it('fires onCarve after the carve landed and before the melt starts', async () => {
+    const source = await mint()
+    const target = await mint({testHooks: true})
+    const bearer = await makeBearer(source, secret('51'), 21_000)
+    const seen: CarveResult[] = []
+    const pending = transferBetweenMints([bearer], 10_000, `mint@127.0.0.1:${target.port}`, {
+      poll: fastPoll,
+      onCarve: (carve) => {
+        seen.push(carve)
+        // at hook time the melt must NOT have started: the carved note is
+        // still outstanding (a melt would leave it pending)
+        expect(source.state.noteState(requiredValue(noteK1(carve.note.url)))).toBe('outstanding')
+      },
+    })
+    await settleWhenRequested(target)
+    const result = await pending
+    expect(result.outcome).toBe('settled')
+    expect(seen).toHaveLength(1)
+    expect(seen[0]?.consumed.map((entry) => entry.id)).toEqual([bearer.id])
+  })
+
+  it('aborts before the melt when the carve commit hook fails', async () => {
+    const source = await mint()
+    const target = await mint({testHooks: true})
+    const k1 = secret('52')
+    const bearer = await makeBearer(source, k1, 21_000)
+    await expect(
+      transferBetweenMints([bearer], 10_000, `mint@127.0.0.1:${target.port}`, {
+        onCarve: () => {
+          throw new Error('commit failed')
+        },
+      }),
+    ).rejects.toThrow(/commit failed/)
+    // the split landed (the input is burned) but the melt never happened:
+    // nothing sits pending at the source, nothing was ever paid
+    expect(source.state.noteState(k1)).toBe('burned')
+    expect([...source.state.notes.values()].every((note) => note.state !== 'pending')).toBe(true)
   })
 })

@@ -2,6 +2,7 @@ import {describe, expect, it} from 'vitest'
 import {fetchNoteInfo, noteK1} from 'lnurlcash-kit'
 
 import type {Bearer} from './types'
+import type {CarveResult} from './ops'
 import {UncertainOutcomeError, ensureExactAmount} from './ops'
 import {requiredValue} from './test-utils'
 import {makeBearer, mint, noteUrl, secret} from './ops.testHarness'
@@ -118,5 +119,45 @@ describe('ensureExactAmount', () => {
     expect(
       (await fetchNoteInfo(noteUrl(instance, requiredValue(noteK1(second.url))))).maxWithdrawable,
     ).toBe(16_000)
+  })
+
+  it('reports a mutation-bearing carve through onCarve before returning', async () => {
+    const instance = await mint()
+    const bearer = await makeBearer(instance, secret('12'), 21_000)
+    const seen: CarveResult[] = []
+    const result = await ensureExactAmount([bearer], 5_000, {
+      onCarve: (carve) => {
+        seen.push(carve)
+      },
+    })
+    // the hook saw exactly the returned result, once
+    expect(seen).toHaveLength(1)
+    expect(seen[0]).toBe(result)
+    expect(result.consumed).toHaveLength(1)
+  })
+
+  it('never fires onCarve for an already-exact note - nothing was burned', async () => {
+    const instance = await mint()
+    const bearer = await makeBearer(instance, secret('13'), 21_000)
+    let called = false
+    const result = await ensureExactAmount([bearer], 21_000, {
+      onCarve: () => {
+        called = true
+      },
+    })
+    expect(called).toBe(false)
+    expect(result.consumed).toEqual([])
+  })
+
+  it('propagates an onCarve failure - the carve landed, the caller must surface it', async () => {
+    const instance = await mint()
+    const bearer = await makeBearer(instance, secret('14'), 21_000)
+    await expect(
+      ensureExactAmount([bearer], 5_000, {
+        onCarve: () => {
+          throw new Error('commit failed')
+        },
+      }),
+    ).rejects.toThrow(/commit failed/)
   })
 })

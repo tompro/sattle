@@ -41,6 +41,13 @@ export type PayResult = {
   invoice: string
   amountMsat: number
   verifyUrl: string | null
+  // on failed-funds-returned, when the classification rotate succeeded:
+  // the returned funds re-secured at a fresh secret. Kept OUT of `carve`
+  // (which always describes the carve as committed by the onCarve
+  // checkpoint) so an early-committed carve and a post-wait rotation can
+  // both be persisted - the carved note the rotate burned must be marked
+  // spent, this note added
+  rotatedNote?: NewBearer
   // a fresh secret rescued from an ambiguous rotate during outcome
   // classification - the caller must track it unverified; if the rotate
   // landed, this is the only copy of the (returned) funds
@@ -56,6 +63,10 @@ export type PayOptions = {
   // kit transport overrides (fetch injection, timeouts)
   kit?: LnurlcashOptions
   assertOwner?: () => void
+  // carve checkpoint - committed before the melt and the settlement wait,
+  // so an abort mid-wait never strands the carve (see
+  // FundOperationOptions.onCarve)
+  onCarve?: FundOperationOptions['onCarve']
 }
 
 // A melt's resolved promise only means the payment is in flight; the
@@ -71,9 +82,13 @@ export type PayOptions = {
 export const payWithBearers = async (
   bearers: Bearer[],
   input: string,
-  {amountMsat, poll = {}, kit = {}, assertOwner}: PayOptions = {},
+  {amountMsat, poll = {}, kit = {}, assertOwner, onCarve}: PayOptions = {},
 ): Promise<PayResult> => {
-  const options: FundOperationOptions = assertOwner ? {...kit, assertOwner} : kit
+  const options: FundOperationOptions = {
+    ...kit,
+    ...(assertOwner ? {assertOwner} : {}),
+    ...(onCarve ? {onCarve} : {}),
+  }
   let invoice: string
   let amount: number
   const trimmed = input.trim()
@@ -150,15 +165,18 @@ export const payWithBearers = async (
       const rotated = await rotateNote(carve.note.callback, k1, options)
       // the rotate succeeded, so the mint restored the note - and k1 had
       // been on the wire since the melt, so the rotation doubles as the
-      // required re-securing of the returned funds
+      // required re-securing of the returned funds. Reported separately
+      // from `carve` (see PayResult.rotatedNote): the carve may already be
+      // committed, and its note is what this rotate burned
       return {
         outcome: 'failed-funds-returned',
-        carve: {
-          ...carve,
-          note: {
-            ...carve.note,
-            url: withNewK1(carve.note.url, rotated.k1, amount, rotated.signature),
-          },
+        carve,
+        rotatedNote: {
+          url: withNewK1(carve.note.url, rotated.k1, amount, rotated.signature),
+          callback: carve.note.callback,
+          amount,
+          verified: true,
+          ...(carve.note.mintPubkey ? {mintPubkey: carve.note.mintPubkey} : {}),
         },
         invoice,
         amountMsat: amount,

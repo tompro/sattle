@@ -6,6 +6,7 @@ import {fetchInvoiceVerification, fetchNoteInfo, withNewK1} from 'lnurlcash-kit'
 import type {LnurlcashOptions, VerifyResult} from 'lnurlcash-kit'
 import {NoteSpentError, NoteUnknownError, noteDeclaredAmount} from 'lnurlcash-kit'
 import type {NewBearer} from '../types'
+import type {CarveResult} from './carve'
 
 // a mutation's answer was lost AND the probe could not tell whether it
 // landed - the possible outputs the fresh secrets would control, for the
@@ -31,6 +32,16 @@ export class PollAbortedError extends Error {
 
 export type FundOperationOptions = LnurlcashOptions & {
   readonly assertOwner?: () => void
+  // called by a carve the moment its mutation has LANDED server-side (the
+  // inputs are burned, the outputs are known), before the flow moves on to
+  // anything slow or uncertain - the caller's one chance to durably commit
+  // the changeset so an abort during a long settlement wait can never
+  // strand the outputs or leave burned inputs looking spendable. If it
+  // rejects, the flow stops BEFORE anything further is spent and the
+  // rejection propagates: the carve state is then landed-but-maybe-
+  // uncommitted, which the caller must surface loudly. Never called for a
+  // carve that mutated nothing.
+  readonly onCarve?: (carve: CarveResult) => void | Promise<void>
 }
 
 export const assertFundOwner = (options: FundOperationOptions): void => {

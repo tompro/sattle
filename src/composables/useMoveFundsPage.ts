@@ -7,7 +7,7 @@ import type { MintFee } from 'lnurlcash-kit';
 import { transferBetweenMints } from '@/lnurlcash/ops';
 import type { TransferOutcome } from '@/lnurlcash/ops';
 import { maxNetForBalance, quoteMintFee } from '@/lnurlcash/fees';
-import type { NewBearer } from '@/lnurlcash/types';
+import type { Bearer, NewBearer } from '@/lnurlcash/types';
 import { floorMsatToSat, msatToSats, satsToMsat, MSAT_PER_SAT } from '@/lnurlcash/units';
 import { useWalletStore } from '@/stores/wallet';
 import { useMintsStore } from '@/stores/mints';
@@ -135,14 +135,28 @@ export const useMoveFundsPage = () => {
     try {
       const ownerFence = wallet.captureOwnerFence();
       const commitContext = { ownerFence, warn: warnCommitted };
+      // the carve commits the moment it lands server-side (onCarve), not
+      // after the melt + settlement wait - an abort mid-wait can then
+      // never leave burned inputs looking spendable or strand the outputs
+      const carveState: { committed?: Bearer } = {};
       const transfer = await transferBetweenMints(
         wallet.bearers,
         satsToMsat(sats),
         targetInput.value,
-        { assertOwner: ownerFence },
+        {
+          assertOwner: ownerFence,
+          onCarve: async (carve) => {
+            carveState.committed = await commitCarve(wallet, carve, commitContext);
+          },
+        },
       );
       stage.value = 'Confirming the result…';
-      const carved = await commitCarve(wallet, transfer.carve, commitContext);
+      // a carve that mutated nothing fires no hook - the note is already
+      // tracked; look it up
+      const carved =
+        carveState.committed ??
+        wallet.bearers.find((bearer) => bearer.url === transfer.carve.note.url);
+      if (!carved) throw new Error('The carved note was not tracked.');
       if (transfer.rescuedNote) {
         await addCommittedBearers(wallet, [transfer.rescuedNote], commitContext);
       }
@@ -163,6 +177,13 @@ export const useMoveFundsPage = () => {
         );
         toast('positive', `Moved ${sats.toLocaleString()} sats.`);
       } else if (transfer.outcome === 'failed-funds-returned') {
+        if (transfer.rotatedNote) {
+          // the source-probe rotate re-secured the returned funds at a
+          // fresh secret, burning the carved note the checkpoint already
+          // committed - add the new note BEFORE marking the old one spent
+          await addCommittedBearers(wallet, [transfer.rotatedNote], commitContext);
+          await wallet.markSpent(carved.id, ownerFence);
+        }
         await activity.log(
           'transfer',
           `A ${sats.toLocaleString()} sat move to ${transfer.targetServer} failed - funds are back in your wallet.`,

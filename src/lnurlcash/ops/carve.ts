@@ -1,6 +1,11 @@
 // ensureExactAmount: carve an exact amount out of the held notes, merging
 // and/or splitting as needed, into a single fresh note worth exactly the
 // target - the operation every send and every melt starts from.
+//
+// A carve whose mutation landed reports itself through options.onCarve
+// BEFORE returning, so a caller about to do something slow (a settlement
+// wait) can durably commit first - a flow aborted mid-wait must never
+// leave burned inputs looking spendable or strand the fresh outputs.
 
 import {
   AmbiguousMutationError,
@@ -81,6 +86,14 @@ export const ensureExactAmount = async (
   const total = pick.reduce((sum, b) => sum + b.amount, 0)
   const k1s = pick.map((b) => requireNoteK1(b.url))
 
+  // a carve that burned inputs reports itself the moment its outcome is
+  // known, before the caller's flow moves on to anything slow or
+  // uncertain - see FundOperationOptions.onCarve
+  const checkpoint = async (result: CarveResult): Promise<CarveResult> => {
+    await options.onCarve?.(result)
+    return result
+  }
+
   if (pick.length === 1 && total === amountMsat) {
     // already exact - hand over the note itself, untouched
     return {
@@ -113,10 +126,10 @@ export const ensureExactAmount = async (
     // inside settleNote) at it, whose own ambiguous failure would strand
     // the rescued secret. Don't compound: return unverified and let a
     // refresh repair.
-    if (merged.rescued) return {note: unverified, consumed: pick}
+    if (merged.rescued) return checkpoint({note: unverified, consumed: pick})
     try {
       const settled = await settleNote(base.url, merged.k1, total, merged.signature, options)
-      return {
+      return checkpoint({
         note: {
           url: withNewK1(base.url, settled.k1, settled.amountMsat, settled.signature),
           callback: settled.callback,
@@ -125,9 +138,9 @@ export const ensureExactAmount = async (
           mintPubkey: base.mintPubkey,
         },
         consumed: pick,
-      }
+      })
     } catch {
-      return {note: unverified, consumed: pick}
+      return checkpoint({note: unverified, consumed: pick})
     }
   }
 
@@ -264,7 +277,7 @@ export const ensureExactAmount = async (
       if (!(error instanceof Error)) throw error
     }
   }
-  return {note, change, consumed: pick}
+  return checkpoint({note, change, consumed: pick})
 }
 
 // smallest-first accumulation until the target is covered; null when the

@@ -82,10 +82,26 @@ export const useSendTokenDialog = (props: SendTokenProps, emit: SendTokenEmit) =
     let ownerFence: WalletOwnerFence | undefined;
     try {
       ownerFence = wallet.captureOwnerFence();
+      const fence = ownerFence;
+      // the carve commits the moment it lands server-side (onCarve), so
+      // even a crash right after can never strand the fresh outputs or
+      // leave burned inputs looking spendable
+      const carveState: { committed?: Bearer } = {};
       const carve = await ensureExactAmount(wallet.bearers, satsToMsat(sats), {
-        assertOwner: ownerFence,
+        assertOwner: fence,
+        onCarve: async (landed) => {
+          carveState.committed = await commitCarve(wallet, landed, {
+            ownerFence: fence,
+            warn: warnCommitted,
+          });
+        },
       });
-      const note = await commitCarve(wallet, carve, { ownerFence, warn: warnCommitted });
+      // a carve that mutated nothing (one note already held the exact
+      // amount) fires no hook - the note is already tracked; look it up
+      const committed =
+        carveState.committed ?? wallet.bearers.find((bearer) => bearer.url === carve.note.url);
+      if (!committed) throw new Error('The carved note was not tracked.');
+      const note = committed;
       if (carve.change) {
         await activity.log(
           'split',
