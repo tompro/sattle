@@ -170,6 +170,12 @@ export const useMoveFundsPage = () => {
         );
       } else if (transfer.outcome === 'unknown-still-pending') {
         await wallet.markSpent(carved.id, ownerFence);
+        // a named target's claim material carries the note at the wallet's
+        // own secret - claimable the moment the melt settles, so it is
+        // tracked unverified rather than lost with the result object
+        if (transfer.claimMaterial?.note) {
+          await addCommittedBearers(wallet, [transfer.claimMaterial.note], commitContext);
+        }
         await activity.log(
           'transfer',
           `A move of ${sats.toLocaleString()} sats to ${transfer.targetServer} is still in flight - the note is locked.`,
