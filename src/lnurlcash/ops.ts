@@ -6,9 +6,11 @@
 //
 // Fund-critical invariants enforced across the flows (see the project plan):
 // - rotate on every receive, and immediately after claiming a fresh mint
-//   (observer race: anyone who saw the unpaid invoice knows the payment
-//   hash, and the mint necessarily saw the preimage - the preimage IS the
-//   note secret)
+//   from an UNNAMED mint (observer race: anyone who saw the unpaid invoice
+//   knows the payment hash, and the mint necessarily saw the preimage -
+//   the preimage IS the note secret). A NAMED mint (LUD-25 comment /
+//   mintToHash) credits the note to a wallet-chosen secret instead; that
+//   secret never rode an invoice, so no rotate follows its claim
 // - a note's declared amount is a claim; the service's maxWithdrawable is
 //   authoritative
 // - a melt's "OK" only means the payment is in flight; its verify URL (or
@@ -23,8 +25,8 @@
 //   ops/receiveBearer.ts - receiveBearer (receive a note, rotate on receive)
 //   ops/pay.ts           - payWithBearers (melt to bolt11 / Lightning Address)
 //   ops/transfer.ts      - transferBetweenMints (inter-mint move: melt at
-//                          source, mint + claim + rotate at target)
-//   ops/shared.ts        - bounded verify polling, UncertainOutcomeError
+//                          source, mint + claim at target)
+//   ops/shared.ts        - bounded polling, UncertainOutcomeError
 
 export {UncertainOutcomeError} from './ops/shared'
 export type {PollOptions} from './ops/shared'

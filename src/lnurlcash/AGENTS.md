@@ -6,7 +6,14 @@ lnurlcash-kit directly.
 
 ## FUND-CRITICAL INVARIANTS (non-negotiable)
 
-- Rotate on every receive, and immediately after claiming a fresh mint.
+- Rotate on every receive, and immediately after claiming a fresh mint
+  from an UNNAMED mint (one that keys the note by the payment preimage).
+  A NAMED mint (LUD-25 `comment`/`mintToHash`, required by lnurl-mint
+  ≥ 0.4) credits the note to a wallet-chosen secret whose hash bound the
+  quote; that secret never rode an invoice, so the claim needs no rotate.
+  The claim poll itself is the placement proof: a mint that took the hash
+  but credited the preimage is caught there and rescued through the
+  quote's verify URL when one is served.
 - A note's declared amount is a claim; the service's `maxWithdrawable` is
   authoritative.
 - A melt's "OK" only means the payment is in flight — the verify URL (or
@@ -61,4 +68,7 @@ test-utils.ts    # mock mint harness used by *.test.ts
 ## TESTS
 
 `npx vitest run` — node environment, `*.test.ts` next to the modules.
-Adversarial mock mint from lnurlcash-conformance via test-utils.
+Adversarial mock mint from lnurlcash-conformance via `ops.testHarness.ts`
+(`conformance-mockmint.d.ts` augments its stale published declarations
+with the comment-naming flags). The mock's `commentAllowed` option models
+the named-mint generation; default options model the old one.
