@@ -1,6 +1,6 @@
 import {describe, expect, it} from 'vitest'
 import {createMockMint} from 'lnurlcash-conformance/mock-mint'
-import {noteK1} from 'lnurlcash-kit'
+import {hashK1, noteK1} from 'lnurlcash-kit'
 
 import {transferBetweenMints} from './ops'
 import {requiredValue} from './test-utils'
@@ -132,5 +132,84 @@ describe('transferBetweenMints', () => {
     expect(returnedK1).not.toBe(k1)
     expect(source.state.noteState(returnedK1)).toBe('outstanding')
     expect(result.carve.note.amount).toBe(21_000)
+  })
+
+  it('moves value to a NAMED target: the note lands at the wallet secret, no rotate', async () => {
+    const source = await mint()
+    const target = await mint({commentAllowed: 64, testHooks: true})
+    const k1 = secret('48')
+    const bearer = await makeBearer(source, k1, 21_000)
+    const pending = transferBetweenMints([bearer], 21_000, `mint@127.0.0.1:${target.port}`, {
+      poll: fastPoll,
+    })
+    const preimage = await settleWhenRequested(target)
+    const result = await pending
+    expect(result.outcome).toBe('settled')
+    await expectBurned(source, k1)
+    const claimed = requiredValue(result.mintedAtTarget)
+    expect(claimed.rotated).toBe(true)
+    expect(claimed.note.amount).toBe(21_000)
+    expect(claimed.note.verified).toBe(true)
+    const newK1 = requiredValue(noteK1(claimed.note.url))
+    // the note stands at the wallet's own secret - the quote was bound to
+    // its hash, and the payment preimage keys nothing at the target
+    expect([...target.state.invoices.values()].at(-1)?.boundTo).toBe(hashK1(newK1))
+    expect(target.state.noteState(newK1)).toBe('outstanding')
+    expect(target.state.noteState(preimage)).toBeNull()
+  })
+
+  it('keeps the named claim material when the target never credits the note', async () => {
+    const source = await mint({meltNeverSettles: true})
+    const target = await mint({commentAllowed: 64, testHooks: true})
+    const k1 = secret('49')
+    const bearer = await makeBearer(source, k1, 21_000)
+    const pending = transferBetweenMints([bearer], 21_000, `mint@127.0.0.1:${target.port}`, {
+      poll: {intervalMs: 10, intervalCapMs: 20, maxWaitMs: 300},
+    })
+    // the target invoice exists (the quote is bound) but the source melt
+    // never lands, so nothing is ever credited at the wallet's secret
+    while (target.state.invoices.size === 0) {
+      await new Promise((resolve) => setTimeout(resolve, 10))
+    }
+    const result = await pending
+    expect(result.outcome).toBe('unknown-still-pending')
+    expect(result.mintedAtTarget).toBeUndefined()
+    // the wallet's secret is the way back to the money if the melt's
+    // payment arrives later - and the note at that secret is tracked
+    // unverified, so a late settlement is never a lost note
+    const noteSecret = requiredValue(result.claimMaterial?.noteSecret)
+    expect(noteSecret).toMatch(/^[0-9a-f]{64}$/)
+    const material = requiredValue(result.claimMaterial?.note)
+    expect(material.verified).toBe(false)
+    expect(noteK1(material.url)).toBe(noteSecret)
+  })
+
+  it('rescues a named transfer through the preimage when the target credited it anyway', async () => {
+    const source = await mint()
+    // the mintToHashIgnoresH adversary: advertises naming, credits the
+    // payment hash - and (non-compliantly) still serves verify
+    const target = await mint({
+      commentAllowed: 64,
+      mintToHashIgnoresH: true,
+      verifyOnUnnamedMint: true,
+      testHooks: true,
+    })
+    const k1 = secret('50')
+    const bearer = await makeBearer(source, k1, 21_000)
+    const pending = transferBetweenMints([bearer], 21_000, `mint@127.0.0.1:${target.port}`, {
+      poll: {intervalMs: 10, intervalCapMs: 20, maxWaitMs: 400},
+    })
+    const preimage = await settleWhenRequested(target)
+    const result = await pending
+    expect(result.outcome).toBe('settled')
+    await expectBurned(source, k1)
+    const claimed = requiredValue(result.mintedAtTarget)
+    expect(claimed.rotated).toBe(true)
+    // claimed through the preimage path and rotated off it, because that
+    // preimage rode the invoice
+    expect(target.state.noteState(preimage)).toBe('burned')
+    const newK1 = requiredValue(noteK1(claimed.note.url))
+    expect(newK1).not.toBe(preimage)
+    expect(target.state.noteState(newK1)).toBe('outstanding')
   })
 })
