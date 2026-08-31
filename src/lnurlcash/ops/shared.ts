@@ -76,16 +76,17 @@ const abortableSleep = (ms: number, signal: AbortSignal): Promise<void> =>
     signal.addEventListener('abort', onAbort, {once: true})
   })
 
-// polls a LUD-21/LUD-25 verify endpoint until it reports settled, with
-// backoff, inside a total time budget. A single failed check isn't fatal -
-// the next round tries again. Returns the settled VerifyResult; throws on
-// budget exhaustion, or PollAbortedError when the caller's signal fires
-// (a hung fetch is interrupted too: the signal is bound into the request).
-export const pollVerifyUntilSettled = async (
-  verifyUrl: string,
+// polls `check` until it yields a value, with backoff, inside a total
+// time budget. A single failed check isn't fatal - the next round tries
+// again. Returns the first value; throws on budget exhaustion, or
+// PollAbortedError when the caller's signal fires (a hung fetch is
+// interrupted too: the signal is bound into the request).
+export const pollUntil = async <T>(
+  check: (options: LnurlcashOptions) => Promise<T | null>,
+  exhausted: string,
   poll: PollOptions,
   options: LnurlcashOptions,
-): Promise<VerifyResult> => {
+): Promise<T> => {
   const {intervalMs, intervalCapMs, maxWaitMs, signal} = {
     ...DEFAULT_POLL,
     ...poll,
@@ -105,8 +106,8 @@ export const pollVerifyUntilSettled = async (
   while (Date.now() < deadline) {
     if (signal?.aborted) throw new PollAbortedError()
     try {
-      const result = await fetchInvoiceVerification(verifyUrl, fetchOptions)
-      if (result.settled) return result
+      const result = await check(fetchOptions)
+      if (result !== null) return result
       lastError = null
     } catch (err) {
       // the signal's own AbortError lands here on an interrupted fetch
@@ -118,7 +119,27 @@ export const pollVerifyUntilSettled = async (
     delay = Math.min(delay * 2, intervalCapMs)
   }
   if (lastError instanceof Error) {
-    throw new Error(`Payment not confirmed: ${lastError.message}`)
+    throw new Error(`${exhausted}: ${lastError.message}`)
   }
-  throw new Error('Payment not confirmed within the time budget.')
+  throw new Error(`${exhausted} within the time budget.`)
 }
+
+// polls a LUD-21/LUD-25 verify endpoint until it reports settled, with
+// backoff, inside a total time budget. A single failed check isn't fatal -
+// the next round tries again. Returns the settled VerifyResult; throws on
+// budget exhaustion, or PollAbortedError when the caller's signal fires
+// (a hung fetch is interrupted too: the signal is bound into the request).
+export const pollVerifyUntilSettled = (
+  verifyUrl: string,
+  poll: PollOptions,
+  options: LnurlcashOptions,
+): Promise<VerifyResult> =>
+  pollUntil(
+    async (fetchOptions) => {
+      const result = await fetchInvoiceVerification(verifyUrl, fetchOptions)
+      return result.settled ? result : null
+    },
+    'Payment not confirmed',
+    poll,
+    options,
+  )
