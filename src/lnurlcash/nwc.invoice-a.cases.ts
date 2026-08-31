@@ -11,7 +11,7 @@ import {bytesToHex, hexToBytes} from '@noble/hashes/utils.js'
 import {finalizeEvent, getPublicKey} from 'nostr-tools/pure'
 import {encrypt as nip04Encrypt, decrypt as nip04Decrypt} from 'nostr-tools/nip04'
 import {v2 as nip44v2} from 'nostr-tools/nip44'
-import {buildNoteUrl, fetchNoteInfo, noteK1} from 'lnurlcash-kit'
+import {buildNoteUrl, fetchNoteInfo, hashK1, noteK1} from 'lnurlcash-kit'
 import {createMockMint} from 'lnurlcash-conformance/mock-mint'
 
 import {
@@ -121,6 +121,129 @@ describe('service: make_invoice / lookup_invoice', () => {
     expect(minted.verified).toBe(true)
     expect(noteK1(minted.url)).not.toBe(preimage)
     expect(m.state.noteState(requiredValue(noteK1(minted.url)))).toBe('outstanding')
+    await stop()
+  })
+
+  it('settles against a NAMED mint: note at the wallet secret, preimage a plain receipt', async () => {
+    const m = await mint({commentAllowed: 64, testHooks: true})
+    const {relay, walletServicePubkey, state, stop} = await startTestService({
+      defaultMint: `mint@127.0.0.1:${m.port}`,
+    })
+
+    const made = await call(relay, walletServicePubkey, 'make_invoice', {
+      amount: 21_000,
+    })
+    expect(made.error).toBeNull()
+    const paymentHash = made.result?.payment_hash
+    if (typeof paymentHash !== 'string') {
+      throw new TypeError('make_invoice did not return a payment hash')
+    }
+
+    const settleRes = await fetch(`${m.url}/_test/settle?payment_hash=${paymentHash}`)
+    expect(settleRes.ok).toBe(true)
+    await waitFor(() => state.changesets.some((c) => c.add.length > 0))
+
+    const settled = await call(relay, walletServicePubkey, 'lookup_invoice', {
+      payment_hash: paymentHash,
+    })
+    expect(settled.error).toBeNull()
+    expect(settled.result?.state).toBe('settled')
+    // a named mint's verify preimage is an ordinary payment receipt -
+    // it keys nothing at the mint - so it is always safe to hand out
+    const preimage = requiredString(settled.result?.preimage)
+    expect(preimage).toMatch(/^[0-9a-f]{64}$/)
+    expect(m.state.noteState(preimage)).toBeNull()
+
+    // the note was claimed at the wallet's own secret - unrotated,
+    // because nothing exposed it
+    const minted = requiredValue(state.bearers.find((b) => b.id.startsWith('added-')))
+    expect(minted.amount).toBe(21_000)
+    expect(minted.verified).toBe(true)
+    const mintedK1 = requiredValue(noteK1(minted.url))
+    expect(m.state.noteState(mintedK1)).toBe('outstanding')
+    // the quote was bound to that secret's hash
+    expect([...m.state.invoices.values()].at(-1)?.boundTo).toBe(hashK1(mintedK1))
+    await stop()
+  })
+
+  it('rescues a NAMED mint that credited the preimage, and burns it before handing it out', async () => {
+    // the mintToHashIgnoresH adversary: advertises output naming, binds
+    // nothing, credits the payment hash - and (non-compliantly) still
+    // serves verify, so the preimage path can recover the note
+    const m = await mint({
+      commentAllowed: 64,
+      mintToHashIgnoresH: true,
+      verifyOnUnnamedMint: true,
+      testHooks: true,
+    })
+    const {relay, walletServicePubkey, state, stop} = await startTestService({
+      defaultMint: `mint@127.0.0.1:${m.port}`,
+      claimPoll: {intervalMs: 10, intervalCapMs: 20, maxWaitMs: 400},
+    })
+
+    const made = await call(relay, walletServicePubkey, 'make_invoice', {amount: 21_000})
+    const paymentHash = made.result?.payment_hash
+    if (typeof paymentHash !== 'string') {
+      throw new TypeError('make_invoice did not return a payment hash')
+    }
+    const settleRes = await fetch(`${m.url}/_test/settle?payment_hash=${paymentHash}`)
+    expect(settleRes.ok).toBe(true)
+    await waitFor(() => state.changesets.some((c) => c.add.length > 0))
+
+    const settled = await call(relay, walletServicePubkey, 'lookup_invoice', {
+      payment_hash: paymentHash,
+    })
+    expect(settled.result?.state).toBe('settled')
+    // the rescue claimed through the preimage path and rotated off it, so
+    // the receipt handed to the client is a burned secret
+    const preimage = requiredString(settled.result?.preimage)
+    expect(m.state.noteState(preimage)).toBe('burned')
+    const minted = requiredValue(state.bearers.find((b) => b.id.startsWith('added-')))
+    const mintedK1 = requiredValue(noteK1(minted.url))
+    expect(mintedK1).not.toBe(preimage)
+    expect(m.state.noteState(mintedK1)).toBe('outstanding')
+    await stop()
+  })
+
+  it('withholds the preimage when the rescue claim could not rotate', async () => {
+    // same lying mint, but the rotate's request never lands (the mint
+    // dies between the claim and the rotate): the preimage may still be
+    // the note's secret, so it stays a secret even though the invoice
+    // reads settled
+    const m = await mint({
+      commentAllowed: 64,
+      mintToHashIgnoresH: true,
+      verifyOnUnnamedMint: true,
+      testHooks: true,
+    })
+    const rotateFailingFetch: typeof fetch = (input, init) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
+      if (url.includes('/w/cb')) return Promise.reject(new Error('connection reset'))
+      return fetch(input, init)
+    }
+    const {relay, walletServicePubkey, state, stop} = await startTestService({
+      defaultMint: `mint@127.0.0.1:${m.port}`,
+      claimPoll: {intervalMs: 10, intervalCapMs: 20, maxWaitMs: 400},
+      kit: {fetch: rotateFailingFetch},
+    })
+
+    const made = await call(relay, walletServicePubkey, 'make_invoice', {amount: 21_000})
+    const paymentHash = made.result?.payment_hash
+    if (typeof paymentHash !== 'string') {
+      throw new TypeError('make_invoice did not return a payment hash')
+    }
+    const settleRes = await fetch(`${m.url}/_test/settle?payment_hash=${paymentHash}`)
+    expect(settleRes.ok).toBe(true)
+    await waitFor(() => state.changesets.some((c) => c.add.length > 0))
+
+    const settled = await call(relay, walletServicePubkey, 'lookup_invoice', {
+      payment_hash: paymentHash,
+    })
+    expect(settled.result?.state).toBe('settled')
+    // settled, but NO receipt: an unrotated preimage may still be the note
+    expect(settled.result?.preimage).toBeUndefined()
+    // the note is tracked either way (it IS money)
+    expect(state.bearers.some((b) => b.id.startsWith('added-'))).toBe(true)
     await stop()
   })
 
