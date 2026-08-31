@@ -159,7 +159,10 @@ export const useReceiveLightningDialog = (
     try {
       const input = mintChoice.value === CUSTOM_MINT ? customMint.value.trim() : mintChoice.value;
       const next = await prepareMint(input, satsToMsat(sats));
-      if (!next.verifyUrl) {
+      // named mints claim through the wallet's own secret and may
+      // legitimately serve no verify URL; unnamed mints need one (the
+      // preimage it reveals IS the claim)
+      if (next.mode === 'unnamed' && !next.verifyUrl) {
         formError.value =
           'This mint does not support automatic claiming, so sattle cannot receive from it. Choose a different mint.';
         return;
