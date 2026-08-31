@@ -116,9 +116,10 @@ describe('mint-address wire contract', () => {
 
 describe('withdraw-link forms', () => {
   it('accepts the lnurlw:// withdraw link the conformance mock mint advertises', async () => {
-    const m = await mint({testHooks: true})
+    // conformance 0.4.0 defaults to plain https links; lnurlw:// (the form
+    // lnurl-mint emits under LUD-17) is an explicit option
+    const m = await mint({testHooks: true, withdrawLinkForm: 'lnurlw'})
     const prepared = await prepareMint(`mint@127.0.0.1:${m.port}`, 21_000)
-    // published conformance 0.1.1 emits lnurlw:// by default - NOT https
     expect(prepared.withdrawLink).toMatch(/^lnurlw:\/\//)
 
     // and the link is fully usable: settle the invoice, claim the note
