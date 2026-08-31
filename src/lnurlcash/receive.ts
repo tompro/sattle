@@ -10,6 +10,7 @@ import {
   NoteUnknownError,
   PendingNoteError,
 } from 'lnurlcash-kit'
+import type {LnurlcashOptions} from 'lnurlcash-kit'
 import type {Bearer, NewBearer} from './types'
 
 // shared by Scan and Paste: resolve whatever came in to a note URL, ask the
@@ -65,16 +66,21 @@ export const receiveNote = async (input: string, existing: Bearer[]): Promise<Ne
 // k1 on the wire) still knows the old secret - a rotate burns it and mints
 // a fresh one only this wallet knows. Returns the updated note URL. Throws
 // when the service refuses (e.g. a plain LUD-03 withdraw link that doesn't
-// speak lnurlcash) - the caller should warn, not fail the receive.
-export const secureReceivedNote = async (note: {
-  url: string
-  callback: string
-  amount: number
-}): Promise<string> => {
+// speak lnurlcash) - the caller should warn, not fail the receive. The
+// error carries the fresh secret (kit's newSecretsOf) so the caller can
+// rescue a rotate that landed despite its refusal.
+export const secureReceivedNote = async (
+  note: {
+    url: string
+    callback: string
+    amount: number
+  },
+  options: LnurlcashOptions = {},
+): Promise<string> => {
   const k1 = noteK1(note.url)
   if (!k1 || !note.callback) {
     throw new Error('Note has no callback to rotate against yet.')
   }
-  const result = await rotateNote(note.callback, k1)
+  const result = await rotateNote(note.callback, k1, options)
   return withNewK1(note.url, result.k1, note.amount, result.signature)
 }

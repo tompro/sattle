@@ -107,11 +107,12 @@ export const mintAddressCacheInfo = (
 // whether this wallet has ever used it). The bare "@domain" form rather
 // than spelling out "mint@domain" - still resolves to the exact same
 // address, just how these mints tend to actually display their own.
-// Ported verbatim from lnurl-wallet/src/trustedMints.ts.
+// Ported from lnurl-wallet/src/trustedMints.ts; diverges where the public
+// mint landscape did (@mint.forgesworn.dev shut down, @moneyer.dev added).
 export const PUBLIC_MINTS = [
   '@mint.600.wtf',
   '@lnurl.21mint.me',
-  '@mint.forgesworn.dev',
+  '@moneyer.dev',
   '@lnurl.21linz.at',
   '@minty.exe.xyz',
 ]

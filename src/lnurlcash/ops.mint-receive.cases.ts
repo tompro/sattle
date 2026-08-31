@@ -2,7 +2,6 @@ import {describe, expect, it} from 'vitest'
 import {
   NoteSpentError,
   PendingNoteError,
-  buildNoteUrl,
   fetchNoteInfo,
   meltNote,
   noteK1,
@@ -39,14 +38,32 @@ describe('mint -> claim -> rotate', () => {
     const instance = await mint({testHooks: true, baseFeeMsat: 1_000, feePpm: 2_000})
     const prepared = await prepareMint(`mint@127.0.0.1:${instance.port}`, 100_000)
     expect(prepared.grossMsat).toBeGreaterThan(100_000)
-    const preimage = await settleLastInvoice(instance)
-    const info = await fetchNoteInfo(
-      buildNoteUrl(prepared.withdrawLink, preimage, prepared.expectedNoteValueMsat),
-    )
-    expect(info.maxWithdrawable).toBeGreaterThanOrEqual(99_000)
-    expect(info.maxWithdrawable).toBeLessThanOrEqual(prepared.grossMsat)
+    await settleLastInvoice(instance)
+    const claimed = await claimMintedNote(prepared, {
+      intervalMs: 10,
+      intervalCapMs: 20,
+      maxWaitMs: 5_000,
+    })
+    // the service's maxWithdrawable is authoritative: the fee is withheld
+    // from the gross, so the note nets between the asked value and the gross
+    expect(claimed.note.amount).toBeGreaterThanOrEqual(99_000)
+    expect(claimed.note.amount).toBeLessThanOrEqual(prepared.grossMsat)
+    expect(claimed.rotated).toBe(true)
+  })
+
+  it('refuses a verify response naming a different invoice', async () => {
+    const instance = await mint({testHooks: true})
+    const prepared = await prepareMint(`mint@127.0.0.1:${instance.port}`, 21_000)
+    await settleLastInvoice(instance)
+    // a verify answer that names any invoice but the requested one must
+    // stop the claim - the preimage it carries belongs to another payment
+    const other = `${prepared.invoice.slice(0, -1)}${prepared.invoice.endsWith('q') ? 'p' : 'q'}`
     await expect(
-      claimMintedNote(prepared, {intervalMs: 10, intervalCapMs: 20, maxWaitMs: 500}),
+      claimMintedNote({...prepared, invoice: other}, {
+        intervalMs: 10,
+        intervalCapMs: 20,
+        maxWaitMs: 5_000,
+      }),
     ).rejects.toThrow(/different invoice/)
   })
 

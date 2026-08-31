@@ -2,8 +2,9 @@
 // every flow that waits on a payment uses, and the uncertainty type a lost
 // mutation answer surfaces as.
 
-import {fetchInvoiceVerification} from 'lnurlcash-kit'
+import {fetchInvoiceVerification, fetchNoteInfo, withNewK1} from 'lnurlcash-kit'
 import type {LnurlcashOptions, VerifyResult} from 'lnurlcash-kit'
+import {NoteSpentError, NoteUnknownError, noteDeclaredAmount} from 'lnurlcash-kit'
 import type {NewBearer} from '../types'
 
 // a mutation's answer was lost AND the probe could not tell whether it
@@ -34,6 +35,32 @@ export type FundOperationOptions = LnurlcashOptions & {
 
 export const assertFundOwner = (options: FundOperationOptions): void => {
   options.assertOwner?.()
+}
+
+// what probing a would-be mutation output can tell
+export type OutputProbe = 'live' | 'absent' | 'unknown'
+
+// A refused mutation can still have LANDED: the redeem callback is a GET
+// and HTTP stacks retry GETs, so the service may have executed the first
+// attempt and refused this one as an already-spent input (LUD-25 says a
+// byte-identical retry SHOULD get the original success replayed; real
+// mints refuse instead). The kit attaches the fresh output secrets to
+// every service refusal (newSecretsOf) - so before believing a refusal,
+// probe one would-be output: 'live' proves the mutation landed and the
+// carried secrets are the only money left, 'absent' proves the refusal is
+// genuine, 'unknown' keeps it genuinely ambiguous.
+export const probeMutationOutput = async (
+  noteUrl: string,
+  secret: string,
+  options: LnurlcashOptions = {},
+): Promise<OutputProbe> => {
+  try {
+    await fetchNoteInfo(withNewK1(noteUrl, secret, noteDeclaredAmount(noteUrl) ?? 0), options)
+    return 'live'
+  } catch (err) {
+    if (err instanceof NoteSpentError || err instanceof NoteUnknownError) return 'absent'
+    return 'unknown'
+  }
 }
 
 export type PollOptions = {
@@ -76,16 +103,17 @@ const abortableSleep = (ms: number, signal: AbortSignal): Promise<void> =>
     signal.addEventListener('abort', onAbort, {once: true})
   })
 
-// polls a LUD-21/LUD-25 verify endpoint until it reports settled, with
-// backoff, inside a total time budget. A single failed check isn't fatal -
-// the next round tries again. Returns the settled VerifyResult; throws on
-// budget exhaustion, or PollAbortedError when the caller's signal fires
-// (a hung fetch is interrupted too: the signal is bound into the request).
-export const pollVerifyUntilSettled = async (
-  verifyUrl: string,
+// polls `check` until it yields a value, with backoff, inside a total
+// time budget. A single failed check isn't fatal - the next round tries
+// again. Returns the first value; throws on budget exhaustion, or
+// PollAbortedError when the caller's signal fires (a hung fetch is
+// interrupted too: the signal is bound into the request).
+export const pollUntil = async <T>(
+  check: (options: LnurlcashOptions) => Promise<T | null>,
+  exhausted: string,
   poll: PollOptions,
   options: LnurlcashOptions,
-): Promise<VerifyResult> => {
+): Promise<T> => {
   const {intervalMs, intervalCapMs, maxWaitMs, signal} = {
     ...DEFAULT_POLL,
     ...poll,
@@ -105,8 +133,8 @@ export const pollVerifyUntilSettled = async (
   while (Date.now() < deadline) {
     if (signal?.aborted) throw new PollAbortedError()
     try {
-      const result = await fetchInvoiceVerification(verifyUrl, fetchOptions)
-      if (result.settled) return result
+      const result = await check(fetchOptions)
+      if (result !== null) return result
       lastError = null
     } catch (err) {
       // the signal's own AbortError lands here on an interrupted fetch
@@ -118,7 +146,27 @@ export const pollVerifyUntilSettled = async (
     delay = Math.min(delay * 2, intervalCapMs)
   }
   if (lastError instanceof Error) {
-    throw new Error(`Payment not confirmed: ${lastError.message}`)
+    throw new Error(`${exhausted}: ${lastError.message}`)
   }
-  throw new Error('Payment not confirmed within the time budget.')
+  throw new Error(`${exhausted} within the time budget.`)
 }
+
+// polls a LUD-21/LUD-25 verify endpoint until it reports settled, with
+// backoff, inside a total time budget. A single failed check isn't fatal -
+// the next round tries again. Returns the settled VerifyResult; throws on
+// budget exhaustion, or PollAbortedError when the caller's signal fires
+// (a hung fetch is interrupted too: the signal is bound into the request).
+export const pollVerifyUntilSettled = (
+  verifyUrl: string,
+  poll: PollOptions,
+  options: LnurlcashOptions,
+): Promise<VerifyResult> =>
+  pollUntil(
+    async (fetchOptions) => {
+      const result = await fetchInvoiceVerification(verifyUrl, fetchOptions)
+      return result.settled ? result : null
+    },
+    'Payment not confirmed',
+    poll,
+    options,
+  )

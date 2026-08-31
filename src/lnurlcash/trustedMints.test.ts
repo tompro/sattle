@@ -213,11 +213,11 @@ describe('security policy characterization', () => {
 })
 
 describe('PUBLIC_MINTS', () => {
-  it('is the curated quick-start list, ported verbatim from lnurl-wallet', () => {
+  it('is the curated quick-start list, ported from lnurl-wallet', () => {
     expect(PUBLIC_MINTS).toEqual([
       '@mint.600.wtf',
       '@lnurl.21mint.me',
-      '@mint.forgesworn.dev',
+      '@moneyer.dev',
       '@lnurl.21linz.at',
       '@minty.exe.xyz',
     ])

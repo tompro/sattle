@@ -3,13 +3,24 @@
 // that exist: this wallet requests an invoice FROM the target mint
 // (grossed up for its advertised mint fee, so the note that comes out
 // nets the requested amount), melts source notes to pay it, then claims
-// the target note from the revealed preimage exactly like any other
-// minted receive. The target invoice settling is the transfer's ground
-// truth: it can only settle if the source melt's payment arrived, and its
-// verify response is what reveals the preimage to claim with. When it
-// never settles, the source note itself is the oracle - a successful
-// rotate proves the melt never burned it (funds returned), anything else
-// stays uncertain.
+// the target note exactly like any other minted receive. The target
+// invoice settling is the transfer's ground truth: it can only settle if
+// the source melt's payment arrived. How settling is observed and claimed
+// depends on the target's minting mode (see mint.ts):
+//
+// - UNNAMED target: the verify URL is the observation - its settled
+//   response reveals the preimage, which IS the note's secret, and the
+//   claim rotates off it immediately.
+// - NAMED target: the note itself is the observation - the wallet named
+//   the output with its own secret at quote time, so the informational
+//   GET reporting 'minted' IS the settlement proof, and the note is
+//   already at a secret nobody else has seen. No verify URL is needed
+//   (but one is used to rescue the mint that took the hash and credited
+//   the preimage anyway).
+//
+// When settlement never confirms, the source note itself is the oracle -
+// a successful rotate proves the melt never burned it (funds returned),
+// anything else stays uncertain.
 
 import {
   AmbiguousMutationError,
@@ -17,6 +28,7 @@ import {
   PendingNoteError,
   buildNoteUrl,
   decodeBolt11AmountMsat,
+  fetchInvoiceVerification,
   isPreimage,
   meltNote,
   noteK1,
@@ -30,8 +42,8 @@ import type {LnurlcashOptions} from 'lnurlcash-kit'
 import type {Bearer, NewBearer} from '../types'
 import type {CarveResult} from './carve'
 import {ensureExactAmount} from './carve'
-import type {ClaimedNote} from './mint'
-import {claimFromPreimage, prepareMint} from './mint'
+import type {ClaimedNote, PreparedMint} from './mint'
+import {claimFromPreimage, pollMintClaim, prepareMint} from './mint'
 import type {PollOptions} from './shared'
 import type {FundOperationOptions} from './shared'
 import {assertFundOwner, pollVerifyUntilSettled} from './shared'
@@ -76,6 +88,10 @@ export type TransferClaimMaterial = {
   // the preimage note, unverified, once the preimage is known - the
   // preimage IS the note secret; the caller must track it and retry
   note?: NewBearer
+  // named target only: the wallet-chosen secret the target note lands at.
+  // The note exists at this secret from the moment the invoice settles -
+  // the caller can rebuild the note URL from it and retry the claim
+  noteSecret?: string
 }
 
 export type TransferResult = {
@@ -85,8 +101,9 @@ export type TransferResult = {
   quote: TransferQuote
   // the invoice the source note was melted to pay
   invoice: string
-  // the target invoice's verify URL - the transfer's ground truth
-  verifyUrl: string
+  // the target invoice's verify URL - an unnamed target's ground truth
+  // (a named target may not serve one at all; the note itself is observed)
+  verifyUrl: string | null
   sourceServer: string
   targetServer: string
   // the fresh target note, on 'settled'
@@ -106,6 +123,19 @@ export type TransferOptions = {
   assertOwner?: () => void
 }
 
+// the claim retry material for a named target: the note at the wallet's
+// own secret, unverified until a claim succeeds
+const namedClaimNote = (prepared: PreparedMint, noteSecret: string): NewBearer => {
+  const note: NewBearer = {
+    url: buildNoteUrl(prepared.withdrawLink, noteSecret, prepared.expectedNoteValueMsat),
+    callback: '',
+    amount: prepared.expectedNoteValueMsat,
+    verified: false,
+  }
+  if (prepared.mintPubkey) note.mintPubkey = prepared.mintPubkey
+  return note
+}
+
 export const transferBetweenMints = async (
   bearers: Bearer[],
   amountMsat: number,
@@ -120,7 +150,7 @@ export const transferBetweenMints = async (
   // TARGET mint - a failure here (unreachable, no minting support, amount
   // out of range) leaves every source note untouched
   const prepared = await prepareMint(targetMint, amountMsat, options)
-  if (!prepared.verifyUrl) {
+  if (prepared.mode === 'unnamed' && !prepared.verifyUrl) {
     throw new Error(
       'The target mint did not advertise a verify URL - a transfer there cannot auto-claim.',
     )
@@ -153,6 +183,13 @@ export const transferBetweenMints = async (
     withdrawLink: prepared.withdrawLink,
     expectedNoteValueMsat: prepared.expectedNoteValueMsat,
   }
+  if (prepared.noteSecret) {
+    claimMaterial.noteSecret = prepared.noteSecret
+    // a named target's note is claimable from the wallet's secret alone,
+    // the moment the invoice settles - track it unverified from the start,
+    // so a melt that settles after the budget is never a lost note
+    claimMaterial.note = namedClaimNote(prepared, prepared.noteSecret)
+  }
   // from here on the carve's fresh secrets exist only in this result - the
   // flow never throws again; every outcome carries them
   const base = {carve, quote, invoice, verifyUrl, sourceServer, targetServer}
@@ -171,6 +208,81 @@ export const transferBetweenMints = async (
     // payment arrived, and the source probe tells the rest
   }
   try {
+    if (prepared.mode === 'named') {
+      const noteSecret = prepared.noteSecret
+      if (!noteSecret) throw new Error('The target mint was prepared without a note secret.')
+      // the note appearing at the wallet's own secret IS the settlement
+      // proof - the target only credits it once the melt's payment landed
+      try {
+        const claim = await pollMintClaim(prepared.withdrawLink, noteSecret, poll, options)
+        if (
+          claim.state !== 'minted' ||
+          claim.k1 !== noteSecret ||
+          claim.amountMsat === null ||
+          !claim.callback
+        ) {
+          // 'spent' on a fresh wallet-chosen secret, a claim naming a
+          // secret other than the one polled (impossible through the kit,
+          // which returns the queried secret and rejects mismatched
+          // echoes - asserted anyway: building from it would track the
+          // wrong note), or an incomplete answer: the target misbehaved -
+          // the way back to the note is already in the claim material
+          return {...base, outcome: 'settled-claim-failed', claimMaterial}
+        }
+        const note: NewBearer = {
+          url: buildNoteUrl(prepared.withdrawLink, claim.k1, claim.amountMsat),
+          callback: claim.callback,
+          amount: claim.amountMsat,
+          verified: true,
+        }
+        if (prepared.mintPubkey) note.mintPubkey = prepared.mintPubkey
+        // no rotate: the secret never rode an invoice (see mint.ts)
+        return {...base, outcome: 'settled', mintedAtTarget: {note, rotated: true}}
+      } catch (err) {
+        // the note never appeared at the wallet's secret within budget.
+        // Rescue through the quote's verify when the target serves one:
+        // a mint that took the hash but credited the PREIMAGE (the
+        // mintToHashIgnoresH adversary) is claimable through the old path
+        if (verifyUrl) {
+          try {
+            const proof = await fetchInvoiceVerification(verifyUrl, options)
+            if (proof.settled && sameInvoice(proof.pr, invoice) && proof.preimage) {
+              if (isPreimage(proof.preimage)) {
+                try {
+                  const claimed = await claimFromPreimage(prepared, proof.preimage, options)
+                  return {...base, outcome: 'settled', mintedAtTarget: claimed}
+                } catch {
+                  const note: NewBearer = {
+                    url: buildNoteUrl(
+                      prepared.withdrawLink,
+                      proof.preimage,
+                      prepared.expectedNoteValueMsat,
+                    ),
+                    callback: '',
+                    amount: prepared.expectedNoteValueMsat,
+                    verified: false,
+                  }
+                  if (prepared.mintPubkey) note.mintPubkey = prepared.mintPubkey
+                  return {
+                    ...base,
+                    outcome: 'settled-claim-failed',
+                    claimMaterial: {...claimMaterial, note},
+                  }
+                }
+              }
+            }
+          } catch {
+            // best-effort rescue - fall through to the source-note oracle
+          }
+        }
+        throw err
+      }
+    }
+    if (!verifyUrl) {
+      throw new Error(
+        'The target mint did not advertise a verify URL - a transfer there cannot auto-claim.',
+      )
+    }
     const proof = await pollVerifyUntilSettled(verifyUrl, poll, options)
     // the proof-binding rule from pay.ts, extended for the gross-up: the
     // verify URL is scoped to this invoice's payment hash, so an exact pr

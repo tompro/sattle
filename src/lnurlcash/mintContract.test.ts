@@ -1,15 +1,21 @@
-// Wire-contract coverage for the pinned lnurlcash-kit / lnurlcash-conformance
-// 0.1.1 artifacts. Two contracts the app's mint discovery relies on:
+// Wire-contract coverage for the pinned lnurlcash-kit 0.5.0 /
+// lnurlcash-conformance 0.4.0 artifacts. Contracts the app's mint flows
+// rely on:
 // the kit must MAP the mint-address wire field `nodeCapacity` onto the
-// app-facing `nodeCapacityMsat` (0.1.0 spread it under its wire name, so the
-// typed field read undefined forever), and a payRequest withdraw link is
-// legal in both its HTTPS and LUD-17 `lnurlw://` forms - the published
-// conformance mock mint emits `lnurlw://` by default, so do NOT assume an
-// HTTPS default anywhere in the receive path.
+// app-facing `nodeCapacityMsat` (0.1.0 spread it under its wire name, so
+// the typed field read undefined forever); a payRequest withdraw link is
+// legal in both its HTTPS and LUD-17 `lnurlw://` forms (the conformance
+// mock emits either, selected by its withdrawLinkForm option, so do NOT
+// assume a default anywhere in the receive path); and the LUD-06 quote
+// request must carry the output-naming hash (as BOTH `comment` and `h`)
+// exactly when - and only when - the payRequest advertised the capability
+// (commentAllowed >= 64 or mintToHash): a new-generation mint
+// (lnurl-mint >= 0.4) refuses a quote without it, while an old mint must
+// see the byte-identical request this wallet always sent.
 
 import {afterEach, describe, expect, it} from 'vitest'
 import {createMockMint} from 'lnurlcash-conformance/mock-mint'
-import {buildNoteUrl, fetchMintAddress} from 'lnurlcash-kit'
+import {buildNoteUrl, fetchMintAddress, hashK1} from 'lnurlcash-kit'
 
 import {claimMintedNote, prepareMint} from './ops'
 import {mintAddressCacheInfo} from './trustedMints'
@@ -77,6 +83,20 @@ const fixtureFetch = (routes: ReadonlyArray<readonly [string, unknown]>): typeof
   return impl
 }
 
+// fixtureFetch plus a record of every URL it saw, for canaries about the
+// exact query the kit puts on the wire
+const capturingFetch = (
+  routes: ReadonlyArray<readonly [string, unknown]>,
+  seen: string[],
+): typeof fetch => {
+  const impl: typeof fetch = (input, init) => {
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
+    seen.push(url)
+    return fixtureFetch(routes)(input, init)
+  }
+  return impl
+}
+
 describe('mint-address wire contract', () => {
   it('maps the wire nodeCapacity onto the app-facing nodeCapacityMsat', async () => {
     const info = await fetchMintAddress('https://mint.example/.well-known/lnurlw/mint', {
@@ -116,9 +136,10 @@ describe('mint-address wire contract', () => {
 
 describe('withdraw-link forms', () => {
   it('accepts the lnurlw:// withdraw link the conformance mock mint advertises', async () => {
-    const m = await mint({testHooks: true})
+    // conformance 0.4.0 defaults to plain https links; lnurlw:// (the form
+    // lnurl-mint emits under LUD-17) is an explicit option
+    const m = await mint({testHooks: true, withdrawLinkForm: 'lnurlw'})
     const prepared = await prepareMint(`mint@127.0.0.1:${m.port}`, 21_000)
-    // published conformance 0.1.1 emits lnurlw:// by default - NOT https
     expect(prepared.withdrawLink).toMatch(/^lnurlw:\/\//)
 
     // and the link is fully usable: settle the invoice, claim the note
@@ -161,5 +182,72 @@ describe('withdraw-link forms', () => {
     expect(buildNoteUrl('lnurlw://mint.example/note', k1, 21_000)).toBe(
       buildNoteUrl('https://mint.example/note', k1, 21_000),
     )
+  })
+})
+
+describe('quote output-naming wire contract', () => {
+  const payRequestFixture = (extra: Record<string, unknown>) => ({
+    tag: 'payRequest',
+    callback: 'https://mint.example/pay',
+    minSendable: 1_000,
+    maxSendable: 100_000_000_000,
+    withdrawLink: 'https://mint.example/note',
+    metadata: '[]',
+    ...extra,
+  })
+  const routesFor = (payRequest: Record<string, unknown>) =>
+    [
+      ['https://mint.example/.well-known/lnurlw/mint', mintAddressFixture],
+      ['https://mint.example/.well-known/lnurlp/mint', payRequest],
+      // amount-less invoice: the kit skips its amount cross-check
+      ['https://mint.example/pay', {pr: 'lnmock1fixture', verify: null}],
+    ] as const
+
+  const callbackUrl = (seen: string[]): URL => {
+    const hit = seen.find((url) => url.startsWith('https://mint.example/pay?'))
+    if (!hit) throw new Error('the quote request never hit the wire')
+    return new URL(hit)
+  }
+
+  it('sends no comment/h to a mint that never advertised output naming', async () => {
+    const seen: string[] = []
+    const prepared = await prepareMint('mint@mint.example', 21_000, {
+      fetch: capturingFetch(routesFor(payRequestFixture({})), seen),
+    })
+    expect(prepared.mode).toBe('unnamed')
+    expect(prepared.noteSecret).toBeUndefined()
+    // an old mint sees the byte-identical request this wallet always sent
+    const url = callbackUrl(seen)
+    expect(url.searchParams.get('comment')).toBeNull()
+    expect(url.searchParams.get('h')).toBeNull()
+  })
+
+  it('sends comment AND h, both sha256 of the wallet secret, when commentAllowed >= 64', async () => {
+    const seen: string[] = []
+    const prepared = await prepareMint('mint@mint.example', 21_000, {
+      fetch: capturingFetch(routesFor(payRequestFixture({commentAllowed: 64})), seen),
+    })
+    expect(prepared.mode).toBe('named')
+    const noteSecret = prepared.noteSecret
+    if (!noteSecret) throw new Error('named mode without a note secret')
+    const url = callbackUrl(seen)
+    // both spellings go out together: `comment` is the LUD-25 form
+    // lnurl-mint >= 0.4 REQUIRES, `h` the earlier form other mints read
+    const comment = url.searchParams.get('comment')
+    const h = url.searchParams.get('h')
+    expect(comment).toMatch(/^[0-9a-f]{64}$/)
+    expect(h).toBe(comment)
+    expect(comment).toBe(hashK1(noteSecret))
+  })
+
+  it('names the output when only the mintToHash spelling is advertised', async () => {
+    const seen: string[] = []
+    const prepared = await prepareMint('mint@mint.example', 21_000, {
+      fetch: capturingFetch(routesFor(payRequestFixture({mintToHash: true})), seen),
+    })
+    expect(prepared.mode).toBe('named')
+    const noteSecret = prepared.noteSecret
+    if (!noteSecret) throw new Error('named mode without a note secret')
+    expect(callbackUrl(seen).searchParams.get('h')).toBe(hashK1(noteSecret))
   })
 })
