@@ -2,8 +2,9 @@
 // every flow that waits on a payment uses, and the uncertainty type a lost
 // mutation answer surfaces as.
 
-import {fetchInvoiceVerification} from 'lnurlcash-kit'
+import {fetchInvoiceVerification, fetchNoteInfo, withNewK1} from 'lnurlcash-kit'
 import type {LnurlcashOptions, VerifyResult} from 'lnurlcash-kit'
+import {NoteSpentError, NoteUnknownError, noteDeclaredAmount} from 'lnurlcash-kit'
 import type {NewBearer} from '../types'
 
 // a mutation's answer was lost AND the probe could not tell whether it
@@ -34,6 +35,32 @@ export type FundOperationOptions = LnurlcashOptions & {
 
 export const assertFundOwner = (options: FundOperationOptions): void => {
   options.assertOwner?.()
+}
+
+// what probing a would-be mutation output can tell
+export type OutputProbe = 'live' | 'absent' | 'unknown'
+
+// A refused mutation can still have LANDED: the redeem callback is a GET
+// and HTTP stacks retry GETs, so the service may have executed the first
+// attempt and refused this one as an already-spent input (LUD-25 says a
+// byte-identical retry SHOULD get the original success replayed; real
+// mints refuse instead). The kit attaches the fresh output secrets to
+// every service refusal (newSecretsOf) - so before believing a refusal,
+// probe one would-be output: 'live' proves the mutation landed and the
+// carried secrets are the only money left, 'absent' proves the refusal is
+// genuine, 'unknown' keeps it genuinely ambiguous.
+export const probeMutationOutput = async (
+  noteUrl: string,
+  secret: string,
+  options: LnurlcashOptions = {},
+): Promise<OutputProbe> => {
+  try {
+    await fetchNoteInfo(withNewK1(noteUrl, secret, noteDeclaredAmount(noteUrl) ?? 0), options)
+    return 'live'
+  } catch (err) {
+    if (err instanceof NoteSpentError || err instanceof NoteUnknownError) return 'absent'
+    return 'unknown'
+  }
 }
 
 export type PollOptions = {

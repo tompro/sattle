@@ -69,3 +69,22 @@ export const expectBurned = async (instance: Mint, k1: string): Promise<void> =>
   }
   expect(instance.state.noteState(k1)).toBe('burned')
 }
+
+// a fetch wrapper that answers every /w/cb request with the response to
+// its SECOND, byte-identical send - the HTTP-stack GET retry a real client
+// is subject to: the mint executes the first attempt and (with the mock's
+// default retriedMutation: 'refuse', which is also lnurl-mint's behavior)
+// refuses the repeat as an already-spent input, which is all the caller
+// ever sees
+export const retryingCbFetch = (): typeof fetch => {
+  const impl: typeof fetch = async (input, init) => {
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
+    if (url.includes('/w/cb')) {
+      const first = await fetch(input, init)
+      await first.arrayBuffer()
+      return fetch(input, init)
+    }
+    return fetch(input, init)
+  }
+  return impl
+}
