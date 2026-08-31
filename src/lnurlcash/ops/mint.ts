@@ -34,6 +34,8 @@ import {
   lightningAddressUsername,
   mintAddressUrl,
   namesMintOutput,
+  newSecretsOf,
+  NoteSpentError,
   probeBurnedNote,
   requestInvoice,
   resolveMintInput,
@@ -47,7 +49,7 @@ import type {NewBearer} from '../types'
 import {ceilMsatToSat} from '../units'
 import type {PollOptions} from './shared'
 import type {FundOperationOptions} from './shared'
-import {PollAbortedError, assertFundOwner, pollUntil, pollVerifyUntilSettled} from './shared'
+import {PollAbortedError, assertFundOwner, pollUntil, pollVerifyUntilSettled, probeMutationOutput} from './shared'
 
 export type PreparedMint = {
   invoice: string
@@ -361,7 +363,41 @@ export const claimFromPreimage = async (
         rotationError = err.message
       }
     } else {
-      rotationError = err instanceof Error ? err.message : String(err)
+      // A classified refusal can still be a LANDED rotate: the callback is
+      // a GET and HTTP stacks retry GETs, so the service may have executed
+      // the first attempt and refused this one as an already-spent input.
+      // "Already spent" then PROVES the preimage note is burned - the
+      // carried fresh secret is the only money left, so probe it before
+      // believing the refusal.
+      const carried = newSecretsOf(err)
+      if (carried.length === 1) {
+        const outcome = await probeMutationOutput(declaredUrl, carried[0], options)
+        if (outcome === 'live') {
+          // the rotate landed and this answer was its retried twin
+          url = withNewK1(declaredUrl, carried[0], noteInfo.maxWithdrawable)
+          rotated = true
+        } else if (outcome === 'unknown') {
+          possibleCopy = {
+            url: withNewK1(declaredUrl, carried[0], noteInfo.maxWithdrawable),
+            callback: noteInfo.callback,
+            amount: noteInfo.maxWithdrawable,
+            verified: false,
+          }
+          if (mintPubkey) possibleCopy.mintPubkey = mintPubkey
+          // the preimage note itself may be burned - it cannot stay verified
+          base.verified = false
+          rotationError = `${err instanceof Error ? err.message : String(err)} The refusal may have named a retry of a rotation that already landed - the possible rotated copy is tracked unverified alongside this one.`
+        } else if (err instanceof NoteSpentError) {
+          // a genuine already-spent refusal with no live output: the note
+          // the service just described is burned - it cannot stay verified
+          base.verified = false
+          rotationError = err.message
+        } else {
+          rotationError = err instanceof Error ? err.message : String(err)
+        }
+      } else {
+        rotationError = err instanceof Error ? err.message : String(err)
+      }
     }
   }
   const claimed: ClaimedNote = {note: {...base, url}, rotated}

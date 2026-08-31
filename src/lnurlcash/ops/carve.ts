@@ -5,6 +5,7 @@
 import {
   AmbiguousMutationError,
   mergeNotes,
+  newSecretsOf,
   noteK1,
   probeBurnedNote,
   requireNoteK1,
@@ -15,7 +16,7 @@ import {
 } from 'lnurlcash-kit'
 import type {Bearer, NewBearer} from '../types'
 import type {FundOperationOptions} from './shared'
-import {assertFundOwner, UncertainOutcomeError} from './shared'
+import {assertFundOwner, probeMutationOutput, UncertainOutcomeError} from './shared'
 
 // the changeset stores apply after a mutation: `note`/`change` BEFORE
 // `consumed` - the mint call already burned every consumed input
@@ -151,38 +152,78 @@ export const ensureExactAmount = async (
     changeSignature = parts.changeSignature
     partVerified = true
   } catch (err) {
-    if (!(err instanceof AmbiguousMutationError)) throw err
-    // the split request may have landed despite the failure - probe one
-    // input before deciding what the carried secrets are worth
-    const outcome = await probeBurnedNote(base.url, options)
-    if (outcome === 'live') throw err // nothing burned - a plain failure
-    if (outcome === 'unknown') {
-      // can't tell: surface both possible outputs unverified WITHOUT
-      // consuming the inputs, and stop here rather than spend from limbo
-      throw new UncertainOutcomeError(
-        'The split may have gone through but could not be confirmed - the possible outputs must be tracked unverified alongside the originals until refreshed.',
-        [
-          {
-            url: withNewK1(base.url, err.newSecrets[0], amountMsat),
-            callback: base.callback,
-            amount: amountMsat,
-            verified: false,
-            mintPubkey: base.mintPubkey,
-          },
-          {
-            url: withNewK1(base.url, err.newSecrets[1], total - amountMsat),
-            callback: base.callback,
-            amount: total - amountMsat,
-            verified: false,
-            mintPubkey: base.mintPubkey,
-          },
-        ],
-      )
+    if (err instanceof AmbiguousMutationError) {
+      // the split request may have landed despite the failure - probe one
+      // input before deciding what the carried secrets are worth
+      const outcome = await probeBurnedNote(base.url, options)
+      if (outcome === 'live') throw err // nothing burned - a plain failure
+      if (outcome === 'unknown') {
+        // can't tell: surface both possible outputs unverified WITHOUT
+        // consuming the inputs, and stop here rather than spend from limbo
+        throw new UncertainOutcomeError(
+          'The split may have gone through but could not be confirmed - the possible outputs must be tracked unverified alongside the originals until refreshed.',
+          [
+            {
+              url: withNewK1(base.url, err.newSecrets[0], amountMsat),
+              callback: base.callback,
+              amount: amountMsat,
+              verified: false,
+              mintPubkey: base.mintPubkey,
+            },
+            {
+              url: withNewK1(base.url, err.newSecrets[1], total - amountMsat),
+              callback: base.callback,
+              amount: total - amountMsat,
+              verified: false,
+              mintPubkey: base.mintPubkey,
+            },
+          ],
+        )
+      }
+      // 'gone': the burn landed - the carried secrets are the only money
+      partK1 = err.newSecrets[0]
+      changeK1 = err.newSecrets[1]
+      rescued = true
+    } else {
+      // A classified refusal can still be a LANDED split: the callback is
+      // a GET and HTTP stacks retry GETs, so the service may have executed
+      // the first attempt and refused this one as an already-spent input.
+      // The kit attaches the fresh output secrets to every refusal - probe
+      // one output before deciding they are worthless.
+      const carried = newSecretsOf(err)
+      if (carried.length !== 2) throw err
+      const outcome = await probeMutationOutput(base.url, carried[0], options)
+      if (outcome === 'absent') throw err // never landed - a plain refusal
+      if (outcome === 'unknown') {
+        // can't tell whether the refusal named a retry - same limbo as
+        // the ambiguous case above: track the possible outputs, consume
+        // nothing, stop here
+        throw new UncertainOutcomeError(
+          'The split was refused, but the refusal may have named a retry of a split that already landed - the possible outputs must be tracked unverified alongside the originals until refreshed.',
+          [
+            {
+              url: withNewK1(base.url, carried[0], amountMsat),
+              callback: base.callback,
+              amount: amountMsat,
+              verified: false,
+              mintPubkey: base.mintPubkey,
+            },
+            {
+              url: withNewK1(base.url, carried[1], total - amountMsat),
+              callback: base.callback,
+              amount: total - amountMsat,
+              verified: false,
+              mintPubkey: base.mintPubkey,
+            },
+          ],
+        )
+      }
+      // 'live': the split landed and this answer was its retried twin -
+      // the carried secrets are the only money left
+      partK1 = carried[0]
+      changeK1 = carried[1]
+      rescued = true
     }
-    // 'gone': the burn landed - the carried secrets are the only money
-    partK1 = err.newSecrets[0]
-    changeK1 = err.newSecrets[1]
-    rescued = true
   }
   const note: NewBearer = {
     url: withNewK1(base.url, partK1, amountMsat, partSignature),
@@ -261,15 +302,38 @@ const mergeAmbiguitySafe = async (
     const merged = await mergeNotes(base.callback, k1s, options)
     return {k1: merged.k1, signature: merged.signature, rescued: false}
   } catch (err) {
-    if (!(err instanceof AmbiguousMutationError)) throw err
-    const outcome = await probeBurnedNote(base.url, options)
-    if (outcome === 'live') throw err // nothing burned - a plain failure
+    if (err instanceof AmbiguousMutationError) {
+      const outcome = await probeBurnedNote(base.url, options)
+      if (outcome === 'live') throw err // nothing burned - a plain failure
+      if (outcome === 'unknown') {
+        throw new UncertainOutcomeError(
+          'The merge may have gone through but could not be confirmed - the possible combined note must be tracked unverified alongside the originals until refreshed.',
+          [
+            {
+              url: withNewK1(base.url, err.newSecrets[0], total),
+              callback: base.callback,
+              amount: total,
+              verified: false,
+              mintPubkey: base.mintPubkey,
+            },
+          ],
+        )
+      }
+      // 'gone': the burn landed - the carried secret is the only money left
+      return {k1: err.newSecrets[0], rescued: true}
+    }
+    // same retry-refusal rescue as the split path: the refusal may name a
+    // merge that already landed - probe the would-be combined note
+    const carried = newSecretsOf(err)
+    if (carried.length !== 1) throw err
+    const outcome = await probeMutationOutput(base.url, carried[0], options)
+    if (outcome === 'absent') throw err
     if (outcome === 'unknown') {
       throw new UncertainOutcomeError(
-        'The merge may have gone through but could not be confirmed - the possible combined note must be tracked unverified alongside the originals until refreshed.',
+        'The merge was refused, but the refusal may have named a retry of a merge that already landed - the possible combined note must be tracked unverified alongside the originals until refreshed.',
         [
           {
-            url: withNewK1(base.url, err.newSecrets[0], total),
+            url: withNewK1(base.url, carried[0], total),
             callback: base.callback,
             amount: total,
             verified: false,
@@ -278,7 +342,6 @@ const mergeAmbiguitySafe = async (
         ],
       )
     }
-    // 'gone': the burn landed - the carried secret is the only money left
-    return {k1: err.newSecrets[0], rescued: true}
+    return {k1: carried[0], rescued: true}
   }
 }
