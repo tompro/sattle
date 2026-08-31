@@ -245,6 +245,13 @@ export const claimFromSecret = async (
     // is lying about the note it just credited
     throw new Error('The mint reports the freshly minted note as already spent.')
   }
+  if (claim.k1 !== target.noteSecret) {
+    // belt and suspenders: the kit's claimMintedNote returns the queried
+    // secret by construction and fetchNoteInfo rejects a mismatched echo,
+    // so this cannot trip through the kit - if it ever does, building a
+    // note from the answer would track the wrong secret
+    throw new Error('The mint answered the claim for a different note secret.')
+  }
   if (claim.amountMsat === null || !claim.callback) {
     throw new Error('The mint did not return the minted note details.')
   }

@@ -215,10 +215,18 @@ export const transferBetweenMints = async (
       // proof - the target only credits it once the melt's payment landed
       try {
         const claim = await pollMintClaim(prepared.withdrawLink, noteSecret, poll, options)
-        if (claim.state !== 'minted' || claim.amountMsat === null || !claim.callback) {
-          // 'spent' on a fresh wallet-chosen secret, or an incomplete
-          // answer: the target misbehaved - the way back to the note is
-          // already in the claim material
+        if (
+          claim.state !== 'minted' ||
+          claim.k1 !== noteSecret ||
+          claim.amountMsat === null ||
+          !claim.callback
+        ) {
+          // 'spent' on a fresh wallet-chosen secret, a claim naming a
+          // secret other than the one polled (impossible through the kit,
+          // which returns the queried secret and rejects mismatched
+          // echoes - asserted anyway: building from it would track the
+          // wrong note), or an incomplete answer: the target misbehaved -
+          // the way back to the note is already in the claim material
           return {...base, outcome: 'settled-claim-failed', claimMaterial}
         }
         const note: NewBearer = {
