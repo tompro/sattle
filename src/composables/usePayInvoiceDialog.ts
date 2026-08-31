@@ -5,6 +5,7 @@ import { decodeBolt11AmountMsat, isBolt11Invoice, resolveLnurlInput } from 'lnur
 import { readClipboard } from '@/capabilities/clipboard';
 import { payWithBearers, UncertainOutcomeError } from '@/lnurlcash/ops';
 import type { PayOutcome } from '@/lnurlcash/ops';
+import type { Bearer } from '@/lnurlcash/types';
 import { msatToSats, satsToMsat } from '@/lnurlcash/units';
 import { useWalletStore } from '@/stores/wallet';
 import { useActivityStore } from '@/stores/activity';
@@ -145,15 +146,26 @@ export const usePayInvoiceDialog = (props: PayInvoiceProps, emit: PayInvoiceEmit
     try {
       ownerFence = wallet.captureOwnerFence();
       const commitContext = { ownerFence, warn: warnCommitted };
+      // the carve commits the moment it lands server-side (onCarve), not
+      // after the settlement wait - an abort mid-wait can then never leave
+      // burned inputs looking spendable or strand the fresh outputs
+      const carveState: { committed?: Bearer } = {};
+      const onCarve = async (carve: Parameters<typeof commitCarve>[1]): Promise<void> => {
+        carveState.committed = await commitCarve(wallet, carve, commitContext);
+      };
       const paid = await payWithBearers(
         wallet.bearers,
         payment.input,
         payment.kind === 'address'
-          ? { amountMsat: payment.amountMsat, assertOwner: ownerFence }
-          : { assertOwner: ownerFence },
+          ? { amountMsat: payment.amountMsat, assertOwner: ownerFence, onCarve }
+          : { assertOwner: ownerFence, onCarve },
       );
       stage.value = 'Confirming the result…';
-      const committed = await commitCarve(wallet, paid.carve, commitContext);
+      // a carve that mutated nothing (one note already held the exact
+      // amount) fires no hook - the note is already tracked; look it up
+      const committed =
+        carveState.committed ?? wallet.bearers.find((bearer) => bearer.url === paid.carve.note.url);
+      if (!committed) throw new Error('The carved note was not tracked.');
       if (paid.rescuedNote) {
         await addCommittedBearers(wallet, [paid.rescuedNote], commitContext);
       }
@@ -166,6 +178,13 @@ export const usePayInvoiceDialog = (props: PayInvoiceProps, emit: PayInvoiceEmit
         toast('positive', `Paid ${sats} sats.`);
         emit('sent');
       } else if (paid.outcome === 'failed-funds-returned') {
+        if (paid.rotatedNote) {
+          // the classification rotate re-secured the returned funds at a
+          // fresh secret, burning the carved note the checkpoint already
+          // committed - add the new note BEFORE marking the old one spent
+          await addCommittedBearers(wallet, [paid.rotatedNote], commitContext);
+          await wallet.markSpent(committed.id, ownerFence);
+        }
         await activity.log(
           'transfer',
           `A ${sats} sat payment failed - funds are back in your wallet.`,
