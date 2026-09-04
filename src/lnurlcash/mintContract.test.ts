@@ -1,5 +1,5 @@
-// Wire-contract coverage for the pinned lnurlcash-kit 0.5.0 /
-// lnurlcash-conformance 0.4.0 artifacts. Contracts the app's mint flows
+// Wire-contract coverage for the pinned lnurlcash-kit 0.8.0 /
+// lnurlcash-conformance 0.7.0 artifacts. Contracts the app's mint flows
 // rely on:
 // the kit must MAP the mint-address wire field `nodeCapacity` onto the
 // app-facing `nodeCapacityMsat` (0.1.0 spread it under its wire name, so
@@ -19,6 +19,7 @@ import {buildNoteUrl, fetchMintAddress, hashK1} from 'lnurlcash-kit'
 
 import {claimMintedNote, prepareMint} from './ops'
 import {mintAddressCacheInfo} from './trustedMints'
+import './mintContract.v08.cases'
 
 type Mint = Awaited<ReturnType<typeof createMockMint>>
 
@@ -136,8 +137,8 @@ describe('mint-address wire contract', () => {
 
 describe('withdraw-link forms', () => {
   it('accepts the lnurlw:// withdraw link the conformance mock mint advertises', async () => {
-    // conformance 0.4.0 defaults to plain https links; lnurlw:// (the form
-    // lnurl-mint emits under LUD-17) is an explicit option
+    // conformance 0.7.0 defaults to plain https links; lnurlw:// is an
+    // explicit LUD-17 transport form
     const m = await mint({testHooks: true, withdrawLinkForm: 'lnurlw'})
     const prepared = await prepareMint(`mint@127.0.0.1:${m.port}`, 21_000)
     expect(prepared.withdrawLink).toMatch(/^lnurlw:\/\//)
