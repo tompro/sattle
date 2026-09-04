@@ -10,7 +10,6 @@ import {beforeEach, describe, expect, it} from 'vitest'
 import {
   deriveWalletMaterial,
   saveWalletMaterial,
-  serializeWalletMaterial,
 } from './keys'
 import {
   derivePasskeyWrapKey,
@@ -135,7 +134,7 @@ describe('v2 passkey material', () => {
     const authenticator = new FakeAuthenticator()
     const slot = await registerPasskey(MATERIAL, {credentials: authenticator})
     const prfOutput = await getPasskeyPrfOutput(slot.credentialId, {credentials: authenticator})
-    const materialHash = bytesToHex(sha256(utf8ToBytes(serializeWalletMaterial(MATERIAL))))
+    const materialHash = bytesToHex(sha256(utf8ToBytes(payload)))
     const wrap = await encryptPayload(prfOutput, payload, materialHash)
     localStorage.setItem(SLOT_STORAGE_KEY, JSON.stringify([{...slot, ...wrap}]))
     const before = rawSlots()

@@ -5,8 +5,12 @@
 
 import {isJsonObject} from '../jsonParsing'
 import type {WalletMaterialV2} from './storedSecret'
-import {serializeWalletMaterial, walletMaterialOwnerId} from './storedSecret'
-import {getPlainWalletMaterial, savedWalletMaterialOwnerId} from '../walletMaterialStorage'
+import {serializeWalletMaterial, walletMaterialHash, walletMaterialOwnerId} from './storedSecret'
+import {
+  getPlainWalletMaterial,
+  savedWalletMaterialHash,
+  savedWalletMaterialOwnerId,
+} from '../walletMaterialStorage'
 import {isWalletOwnerId} from './walletOwner'
 
 export type PasskeyWrap = {
@@ -39,10 +43,13 @@ export const passkeySlotsEqual = (left: PasskeySlot, right: PasskeySlot): boolea
 
 export const requireCurrentPasskeyMaterialOwner = (material: WalletMaterialV2): string => {
   const ownerId = savedWalletMaterialOwnerId()
+  const materialHash = savedWalletMaterialHash()
   const plaintext = getPlainWalletMaterial()
   if (
     ownerId === null ||
+    materialHash === null ||
     walletMaterialOwnerId(material) !== ownerId ||
+    walletMaterialHash(material) !== materialHash ||
     (plaintext !== null && serializeWalletMaterial(plaintext) !== serializeWalletMaterial(material))
   ) {
     throw new Error('Passkey operation requires the proven saved wallet material.')
@@ -175,10 +182,22 @@ export const readPasskeySlots = (): PasskeySlot[] => {
 export const hasPasskeySlots = (): boolean => readPasskeySlots().length > 0
 
 export const writePasskeySlots = (ownerId: string, slots: PasskeySlot[]): void => {
-  if (!isWalletOwnerId(ownerId) || savedWalletMaterialOwnerId() !== ownerId) {
+  const materialHash = savedWalletMaterialHash()
+  if (
+    !isWalletOwnerId(ownerId) ||
+    savedWalletMaterialOwnerId() !== ownerId ||
+    materialHash === null
+  ) {
     throw new Error('Passkey slots require the proven saved wallet owner.')
   }
-  if (slots.some((slot) => slot.ownerId !== ownerId || slot.version !== PASSKEY_SLOT_VERSION)) {
+  if (
+    slots.some(
+      (slot) =>
+        slot.ownerId !== ownerId ||
+        slot.version !== PASSKEY_SLOT_VERSION ||
+        slot.materialHash !== materialHash,
+    )
+  ) {
     throw new Error('Refusing to write a passkey slot for a different wallet.')
   }
   const preserved = readStoredPasskeySlots()
@@ -188,13 +207,18 @@ export const writePasskeySlots = (ownerId: string, slots: PasskeySlot[]): void =
 }
 
 export const adoptLegacyPasskeySlots = (ownerId: string): number => {
+  const materialHash = savedWalletMaterialHash()
   if (!isWalletOwnerId(ownerId) || savedWalletMaterialOwnerId() !== ownerId) {
     throw new Error('Legacy passkey migration requires a proven owner.')
   }
   const stored = readStoredPasskeySlots()
   let adopted = 0
   const migrated = stored.map((slot) => {
-    if (slot.isCurrent || (slot.claimedOwnerId !== null && slot.claimedOwnerId !== ownerId)) {
+    if (
+      slot.isCurrent ||
+      slot.record.materialHash !== materialHash ||
+      (slot.claimedOwnerId !== null && slot.claimedOwnerId !== ownerId)
+    ) {
       return slot.record
     }
     adopted += 1

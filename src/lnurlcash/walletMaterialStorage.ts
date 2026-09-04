@@ -9,11 +9,13 @@ import {
   stampStoredWalletMaterialOwner,
   storedWalletMaterialClaimedOwnerId,
   storedWalletMaterialOwnerId,
-  stripStoredSecretOwner,
+  stripStoredWalletMaterialOwner,
+  walletMaterialHash,
   walletMaterialOwnerId,
   STORED_WALLET_MATERIAL_VERSION,
 } from './storage/storedSecret'
 import type {StoredWalletMaterial, WalletMaterialV2} from './storage/storedSecret'
+import {serializedWalletMaterialHash} from './storage/walletMaterial'
 import {decryptSecretParts, encryptSecretParts} from './passwordWrap'
 import {WALLET_MATERIAL_STORAGE_KEY} from './storage/walletOwnerEvents'
 
@@ -86,6 +88,9 @@ export const savedWalletMaterialOwnerId = (): string | null => {
 export const savedWalletMaterialOwnerMatches = (material: WalletMaterialV2): boolean =>
   savedWalletMaterialOwnerId() === walletMaterialOwnerId(material)
 
+export const savedWalletMaterialHash = (): string | null =>
+  readStoredWalletMaterial()?.materialHash ?? null
+
 export const getPlainWalletMaterial = (): WalletMaterialV2 | null => {
   const stored = readStoredWalletMaterial()
   return stored === null ? null : materialFromPlaintext(stored)
@@ -96,6 +101,7 @@ export const saveWalletMaterial = async (
   password?: string,
 ): Promise<void> => {
   const value = serializeWalletMaterial(material)
+  const materialHash = walletMaterialHash(material)
   const ownerId = walletMaterialOwnerId(material)
   if (!password) {
     localStorage.setItem(
@@ -103,6 +109,7 @@ export const saveWalletMaterial = async (
       JSON.stringify({
         enc: false,
         value,
+        materialHash,
         ownerId,
         version: STORED_WALLET_MATERIAL_VERSION,
       }),
@@ -115,6 +122,7 @@ export const saveWalletMaterial = async (
     JSON.stringify({
       enc: true,
       ...parts,
+      materialHash,
       ownerId,
       version: STORED_WALLET_MATERIAL_VERSION,
     }),
@@ -122,10 +130,11 @@ export const saveWalletMaterial = async (
 }
 
 export const restoreWalletMaterialStored = (stored: StoredWalletMaterial): void => {
-  if (parseStoredWalletMaterial(stored) === null) throw new InvalidWalletMaterialError()
+  const parsed = parseStoredWalletMaterial(stored)
+  if (parsed === null) throw new InvalidWalletMaterialError()
   localStorage.setItem(
     WALLET_MATERIAL_STORAGE_KEY,
-    JSON.stringify(stripStoredSecretOwner(stored)),
+    JSON.stringify(stripStoredWalletMaterialOwner(parsed.secret)),
   )
 }
 
@@ -134,7 +143,11 @@ export const decryptSavedWalletMaterial = async (
 ): Promise<WalletMaterialV2> => {
   const stored = readStoredWalletMaterial()
   if (stored === null || !stored.enc) throw new NoEncryptedWalletMaterialError()
-  const material = parseWalletMaterial(await decryptSecretParts(stored, password))
+  const serialized = await decryptSecretParts(stored, password)
+  if (serializedWalletMaterialHash(serialized) !== stored.materialHash) {
+    throw new WalletMaterialProofMismatchError()
+  }
+  const material = parseWalletMaterial(serialized)
   if (material === null) throw new InvalidWalletMaterialError()
   const claimedOwnerId = storedWalletMaterialClaimedOwnerId(stored)
   if (claimedOwnerId !== null && claimedOwnerId !== walletMaterialOwnerId(material)) {
@@ -146,7 +159,11 @@ export const decryptSavedWalletMaterial = async (
 export const ensureSavedWalletMaterialOwner = (material: WalletMaterialV2): void => {
   const stored = readStoredWalletMaterial()
   if (stored === null) return
-  if (stored.enc === false && stored.value !== serializeWalletMaterial(material)) {
+  const serialized = serializeWalletMaterial(material)
+  if (
+    walletMaterialHash(material) !== stored.materialHash ||
+    (stored.enc === false && stored.value !== serialized)
+  ) {
     throw new WalletMaterialProofMismatchError()
   }
   const ownerId = walletMaterialOwnerId(material)

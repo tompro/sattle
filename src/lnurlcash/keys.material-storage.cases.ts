@@ -1,3 +1,5 @@
+import {sha256} from '@noble/hashes/sha2.js'
+import {bytesToHex, utf8ToBytes} from '@noble/hashes/utils.js'
 import {describe, expect, it} from 'vitest'
 
 import {
@@ -27,6 +29,9 @@ const LINKING_KEY_HEX = 'da2a752d3d28668288ff50bed644e4a95f726d8711fd8754060f0a9
 const CASH_ROOT_HEX =
   'c7a2496e9b453a67c5d2a1f04936ec1259440d45454c795a99a66269e4cd3005111e1cc966fca2fe32f054f14caceab90449e536d94cf6935ea12a087e414f60'
 
+const materialHash = (serialized: string): string =>
+  bytesToHex(sha256(utf8ToBytes(serialized)))
+
 const readRawMaterialRecord = (): Record<string, unknown> => {
   const raw = localStorage.getItem(MATERIAL_STORAGE_KEY)
   if (raw === null) throw new Error('expected a saved wallet-material record')
@@ -50,6 +55,7 @@ describe('WalletMaterialV2 persistence', () => {
     expect(readRawMaterialRecord()).toEqual({
       enc: false,
       value: serializeWalletMaterial(material),
+      materialHash: materialHash(serializeWalletMaterial(material)),
       ownerId: linkingPubKeyHex(walletMaterialLinkingKey(material)),
       version: 2,
     })
@@ -87,6 +93,7 @@ describe('WalletMaterialV2 persistence', () => {
     restoreWalletMaterialStored({
       enc: false,
       value: serializeWalletMaterial(material),
+      materialHash: materialHash(serializeWalletMaterial(material)),
       ownerId: foreignOwner,
       version: 2,
     })
@@ -96,7 +103,11 @@ describe('WalletMaterialV2 persistence', () => {
     ensureSavedWalletMaterialOwner(unlocked)
 
     // Then the claim was absent before proof and only the derived owner was stamped
-    expect(beforeProof).toEqual({enc: false, value: serializeWalletMaterial(material)})
+    expect(beforeProof).toEqual({
+      enc: false,
+      value: serializeWalletMaterial(material),
+      materialHash: materialHash(serializeWalletMaterial(material)),
+    })
     expect(savedWalletMaterialOwnerId()).toBe(linkingPubKeyHex(walletMaterialLinkingKey(material)))
   })
 
@@ -109,6 +120,7 @@ describe('WalletMaterialV2 persistence', () => {
       JSON.stringify({
         enc: false,
         value: serializeWalletMaterial(material),
+        materialHash: materialHash(serializeWalletMaterial(material)),
         ownerId: linkingPubKeyHex(new Uint8Array(32).fill(9)),
         version: 2,
       }),
@@ -160,6 +172,7 @@ describe('WalletMaterialV2 persistence', () => {
     const record = {
       enc: false,
       value,
+      materialHash: materialHash(value),
       ownerId: linkingPubKeyHex(walletMaterialLinkingKey(material)),
       version,
     }
@@ -182,6 +195,7 @@ describe('WalletMaterialV2 persistence', () => {
       JSON.stringify({
         enc: true,
         ...parts,
+        materialHash: materialHash(LINKING_KEY_HEX),
         ownerId: linkingPubKeyHex(walletMaterialLinkingKey(material)),
         version: 2,
       }),

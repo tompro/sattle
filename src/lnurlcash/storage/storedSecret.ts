@@ -3,21 +3,24 @@
 // canonical material encoding so hostile storage cannot smuggle a legacy key,
 // a future field, or a malformed BIP-32 root across the unlock boundary.
 
-import {secp256k1} from '@noble/curves/secp256k1.js'
-import {bytesToHex, hexToBytes} from '@noble/hashes/utils.js'
-import {cashNodeFromHex, cashNodeToHex} from 'lnurlcash-kit'
 import {isJsonObject} from '../jsonParsing'
 import {isWalletOwnerId} from './walletOwner'
+import {
+  parseWalletMaterial,
+  serializedWalletMaterialHash,
+  STORED_WALLET_MATERIAL_VERSION,
+} from './walletMaterial'
+export {
+  parseWalletMaterial,
+  serializeWalletMaterial,
+  walletMaterialHash,
+  walletMaterialOwnerId,
+  WALLET_MATERIAL_VERSION,
+} from './walletMaterial'
+export type {WalletMaterialV2} from './walletMaterial'
 
 export const STORED_SECRET_VERSION = 1 as const
-export const WALLET_MATERIAL_VERSION = 2 as const
-export const STORED_WALLET_MATERIAL_VERSION = 2 as const
-
-export type WalletMaterialV2 = {
-  readonly version: typeof WALLET_MATERIAL_VERSION
-  readonly linkingKeyHex: string
-  readonly cashRootHex: string
-}
+export {STORED_WALLET_MATERIAL_VERSION} from './walletMaterial'
 
 type PlainStoredSecret = {
   readonly enc: false
@@ -36,7 +39,7 @@ type EncryptedStoredSecret = {
 }
 
 export type StoredSecret = PlainStoredSecret | EncryptedStoredSecret
-export type StoredWalletMaterial = StoredSecret
+export type StoredWalletMaterial = StoredSecret & {readonly materialHash: string}
 
 type ParsedStoredSecret = {
   readonly secret: StoredSecret
@@ -44,66 +47,24 @@ type ParsedStoredSecret = {
   readonly isCurrent: boolean
 }
 
+type ParsedStoredWalletMaterial = Omit<ParsedStoredSecret, 'secret'> & {
+  readonly secret: StoredWalletMaterial
+}
+
 const PLAIN_KEYS = ['enc', 'value', 'ownerId', 'version'] as const
 const ENCRYPTED_KEYS = ['enc', 'salt', 'iv', 'ciphertext', 'ownerId', 'version'] as const
-const WALLET_MATERIAL_KEYS = ['version', 'linkingKeyHex', 'cashRootHex'] as const
+const PLAIN_MATERIAL_KEYS = [...PLAIN_KEYS, 'materialHash'] as const
+const ENCRYPTED_MATERIAL_KEYS = [...ENCRYPTED_KEYS, 'materialHash'] as const
 
 const hasOnlyKeys = (record: Record<string, unknown>, allowed: readonly string[]): boolean =>
   Object.keys(record).every((key) => allowed.includes(key))
-
-const hasExactlyKeys = (record: Record<string, unknown>, expected: readonly string[]): boolean =>
-  Object.keys(record).length === expected.length && hasOnlyKeys(record, expected)
-
-export const serializeWalletMaterial = (material: WalletMaterialV2): string =>
-  JSON.stringify({
-    version: WALLET_MATERIAL_VERSION,
-    linkingKeyHex: material.linkingKeyHex,
-    cashRootHex: material.cashRootHex,
-  })
-
-export const parseWalletMaterial = (serialized: string): WalletMaterialV2 | null => {
-  let value: unknown
-  try {
-    value = JSON.parse(serialized)
-  } catch (error) {
-    if (error instanceof SyntaxError) return null
-    throw error
-  }
-  if (
-    !isJsonObject(value) ||
-    !hasExactlyKeys(value, WALLET_MATERIAL_KEYS) ||
-    value.version !== WALLET_MATERIAL_VERSION ||
-    typeof value.linkingKeyHex !== 'string' ||
-    !/^[0-9a-f]{64}$/.test(value.linkingKeyHex) ||
-    typeof value.cashRootHex !== 'string' ||
-    !/^[0-9a-f]{128}$/.test(value.cashRootHex)
-  ) {
-    return null
-  }
-  const linkingKey = hexToBytes(value.linkingKeyHex)
-  const cashRoot = cashNodeFromHex(value.cashRootHex)
-  if (
-    !secp256k1.utils.isValidSecretKey(linkingKey) ||
-    !secp256k1.utils.isValidSecretKey(cashRoot.privateKey) ||
-    cashNodeToHex(cashRoot) !== value.cashRootHex
-  ) {
-    return null
-  }
-  const material: WalletMaterialV2 = {
-    version: WALLET_MATERIAL_VERSION,
-    linkingKeyHex: value.linkingKeyHex,
-    cashRootHex: value.cashRootHex,
-  }
-  return serializeWalletMaterial(material) === serialized ? material : null
-}
-
-export const walletMaterialOwnerId = (material: WalletMaterialV2): string =>
-  bytesToHex(secp256k1.getPublicKey(hexToBytes(material.linkingKeyHex), true))
 
 type StoredSecretParserOptions = {
   readonly version: number
   readonly acceptsPlaintext: (value: string) => boolean
   readonly acceptsUnversionedOwner: boolean
+  readonly plainKeys: readonly string[]
+  readonly encryptedKeys: readonly string[]
 }
 
 const parseStoredSecretWith = (
@@ -116,7 +77,7 @@ const parseStoredSecretWith = (
     if (
       typeof stored.value !== 'string' ||
       !options.acceptsPlaintext(stored.value) ||
-      !hasOnlyKeys(stored, PLAIN_KEYS)
+      !hasOnlyKeys(stored, options.plainKeys)
     ) {
       return null
     }
@@ -131,7 +92,7 @@ const parseStoredSecretWith = (
       stored.ciphertext.length === 0 ||
       stored.ciphertext.length % 2 !== 0 ||
       !/^[0-9a-f]+$/i.test(stored.ciphertext) ||
-      !hasOnlyKeys(stored, ENCRYPTED_KEYS)
+      !hasOnlyKeys(stored, options.encryptedKeys)
     ) {
       return null
     }
@@ -170,14 +131,35 @@ export const parseStoredSecret = (stored: unknown): ParsedStoredSecret | null =>
     version: STORED_SECRET_VERSION,
     acceptsPlaintext: (value) => /^[0-9a-f]{64}$/i.test(value),
     acceptsUnversionedOwner: true,
+    plainKeys: PLAIN_KEYS,
+    encryptedKeys: ENCRYPTED_KEYS,
   })
 
-export const parseStoredWalletMaterial = (stored: unknown): ParsedStoredSecret | null =>
-  parseStoredSecretWith(stored, {
+export const parseStoredWalletMaterial = (stored: unknown): ParsedStoredWalletMaterial | null => {
+  if (
+    !isJsonObject(stored) ||
+    typeof stored.materialHash !== 'string' ||
+    !/^[0-9a-f]{64}$/.test(stored.materialHash)
+  ) {
+    return null
+  }
+  const materialHash = stored.materialHash
+  const parsed = parseStoredSecretWith(stored, {
     version: STORED_WALLET_MATERIAL_VERSION,
     acceptsPlaintext: (value) => parseWalletMaterial(value) !== null,
     acceptsUnversionedOwner: false,
+    plainKeys: PLAIN_MATERIAL_KEYS,
+    encryptedKeys: ENCRYPTED_MATERIAL_KEYS,
   })
+  if (
+    parsed === null ||
+    (parsed.secret.enc === false && serializedWalletMaterialHash(parsed.secret.value) !== materialHash)
+  ) {
+    return null
+  }
+  const secret: StoredWalletMaterial = {...parsed.secret, materialHash}
+  return {...parsed, secret}
+}
 
 export const isValidStoredSecret = (stored: unknown): stored is StoredSecret =>
   parseStoredSecret(stored) !== null
@@ -224,6 +206,7 @@ export const stampStoredWalletMaterialOwner = (
     return {
       enc: false,
       value: stored.value,
+      materialHash: stored.materialHash,
       ownerId,
       version: STORED_WALLET_MATERIAL_VERSION,
     }
@@ -233,6 +216,7 @@ export const stampStoredWalletMaterialOwner = (
     salt: stored.salt,
     iv: stored.iv,
     ciphertext: stored.ciphertext,
+    materialHash: stored.materialHash,
     ownerId,
     version: STORED_WALLET_MATERIAL_VERSION,
   }
@@ -245,5 +229,20 @@ export const stripStoredSecretOwner = (stored: StoredSecret): StoredSecret => {
     salt: stored.salt,
     iv: stored.iv,
     ciphertext: stored.ciphertext,
+  }
+}
+
+export const stripStoredWalletMaterialOwner = (
+  stored: StoredWalletMaterial,
+): StoredWalletMaterial => {
+  if (stored.enc === false) {
+    return {enc: false, value: stored.value, materialHash: stored.materialHash}
+  }
+  return {
+    enc: true,
+    salt: stored.salt,
+    iv: stored.iv,
+    ciphertext: stored.ciphertext,
+    materialHash: stored.materialHash,
   }
 }

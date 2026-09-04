@@ -8,6 +8,7 @@ import {
   linkingPubKeyHex,
   savedKeyOwnerId,
   saveWalletMaterial,
+  walletMaterialHash,
 } from './keys'
 import {migrateLegacyPasskeySlots, readPasskeySlots} from './passkeys'
 import type {PasskeySlot} from './passkeys'
@@ -28,7 +29,7 @@ const SLOT_BASE = {
   credentialId: '11'.repeat(16),
   hkdfSalt: '22'.repeat(16),
   iv: '33'.repeat(12),
-  materialHash: '44'.repeat(32),
+  materialHash: walletMaterialHash(MATERIAL),
   wrappedMaterial: '55'.repeat(128),
   createdAt: 1,
 } as const

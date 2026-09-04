@@ -13,6 +13,7 @@ import {
 import {parseJsonObject, stubLocalStorage} from './test-utils'
 
 import './keys.material.cases'
+import './keys.material-commitment.cases'
 import './keys.material-storage.cases'
 
 const LINKING_KEY = new Uint8Array(32).fill(7)

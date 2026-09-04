@@ -36,13 +36,14 @@ import {
   writePasskeySlots,
 } from './storage/passkeySlots'
 import type {WalletMaterialV2} from './storage/storedSecret'
-import {walletMaterialOwnerId} from './storage/storedSecret'
-import {savedWalletMaterialOwnerId} from './walletMaterialStorage'
+import {walletMaterialHash, walletMaterialOwnerId} from './storage/storedSecret'
+import {savedWalletMaterialHash, savedWalletMaterialOwnerId} from './walletMaterialStorage'
 import {unwrapWalletMaterialWithPrf, wrapWalletMaterialWithPrf} from './passkeyWrap'
 
 export type {PasskeySlot, PasskeyWrap} from './storage/passkeySlots'
 export {readPasskeySlots, hasPasskeySlots} from './storage/passkeySlots'
 export {migrateLegacyPasskeySlots} from './passkeyOwnership'
+export {rewrapAllSlots} from './passkeyRewrap'
 export {
   derivePasskeyWrapKey,
   InvalidPasskeyMaterialError,
@@ -218,6 +219,9 @@ export const registerPasskey = async (
     version: PASSKEY_SLOT_VERSION,
   }
   await withStorageLock(PASSKEY_SLOTS_STORAGE_KEY, () => {
+    if (requireCurrentPasskeyMaterialOwner(walletMaterial) !== ownerId) {
+      throw new Error('Saved wallet material changed during passkey registration.')
+    }
     const slots = readPasskeySlots().filter((s) => s.credentialId !== credentialId)
     slots.push(slot)
     writePasskeySlots(ownerId, slots)
@@ -232,9 +236,13 @@ export const unlockWalletMaterialWithPasskey = async (
   options: {credentials?: PasskeyCredentials} = {},
 ): Promise<WalletMaterialV2> => {
   const ownerId = savedWalletMaterialOwnerId()
+  const materialHash = savedWalletMaterialHash()
   const slots = readPasskeySlots()
-  if (ownerId === null || slots.length === 0) {
+  if (ownerId === null || materialHash === null || slots.length === 0) {
     throw new Error('No passkeys registered on this device.')
+  }
+  if (slots.some((slot) => slot.materialHash !== materialHash)) {
+    throw new Error('Passkey slot belongs to different wallet material.')
   }
   const credentials = options.credentials ?? defaultCredentials()
   const assertion = await credentials.get({
@@ -261,6 +269,9 @@ export const unlockWalletMaterialWithPasskey = async (
   if (savedWalletMaterialOwnerId() !== ownerId) {
     throw new Error('This passkey belongs to a different wallet.')
   }
+  if (savedWalletMaterialHash() !== materialHash) {
+    throw new Error('Saved wallet material changed during the unlock ceremony.')
+  }
   const currentSlot = readPasskeySlots().find((candidate) => candidate.credentialId === credentialId)
   if (currentSlot === undefined || !passkeySlotsEqual(slot, currentSlot)) {
     throw new Error('The passkey slot changed during the unlock ceremony.')
@@ -268,6 +279,9 @@ export const unlockWalletMaterialWithPasskey = async (
   const material = await unwrapWalletMaterialWithPrf(prfOutput, currentSlot)
   if (savedWalletMaterialOwnerId() !== ownerId || walletMaterialOwnerId(material) !== ownerId) {
     throw new Error('This passkey belongs to a different wallet.')
+  }
+  if (savedWalletMaterialHash() !== materialHash || walletMaterialHash(material) !== materialHash) {
+    throw new Error('Saved wallet material changed during the unlock ceremony.')
   }
   return material
 }
@@ -293,34 +307,4 @@ export const removePasskey = async (credentialId: string): Promise<boolean> => {
     if (removed) writePasskeySlots(ownerId, kept)
   })
   return removed
-}
-
-// Refreshes every current-owner slot around the same proven wallet material.
-// Each slot's wrap secret lives only inside its authenticator, so the caller
-// must supply a fresh PRF output per credential (one getPasskeyPrfOutput
-// ceremony each). All-or-nothing: a slot without a PRF output aborts the
-// whole refresh before anything is written.
-//
-// A password change does not need this because password and passkey slots are
-// independent wraps of the same canonical material.
-export const rewrapAllSlots = async (
-  material: WalletMaterialV2,
-  prfOutputs: ReadonlyMap<string, Uint8Array>,
-): Promise<void> => {
-  const ownerId = requireCurrentPasskeyMaterialOwner(material)
-  await withStorageLock(PASSKEY_SLOTS_STORAGE_KEY, async () => {
-    const slots = readPasskeySlots()
-    const rewrapped: PasskeySlot[] = []
-    for (const slot of slots) {
-      const prfOutput = prfOutputs.get(slot.credentialId)
-      if (!prfOutput) {
-        throw new Error('Missing fresh PRF output for a passkey slot - refusing a partial re-wrap.')
-      }
-      rewrapped.push({
-        ...slot,
-        ...(await wrapWalletMaterialWithPrf(prfOutput, material)),
-      })
-    }
-    writePasskeySlots(ownerId, rewrapped)
-  })
 }

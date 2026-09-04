@@ -9,11 +9,11 @@
 // from the same PRF output.
 
 import {bytesToHex, hexToBytes, utf8ToBytes} from '@noble/hashes/utils.js'
-import {sha256} from '@noble/hashes/sha2.js'
 
 import type {PasskeyWrap} from './storage/passkeySlots'
 import {parseWalletMaterial, serializeWalletMaterial} from './storage/storedSecret'
 import type {WalletMaterialV2} from './storage/storedSecret'
+import {serializedWalletMaterialHash, walletMaterialHash} from './storage/walletMaterial'
 
 const WRAP_KEY_HKDF_INFO = 'sattle-passkey-wrap-v2'
 
@@ -63,7 +63,7 @@ export const wrapWalletMaterialWithPrf = async (
   return {
     hkdfSalt: bytesToHex(hkdfSalt),
     iv: bytesToHex(iv),
-    materialHash: bytesToHex(sha256(utf8ToBytes(serialized))),
+    materialHash: walletMaterialHash(material),
     wrappedMaterial: bytesToHex(ciphertext),
   }
 }
@@ -81,7 +81,7 @@ export const unwrapWalletMaterialWithPrf = async (
     new Uint8Array(hexToBytes(wrap.wrappedMaterial)),
   )
   const serialized = new TextDecoder().decode(plaintext)
-  if (bytesToHex(sha256(utf8ToBytes(serialized))) !== wrap.materialHash) {
+  if (serializedWalletMaterialHash(serialized) !== wrap.materialHash) {
     throw new InvalidPasskeyMaterialError()
   }
   const material = parseWalletMaterial(serialized)

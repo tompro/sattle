@@ -25,6 +25,7 @@ export {
   isValidStoredWalletMaterial,
   parseWalletMaterial,
   serializeWalletMaterial,
+  walletMaterialHash,
 } from './storage/storedSecret'
 export type {StoredSecret, StoredWalletMaterial, WalletMaterialV2} from './storage/storedSecret'
 export {decryptSecretParts, encryptSecretParts} from './passwordWrap'
