@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.0.4](https://github.com/tompro/sattle/compare/sattle-v0.0.3...sattle-v0.0.4) (2026-08-31)
+
+
+### Features
+
+* **funds:** keep the claimable note of a pending named transfer ([c996393](https://github.com/tompro/sattle/commit/c9963934aa6bc384cd9742e099b2c72b1f69e400))
+* **lnurlcash:** claim mint outputs named by a wallet-chosen secret ([58268b2](https://github.com/tompro/sattle/commit/58268b2921d05c29ed4df98891e5ab5069617dfb))
+* **lnurlcash:** probe would-be outputs before believing a mutation refusal ([48be23d](https://github.com/tompro/sattle/commit/48be23dceb940b28166b242ff308600864b87dd2))
+* **lnurlcash:** transfer to mints with wallet-named outputs ([67b2122](https://github.com/tompro/sattle/commit/67b2122e52399b85e4829a0b3b61224252ae8ebf))
+* **nwc:** make_invoice against mints with wallet-named outputs ([ae5064b](https://github.com/tompro/sattle/commit/ae5064b69a545a9ade671b5d701d5399fe3517ed))
+* **receive:** accept named mints that serve no verify URL ([39a144c](https://github.com/tompro/sattle/commit/39a144cf50d621908b79cc27c7c664f6f9fc369c))
+* support LUD-25 named mint outputs (lnurl-mint v0.4.0) ([f3d5cc4](https://github.com/tompro/sattle/commit/f3d5cc4b31cf0dba845e3abc4fa1b108c34122e5))
+
+
+### Bug Fixes
+
+* commit carves before the settlement wait ([#6](https://github.com/tompro/sattle/issues/6)) ([09f7fe0](https://github.com/tompro/sattle/commit/09f7fe02872838253882451ce7ed1f818f4ace62))
+* commit send, pay and move carves at the checkpoint ([#6](https://github.com/tompro/sattle/issues/6)) ([9e37fee](https://github.com/tompro/sattle/commit/9e37fee841ab1c8ecb6bf7e3d00dfd61414ce306))
+* **lnurlcash:** assert named claims land at the wallet's own secret ([6bb07ff](https://github.com/tompro/sattle/commit/6bb07ff9ec5c69b01c1822471c24312b44707927))
+* **lnurlcash:** commit carves before the settlement wait ([#6](https://github.com/tompro/sattle/issues/6)) ([587dd11](https://github.com/tompro/sattle/commit/587dd11ba8a413c12dde134b11b2040c9d383c86))
+* **lnurlcash:** rescue landed mutations from retry refusals ([50b2427](https://github.com/tompro/sattle/commit/50b2427b8db07692a590ff2602a034385bbac7df))
+* replace forgesworn with moneyer in the public mint suggestions ([4cc8e0a](https://github.com/tompro/sattle/commit/4cc8e0aba2bd7ef8e4ea7d1b0ee9b98f21d19ee7))
+
 ## [0.0.3](https://github.com/tompro/sattle/compare/sattle-v0.0.2...sattle-v0.0.3) (2026-08-24)
 
 
