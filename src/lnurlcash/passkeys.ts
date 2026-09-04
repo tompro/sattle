@@ -1,16 +1,10 @@
-// Passkey (WebAuthn PRF) unlock: an ALTERNATIVE wrap of the same linking
-// key the password path protects (keys.ts) - never a second key, so notes
-// encrypted under a password unlock stay readable after a passkey unlock
-// and vice versa (both yield the identical linking key, from which the
-// bearer AES key derives).
+// Passkey (WebAuthn PRF) unlock is an alternative wrap of the complete
+// canonical wallet material protected by the password path. Slot ownership
+// remains derived only from the linking key inside that material.
 //
 // No master-key indirection is introduced: unlike Bitwarden, this wallet
-// persists exactly one secret - the seed-derived linking key - and the
-// bearer-encryption key is derived from it (not wrapped by it), so a random
-// master key would only ever encrypt that one 32-byte value while forcing a
-// migration of every existing store. The linking key IS the "master key"
-// here: the password wrap (keys.ts) and each passkey slot below are
-// independent wraps of the same key material.
+// persists one authenticated material envelope. The password wrap and each
+// passkey slot are independent wraps of those same canonical bytes.
 //
 // The module is split into a pure-crypto core (passkeyWrap.ts: HKDF from a
 // PRF output to an AES-GCM wrap key, slot wrap/unwrap - fully unit-tested)
@@ -30,21 +24,31 @@
 import {sha256} from '@noble/hashes/sha2.js'
 import {bytesToHex, hexToBytes, utf8ToBytes} from '@noble/hashes/utils.js'
 
-import {linkingPubKeyHex, savedKeyOwnerId} from './keys'
+import {getPlainWalletMaterial, walletMaterialLinkingKey} from './keys'
 import {withStorageLock} from './storageLock'
 import type {PasskeySlot} from './storage/passkeySlots'
 import {
   PASSKEY_SLOTS_STORAGE_KEY,
   PASSKEY_SLOT_VERSION,
+  passkeySlotsEqual,
   readPasskeySlots,
+  requireCurrentPasskeyMaterialOwner,
   writePasskeySlots,
 } from './storage/passkeySlots'
-import {unwrapLinkingKeyWithPrf, wrapLinkingKeyWithPrf} from './passkeyWrap'
+import type {WalletMaterialV2} from './storage/storedSecret'
+import {walletMaterialOwnerId} from './storage/storedSecret'
+import {savedWalletMaterialOwnerId} from './walletMaterialStorage'
+import {unwrapWalletMaterialWithPrf, wrapWalletMaterialWithPrf} from './passkeyWrap'
 
 export type {PasskeySlot, PasskeyWrap} from './storage/passkeySlots'
 export {readPasskeySlots, hasPasskeySlots} from './storage/passkeySlots'
 export {migrateLegacyPasskeySlots} from './passkeyOwnership'
-export {derivePasskeyWrapKey, wrapLinkingKeyWithPrf, unwrapLinkingKeyWithPrf} from './passkeyWrap'
+export {
+  derivePasskeyWrapKey,
+  InvalidPasskeyMaterialError,
+  wrapWalletMaterialWithPrf,
+  unwrapWalletMaterialWithPrf,
+} from './passkeyWrap'
 
 // 32 bytes, fixed - the authenticator requires exactly 32
 const PASSKEY_PRF_SALT = sha256(utf8ToBytes('sattle-passkey-prf-v1'))
@@ -120,8 +124,7 @@ const prfOutputOf = (credential: CeremonyCredential): Uint8Array | null => {
 }
 
 // one get() ceremony against a single known credential, returning its fresh
-// PRF output - the building block for re-wrap ceremonies during linking-key
-// rotation
+// PRF output - the building block for complete-material re-wrap ceremonies
 export const getPasskeyPrfOutput = async (
   credentialId: string,
   options: {credentials?: PasskeyCredentials} = {},
@@ -149,20 +152,28 @@ export type RegisterPasskeyOptions = {
   authenticatorAttachment?: AuthenticatorAttachment
 }
 
-// Registers a new passkey and persists a slot wrapping the given linking
-// key. The caller supplies the linking key from the currently unlocked
-// wallet; the ceremony is navigator.credentials.create with the PRF
+// Registers a new passkey and persists a slot wrapping the complete material.
+// The Uint8Array input exists only until Task 5 updates the UI caller; it can
+// select already-saved plaintext v2 material but can never create a key-only
+// slot. The ceremony is navigator.credentials.create with the PRF
 // extension evaluated on creation. Some authenticators only report
 // prf.enabled during create and evaluate the secret on the first get -
 // those get a follow-up get() against the fresh credential.
 export const registerPasskey = async (
-  linkingKey: Uint8Array,
+  material: WalletMaterialV2 | Uint8Array,
   options: RegisterPasskeyOptions = {},
 ): Promise<PasskeySlot> => {
-  const ownerId = savedKeyOwnerId()
-  if (ownerId === null || linkingPubKeyHex(linkingKey) !== ownerId) {
-    throw new Error('Passkey registration requires the proven saved wallet owner.')
+  let walletMaterial: WalletMaterialV2
+  if (material instanceof Uint8Array) {
+    const savedMaterial = getPlainWalletMaterial()
+    if (savedMaterial === null || savedMaterial.linkingKeyHex !== bytesToHex(material)) {
+      throw new Error('Passkey registration requires complete v2 wallet material.')
+    }
+    walletMaterial = savedMaterial
+  } else {
+    walletMaterial = material
   }
+  const ownerId = requireCurrentPasskeyMaterialOwner(walletMaterial)
   const credentials = options.credentials ?? defaultCredentials()
   const credential = await credentials.create({
     publicKey: {
@@ -197,7 +208,7 @@ export const registerPasskey = async (
     }
     prfOutput = await getPasskeyPrfOutput(credentialId, {credentials})
   }
-  const wrap = await wrapLinkingKeyWithPrf(prfOutput, linkingKey)
+  const wrap = await wrapWalletMaterialWithPrf(prfOutput, walletMaterial)
   const slot: PasskeySlot = {
     credentialId,
     ...wrap,
@@ -214,13 +225,13 @@ export const registerPasskey = async (
   return slot
 }
 
-// Unlocks via any registered passkey: one get() ceremony offering every
-// slot's credential, then unwrap. Yields the exact same linking key
-// unlock(password) yields - the caller activates the wallet with it.
-export const unlockWithPasskey = async (
+// Unlocks complete material via one get() ceremony offering every current
+// slot. The selected slot is re-read after the ceremony before any plaintext
+// reaches the caller, rejecting owner or storage changes during user presence.
+export const unlockWalletMaterialWithPasskey = async (
   options: {credentials?: PasskeyCredentials} = {},
-): Promise<Uint8Array> => {
-  const ownerId = savedKeyOwnerId()
+): Promise<WalletMaterialV2> => {
+  const ownerId = savedWalletMaterialOwnerId()
   const slots = readPasskeySlots()
   if (ownerId === null || slots.length === 0) {
     throw new Error('No passkeys registered on this device.')
@@ -247,18 +258,32 @@ export const unlockWithPasskey = async (
   if (!prfOutput) {
     throw new Error('This passkey did not return a PRF secret - it cannot unlock this wallet.')
   }
-  const linkingKey = await unwrapLinkingKeyWithPrf(prfOutput, slot)
-  if (savedKeyOwnerId() !== ownerId || linkingPubKeyHex(linkingKey) !== ownerId) {
+  if (savedWalletMaterialOwnerId() !== ownerId) {
     throw new Error('This passkey belongs to a different wallet.')
   }
-  return linkingKey
+  const currentSlot = readPasskeySlots().find((candidate) => candidate.credentialId === credentialId)
+  if (currentSlot === undefined || !passkeySlotsEqual(slot, currentSlot)) {
+    throw new Error('The passkey slot changed during the unlock ceremony.')
+  }
+  const material = await unwrapWalletMaterialWithPrf(prfOutput, currentSlot)
+  if (savedWalletMaterialOwnerId() !== ownerId || walletMaterialOwnerId(material) !== ownerId) {
+    throw new Error('This passkey belongs to a different wallet.')
+  }
+  return material
 }
+
+// Task 5 replaces this temporary projection when lifecycle activation accepts
+// complete wallet material. Slots already contain only canonical v2 material.
+export const unlockWithPasskey = async (
+  options: {credentials?: PasskeyCredentials} = {},
+): Promise<Uint8Array> =>
+  walletMaterialLinkingKey(await unlockWalletMaterialWithPasskey(options))
 
 // Removes the slot only: WebAuthn has no API to delete the credential from
 // the authenticator - an orphaned passkey simply finds nothing to unwrap.
 // Returns whether a slot was actually removed.
 export const removePasskey = async (credentialId: string): Promise<boolean> => {
-  const ownerId = savedKeyOwnerId()
+  const ownerId = savedWalletMaterialOwnerId()
   if (ownerId === null) return false
   let removed = false
   await withStorageLock(PASSKEY_SLOTS_STORAGE_KEY, () => {
@@ -270,23 +295,19 @@ export const removePasskey = async (credentialId: string): Promise<boolean> => {
   return removed
 }
 
-// Refreshes every current-owner slot around the same proven key material.
+// Refreshes every current-owner slot around the same proven wallet material.
 // Each slot's wrap secret lives only inside its authenticator, so the caller
 // must supply a fresh PRF output per credential (one getPasskeyPrfOutput
 // ceremony each). All-or-nothing: a slot without a PRF output aborts the
 // whole refresh before anything is written.
 //
-// A password change does NOT need this: the password wrap (keys.ts) and the
-// passkey slots wrap the same linking key independently, so re-encrypting
-// the stored key under a new password leaves every slot valid.
+// A password change does not need this because password and passkey slots are
+// independent wraps of the same canonical material.
 export const rewrapAllSlots = async (
-  linkingKey: Uint8Array,
+  material: WalletMaterialV2,
   prfOutputs: ReadonlyMap<string, Uint8Array>,
 ): Promise<void> => {
-  const ownerId = savedKeyOwnerId()
-  if (ownerId === null || linkingPubKeyHex(linkingKey) !== ownerId) {
-    throw new Error('Passkey re-wrap requires the proven saved wallet owner.')
-  }
+  const ownerId = requireCurrentPasskeyMaterialOwner(material)
   await withStorageLock(PASSKEY_SLOTS_STORAGE_KEY, async () => {
     const slots = readPasskeySlots()
     const rewrapped: PasskeySlot[] = []
@@ -297,7 +318,7 @@ export const rewrapAllSlots = async (
       }
       rewrapped.push({
         ...slot,
-        ...(await wrapLinkingKeyWithPrf(prfOutput, linkingKey)),
+        ...(await wrapWalletMaterialWithPrf(prfOutput, material)),
       })
     }
     writePasskeySlots(ownerId, rewrapped)

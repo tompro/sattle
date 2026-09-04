@@ -1,4 +1,5 @@
 import './passkeys.crypto.cases'
+import './passkeys.material.cases'
 import './passkeys.registration.cases'
 import './passkeys.ownership-a.cases'
 import './passkeys.ownership-b.cases'

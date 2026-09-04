@@ -21,18 +21,20 @@ import {
   removePasskey,
   rewrapAllSlots,
   unlockWithPasskey,
-  unwrapLinkingKeyWithPrf,
-  wrapLinkingKeyWithPrf,
+  unwrapWalletMaterialWithPrf,
+  wrapWalletMaterialWithPrf,
 } from './passkeys'
 import {
   decryptRecord,
   decryptSavedLinkingKey,
   deriveBearerAesKey,
+  deriveWalletMaterial,
   ensureSavedKeyOwner,
   encryptRecord,
   linkingPubKeyHex,
   savedKeyOwnerId,
   saveLinkingKey,
+  saveWalletMaterial,
 } from './keys'
 import {parseJsonObject, parseJsonObjectArray, stubLocalStorage} from './test-utils'
 
@@ -40,6 +42,12 @@ const LINKING_KEY = new Uint8Array(32).fill(7)
 const OTHER_LINKING_KEY = new Uint8Array(32).fill(9)
 const PRF_OUTPUT = new Uint8Array(32).fill(3)
 const OTHER_PRF_OUTPUT = new Uint8Array(32).fill(4)
+const MATERIAL = {
+  ...deriveWalletMaterial(
+    'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about',
+  ),
+  linkingKeyHex: bytesToHex(LINKING_KEY),
+}
 
 const toBytes = (source: BufferSource): Uint8Array =>
   source instanceof ArrayBuffer
@@ -134,6 +142,7 @@ const removeSavedOwnerMarker = (): void => {
 beforeEach(async () => {
   stubLocalStorage()
   await saveLinkingKey(LINKING_KEY)
+  await saveWalletMaterial(MATERIAL)
 })
 
 describe('slot ownership', () => {
@@ -167,7 +176,8 @@ describe('slot ownership', () => {
       credentialId: '33'.repeat(16),
       hkdfSalt: current.hkdfSalt,
       iv: current.iv,
-      wrappedKey: current.wrappedKey,
+      materialHash: current.materialHash,
+      wrappedMaterial: current.wrappedMaterial,
       createdAt: current.createdAt,
     }
     writeRawSlots([foreign, malformed, unowned])
@@ -210,6 +220,7 @@ describe('slot ownership', () => {
 
     // When a different wallet is installed with its canonical owner
     await saveLinkingKey(OTHER_LINKING_KEY)
+    await saveWalletMaterial({...MATERIAL, linkingKeyHex: bytesToHex(OTHER_LINKING_KEY)})
 
     // Then the residue stays unowned and unavailable to the new wallet
     expect(readPasskeySlots()).toEqual([])

@@ -21,18 +21,21 @@ import {
   removePasskey,
   rewrapAllSlots,
   unlockWithPasskey,
-  unwrapLinkingKeyWithPrf,
-  wrapLinkingKeyWithPrf,
+  unwrapWalletMaterialWithPrf,
+  wrapWalletMaterialWithPrf,
 } from './passkeys'
 import {
   decryptRecord,
-  decryptSavedLinkingKey,
+  decryptSavedWalletMaterial,
   deriveBearerAesKey,
+  deriveWalletMaterial,
   ensureSavedKeyOwner,
   encryptRecord,
   linkingPubKeyHex,
   savedKeyOwnerId,
   saveLinkingKey,
+  saveWalletMaterial,
+  walletMaterialLinkingKey,
 } from './keys'
 import {parseJsonObject, parseJsonObjectArray, stubLocalStorage} from './test-utils'
 
@@ -40,6 +43,12 @@ const LINKING_KEY = new Uint8Array(32).fill(7)
 const OTHER_LINKING_KEY = new Uint8Array(32).fill(9)
 const PRF_OUTPUT = new Uint8Array(32).fill(3)
 const OTHER_PRF_OUTPUT = new Uint8Array(32).fill(4)
+const MATERIAL = {
+  ...deriveWalletMaterial(
+    'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about',
+  ),
+  linkingKeyHex: bytesToHex(LINKING_KEY),
+}
 
 const toBytes = (source: BufferSource): Uint8Array =>
   source instanceof ArrayBuffer
@@ -134,6 +143,7 @@ const removeSavedOwnerMarker = (): void => {
 beforeEach(async () => {
   stubLocalStorage()
   await saveLinkingKey(LINKING_KEY)
+  await saveWalletMaterial(MATERIAL)
 })
 
 describe('registration and unlock', () => {
@@ -160,18 +170,18 @@ describe('registration and unlock', () => {
   })
 
   it('yields the same key material unlock(password) yields', async () => {
-    const linkingKey = crypto.getRandomValues(new Uint8Array(32))
-    await saveLinkingKey(linkingKey, 'correct horse')
+    await saveWalletMaterial(MATERIAL, 'correct horse')
     const auth = new FakeAuthenticator()
-    await registerPasskey(linkingKey, {credentials: auth})
+    await registerPasskey(MATERIAL, {credentials: auth})
 
-    const viaPassword = await decryptSavedLinkingKey('correct horse')
+    const viaPassword = await decryptSavedWalletMaterial('correct horse')
     const viaPasskey = await unlockWithPasskey({credentials: auth})
-    expect(bytesToHex(viaPasskey)).toBe(bytesToHex(viaPassword))
+    const passwordLinkingKey = walletMaterialLinkingKey(viaPassword)
+    expect(bytesToHex(viaPasskey)).toBe(bytesToHex(passwordLinkingKey))
 
     // and the practical consequence: a bearer record encrypted after a
     // password unlock decrypts after a passkey unlock
-    const passwordAes = await deriveBearerAesKey(viaPassword)
+    const passwordAes = await deriveBearerAesKey(passwordLinkingKey)
     const record = await encryptRecord(passwordAes, {note: 'still readable'})
     const passkeyAes = await deriveBearerAesKey(viaPasskey)
     await expect(decryptRecord(passkeyAes, record)).resolves.toEqual({

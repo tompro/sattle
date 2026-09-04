@@ -21,18 +21,20 @@ import {
   removePasskey,
   rewrapAllSlots,
   unlockWithPasskey,
-  unwrapLinkingKeyWithPrf,
-  wrapLinkingKeyWithPrf,
+  unwrapWalletMaterialWithPrf,
+  wrapWalletMaterialWithPrf,
 } from './passkeys'
 import {
   decryptRecord,
   decryptSavedLinkingKey,
   deriveBearerAesKey,
+  deriveWalletMaterial,
   ensureSavedKeyOwner,
   encryptRecord,
   linkingPubKeyHex,
   savedKeyOwnerId,
   saveLinkingKey,
+  saveWalletMaterial,
 } from './keys'
 import {parseJsonObject, parseJsonObjectArray, stubLocalStorage} from './test-utils'
 
@@ -40,6 +42,12 @@ const LINKING_KEY = new Uint8Array(32).fill(7)
 const OTHER_LINKING_KEY = new Uint8Array(32).fill(9)
 const PRF_OUTPUT = new Uint8Array(32).fill(3)
 const OTHER_PRF_OUTPUT = new Uint8Array(32).fill(4)
+const MATERIAL = {
+  ...deriveWalletMaterial(
+    'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about',
+  ),
+  linkingKeyHex: bytesToHex(LINKING_KEY),
+}
 
 const toBytes = (source: BufferSource): Uint8Array =>
   source instanceof ArrayBuffer
@@ -134,6 +142,7 @@ const removeSavedOwnerMarker = (): void => {
 beforeEach(async () => {
   stubLocalStorage()
   await saveLinkingKey(LINKING_KEY)
+  await saveWalletMaterial(MATERIAL)
 })
 
 describe('rewrap for the current owner', () => {
@@ -156,7 +165,7 @@ describe('rewrap for the current owner', () => {
         }),
       ],
     ])
-    await expect(rewrapAllSlots(LINKING_KEY, partial)).rejects.toThrow('partial re-wrap')
+    await expect(rewrapAllSlots(MATERIAL, partial)).rejects.toThrow('partial re-wrap')
     expect(bytesToHex(await unlockWithPasskey({credentials: laptop}))).toBe(bytesToHex(LINKING_KEY))
 
     // full coverage refreshes both wraps around the same proven owner key
@@ -174,10 +183,10 @@ describe('rewrap for the current owner', () => {
         }),
       ],
     ])
-    await rewrapAllSlots(LINKING_KEY, fresh)
+    await rewrapAllSlots(MATERIAL, fresh)
     expect(bytesToHex(await unlockWithPasskey({credentials: laptop}))).toBe(bytesToHex(LINKING_KEY))
     expect(bytesToHex(await unlockWithPasskey({credentials: phone}))).toBe(bytesToHex(LINKING_KEY))
-    expect(readPasskeySlots()[0]?.wrappedKey).not.toBe(laptopSlot.wrappedKey)
+    expect(readPasskeySlots()[0]?.wrappedMaterial).not.toBe(laptopSlot.wrappedMaterial)
     // credential ids and labels survive the re-wrap
     expect(
       readPasskeySlots()

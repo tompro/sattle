@@ -21,18 +21,20 @@ import {
   removePasskey,
   rewrapAllSlots,
   unlockWithPasskey,
-  unwrapLinkingKeyWithPrf,
-  wrapLinkingKeyWithPrf,
+  unwrapWalletMaterialWithPrf,
+  wrapWalletMaterialWithPrf,
 } from './passkeys'
 import {
   decryptRecord,
   decryptSavedLinkingKey,
   deriveBearerAesKey,
+  deriveWalletMaterial,
   ensureSavedKeyOwner,
   encryptRecord,
   linkingPubKeyHex,
   savedKeyOwnerId,
   saveLinkingKey,
+  saveWalletMaterial,
 } from './keys'
 import {parseJsonArray, parseJsonObject, parseJsonObjectArray, stubLocalStorage} from './test-utils'
 
@@ -40,6 +42,12 @@ const LINKING_KEY = new Uint8Array(32).fill(7)
 const OTHER_LINKING_KEY = new Uint8Array(32).fill(9)
 const PRF_OUTPUT = new Uint8Array(32).fill(3)
 const OTHER_PRF_OUTPUT = new Uint8Array(32).fill(4)
+const MATERIAL = {
+  ...deriveWalletMaterial(
+    'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about',
+  ),
+  linkingKeyHex: bytesToHex(LINKING_KEY),
+}
 
 const toBytes = (source: BufferSource): Uint8Array =>
   source instanceof ArrayBuffer
@@ -134,6 +142,7 @@ const removeSavedOwnerMarker = (): void => {
 beforeEach(async () => {
   stubLocalStorage()
   await saveLinkingKey(LINKING_KEY)
+  await saveWalletMaterial(MATERIAL)
 })
 
 describe('slot storage hygiene', () => {

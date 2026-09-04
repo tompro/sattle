@@ -1,19 +1,22 @@
-// Passkey-slot persistence: every new slot is bound to the canonical owner
-// of the saved linking key. localStorage remains hostile input, so owner
+// Passkey-slot persistence: every v2 slot is bound to the canonical owner
+// of the saved wallet material. localStorage remains hostile input, so owner
 // markers are parsed strictly and reads expose only slots belonging to the
 // currently proven saved owner. Mutations preserve every other record.
 
-import {savedKeyOwnerId} from '../keys'
 import {isJsonObject} from '../jsonParsing'
+import type {WalletMaterialV2} from './storedSecret'
+import {serializeWalletMaterial, walletMaterialOwnerId} from './storedSecret'
+import {getPlainWalletMaterial, savedWalletMaterialOwnerId} from '../walletMaterialStorage'
 import {isWalletOwnerId} from './walletOwner'
 
 export type PasskeyWrap = {
   readonly hkdfSalt: string
   readonly iv: string
-  readonly wrappedKey: string
+  readonly materialHash: string
+  readonly wrappedMaterial: string
 }
 
-export const PASSKEY_SLOT_VERSION = 1 as const
+export const PASSKEY_SLOT_VERSION = 2 as const
 
 export type PasskeySlot = PasskeyWrap & {
   readonly credentialId: string
@@ -21,6 +24,30 @@ export type PasskeySlot = PasskeyWrap & {
   readonly name?: string
   readonly ownerId: string
   readonly version: typeof PASSKEY_SLOT_VERSION
+}
+
+export const passkeySlotsEqual = (left: PasskeySlot, right: PasskeySlot): boolean =>
+  left.credentialId === right.credentialId &&
+  left.hkdfSalt === right.hkdfSalt &&
+  left.iv === right.iv &&
+  left.materialHash === right.materialHash &&
+  left.wrappedMaterial === right.wrappedMaterial &&
+  left.createdAt === right.createdAt &&
+  left.name === right.name &&
+  left.ownerId === right.ownerId &&
+  left.version === right.version
+
+export const requireCurrentPasskeyMaterialOwner = (material: WalletMaterialV2): string => {
+  const ownerId = savedWalletMaterialOwnerId()
+  const plaintext = getPlainWalletMaterial()
+  if (
+    ownerId === null ||
+    walletMaterialOwnerId(material) !== ownerId ||
+    (plaintext !== null && serializeWalletMaterial(plaintext) !== serializeWalletMaterial(material))
+  ) {
+    throw new Error('Passkey operation requires the proven saved wallet material.')
+  }
+  return ownerId
 }
 
 type StoredPasskeySlot = PasskeyWrap & {
@@ -43,7 +70,8 @@ const SLOT_KEYS: readonly string[] = [
   'credentialId',
   'hkdfSalt',
   'iv',
-  'wrappedKey',
+  'materialHash',
+  'wrappedMaterial',
   'createdAt',
   'name',
   'ownerId',
@@ -61,10 +89,12 @@ const parseStoredPasskeySlot = (slot: unknown): ParsedPasskeySlot | null => {
     /^[0-9a-f]{32}$/i.test(slot.hkdfSalt) &&
     typeof slot.iv === 'string' &&
     /^[0-9a-f]{24}$/i.test(slot.iv) &&
-    typeof slot.wrappedKey === 'string' &&
-    slot.wrappedKey.length > 0 &&
-    slot.wrappedKey.length % 2 === 0 &&
-    /^[0-9a-f]+$/i.test(slot.wrappedKey) &&
+    typeof slot.materialHash === 'string' &&
+    /^[0-9a-f]{64}$/.test(slot.materialHash) &&
+    typeof slot.wrappedMaterial === 'string' &&
+    slot.wrappedMaterial.length > 0 &&
+    slot.wrappedMaterial.length % 2 === 0 &&
+    /^[0-9a-f]+$/.test(slot.wrappedMaterial) &&
     typeof slot.createdAt === 'number' &&
     (slot.name === undefined || typeof slot.name === 'string') &&
     Object.keys(slot).every((key) => SLOT_KEYS.includes(key))
@@ -73,7 +103,8 @@ const parseStoredPasskeySlot = (slot: unknown): ParsedPasskeySlot | null => {
       credentialId: slot.credentialId,
       hkdfSalt: slot.hkdfSalt,
       iv: slot.iv,
-      wrappedKey: slot.wrappedKey,
+      materialHash: slot.materialHash,
+      wrappedMaterial: slot.wrappedMaterial,
       createdAt: slot.createdAt,
       ...(slot.name !== undefined ? {name: slot.name} : {}),
     }
@@ -124,7 +155,8 @@ const asOwnedSlot = (stored: ParsedPasskeySlot, ownerId: string): PasskeySlot | 
     credentialId: record.credentialId,
     hkdfSalt: record.hkdfSalt,
     iv: record.iv,
-    wrappedKey: record.wrappedKey,
+    materialHash: record.materialHash,
+    wrappedMaterial: record.wrappedMaterial,
     createdAt: record.createdAt,
     ...(record.name !== undefined ? {name: record.name} : {}),
     ownerId,
@@ -133,7 +165,7 @@ const asOwnedSlot = (stored: ParsedPasskeySlot, ownerId: string): PasskeySlot | 
 }
 
 export const readPasskeySlots = (): PasskeySlot[] => {
-  const ownerId = savedKeyOwnerId()
+  const ownerId = savedWalletMaterialOwnerId()
   if (ownerId === null) return []
   return readStoredPasskeySlots()
     .map((slot) => asOwnedSlot(slot, ownerId))
@@ -143,7 +175,7 @@ export const readPasskeySlots = (): PasskeySlot[] => {
 export const hasPasskeySlots = (): boolean => readPasskeySlots().length > 0
 
 export const writePasskeySlots = (ownerId: string, slots: PasskeySlot[]): void => {
-  if (!isWalletOwnerId(ownerId) || savedKeyOwnerId() !== ownerId) {
+  if (!isWalletOwnerId(ownerId) || savedWalletMaterialOwnerId() !== ownerId) {
     throw new Error('Passkey slots require the proven saved wallet owner.')
   }
   if (slots.some((slot) => slot.ownerId !== ownerId || slot.version !== PASSKEY_SLOT_VERSION)) {
@@ -156,7 +188,7 @@ export const writePasskeySlots = (ownerId: string, slots: PasskeySlot[]): void =
 }
 
 export const adoptLegacyPasskeySlots = (ownerId: string): number => {
-  if (!isWalletOwnerId(ownerId) || savedKeyOwnerId() !== ownerId) {
+  if (!isWalletOwnerId(ownerId) || savedWalletMaterialOwnerId() !== ownerId) {
     throw new Error('Legacy passkey migration requires a proven owner.')
   }
   const stored = readStoredPasskeySlots()
@@ -183,7 +215,7 @@ const persistStoredPasskeySlots = (slots: StoredPasskeySlot[]): void => {
 }
 
 export const clearPasskeySlotsForOwner = (ownerId: string): void => {
-  if (!isWalletOwnerId(ownerId) || savedKeyOwnerId() !== ownerId) {
+  if (!isWalletOwnerId(ownerId) || savedWalletMaterialOwnerId() !== ownerId) {
     throw new Error('Passkey teardown requires the proven saved wallet owner.')
   }
   persistStoredPasskeySlots(

@@ -21,18 +21,20 @@ import {
   removePasskey,
   rewrapAllSlots,
   unlockWithPasskey,
-  unwrapLinkingKeyWithPrf,
-  wrapLinkingKeyWithPrf,
+  unwrapWalletMaterialWithPrf,
+  wrapWalletMaterialWithPrf,
 } from './passkeys'
 import {
   decryptRecord,
   decryptSavedLinkingKey,
+  deriveWalletMaterial,
   deriveBearerAesKey,
   ensureSavedKeyOwner,
   encryptRecord,
   linkingPubKeyHex,
   savedKeyOwnerId,
   saveLinkingKey,
+  saveWalletMaterial,
 } from './keys'
 import {parseJsonObject, parseJsonObjectArray, stubLocalStorage} from './test-utils'
 
@@ -40,6 +42,12 @@ const LINKING_KEY = new Uint8Array(32).fill(7)
 const OTHER_LINKING_KEY = new Uint8Array(32).fill(9)
 const PRF_OUTPUT = new Uint8Array(32).fill(3)
 const OTHER_PRF_OUTPUT = new Uint8Array(32).fill(4)
+const MATERIAL = {
+  ...deriveWalletMaterial(
+    'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about',
+  ),
+  linkingKeyHex: bytesToHex(LINKING_KEY),
+}
 
 const toBytes = (source: BufferSource): Uint8Array =>
   source instanceof ArrayBuffer
@@ -134,32 +142,33 @@ const removeSavedOwnerMarker = (): void => {
 beforeEach(async () => {
   stubLocalStorage()
   await saveLinkingKey(LINKING_KEY)
+  await saveWalletMaterial(MATERIAL)
 })
 
 describe('pure wrap crypto', () => {
   it('round-trips a linking key through a PRF-derived wrap', async () => {
-    const wrap = await wrapLinkingKeyWithPrf(PRF_OUTPUT, LINKING_KEY)
-    const unwrapped = await unwrapLinkingKeyWithPrf(PRF_OUTPUT, wrap)
-    expect(bytesToHex(unwrapped)).toBe(bytesToHex(LINKING_KEY))
+    const wrap = await wrapWalletMaterialWithPrf(PRF_OUTPUT, MATERIAL)
+    const unwrapped = await unwrapWalletMaterialWithPrf(PRF_OUTPUT, wrap)
+    expect(unwrapped).toEqual(MATERIAL)
   })
 
   it('rejects unwrap with a different PRF output', async () => {
-    const wrap = await wrapLinkingKeyWithPrf(PRF_OUTPUT, LINKING_KEY)
-    await expect(unwrapLinkingKeyWithPrf(OTHER_PRF_OUTPUT, wrap)).rejects.toThrow()
+    const wrap = await wrapWalletMaterialWithPrf(PRF_OUTPUT, MATERIAL)
+    await expect(unwrapWalletMaterialWithPrf(OTHER_PRF_OUTPUT, wrap)).rejects.toThrow()
   })
 
   it('rejects unwrap with a tampered HKDF salt', async () => {
-    const wrap = await wrapLinkingKeyWithPrf(PRF_OUTPUT, LINKING_KEY)
+    const wrap = await wrapWalletMaterialWithPrf(PRF_OUTPUT, MATERIAL)
     await expect(
-      unwrapLinkingKeyWithPrf(PRF_OUTPUT, {...wrap, hkdfSalt: 'ab'.repeat(16)}),
+      unwrapWalletMaterialWithPrf(PRF_OUTPUT, {...wrap, hkdfSalt: 'ab'.repeat(16)}),
     ).rejects.toThrow()
   })
 
   it('rejects unwrap with a tampered ciphertext', async () => {
-    const wrap = await wrapLinkingKeyWithPrf(PRF_OUTPUT, LINKING_KEY)
-    const flipped = `${wrap.wrappedKey.slice(0, -2)}${wrap.wrappedKey.endsWith('00') ? '01' : '00'}`
+    const wrap = await wrapWalletMaterialWithPrf(PRF_OUTPUT, MATERIAL)
+    const flipped = `${wrap.wrappedMaterial.slice(0, -2)}${wrap.wrappedMaterial.endsWith('00') ? '01' : '00'}`
     await expect(
-      unwrapLinkingKeyWithPrf(PRF_OUTPUT, {...wrap, wrappedKey: flipped}),
+      unwrapWalletMaterialWithPrf(PRF_OUTPUT, {...wrap, wrappedMaterial: flipped}),
     ).rejects.toThrow()
   })
 

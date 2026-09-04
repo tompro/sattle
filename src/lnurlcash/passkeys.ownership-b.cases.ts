@@ -21,18 +21,20 @@ import {
   removePasskey,
   rewrapAllSlots,
   unlockWithPasskey,
-  unwrapLinkingKeyWithPrf,
-  wrapLinkingKeyWithPrf,
+  unwrapWalletMaterialWithPrf,
+  wrapWalletMaterialWithPrf,
 } from './passkeys'
 import {
   decryptRecord,
   decryptSavedLinkingKey,
   deriveBearerAesKey,
+  deriveWalletMaterial,
   ensureSavedKeyOwner,
   encryptRecord,
   linkingPubKeyHex,
   savedKeyOwnerId,
   saveLinkingKey,
+  saveWalletMaterial,
 } from './keys'
 import {parseJsonObject, parseJsonObjectArray, stubLocalStorage} from './test-utils'
 
@@ -40,6 +42,13 @@ const LINKING_KEY = new Uint8Array(32).fill(7)
 const OTHER_LINKING_KEY = new Uint8Array(32).fill(9)
 const PRF_OUTPUT = new Uint8Array(32).fill(3)
 const OTHER_PRF_OUTPUT = new Uint8Array(32).fill(4)
+const MATERIAL = {
+  ...deriveWalletMaterial(
+    'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about',
+  ),
+  linkingKeyHex: bytesToHex(LINKING_KEY),
+}
+const OTHER_MATERIAL = {...MATERIAL, linkingKeyHex: bytesToHex(OTHER_LINKING_KEY)}
 
 const toBytes = (source: BufferSource): Uint8Array =>
   source instanceof ArrayBuffer
@@ -134,6 +143,7 @@ const removeSavedOwnerMarker = (): void => {
 beforeEach(async () => {
   stubLocalStorage()
   await saveLinkingKey(LINKING_KEY)
+  await saveWalletMaterial(MATERIAL)
 })
 
 describe('slot ownership (continued)', () => {
@@ -145,7 +155,7 @@ describe('slot ownership (continued)', () => {
     const prfOutput = await getPasskeyPrfOutput(slot.credentialId, {
       credentials: auth,
     })
-    const foreignWrap = await wrapLinkingKeyWithPrf(prfOutput, OTHER_LINKING_KEY)
+    const foreignWrap = await wrapWalletMaterialWithPrf(prfOutput, OTHER_MATERIAL)
     writeRawSlots([{...slot, ...foreignWrap}])
 
     // When the authenticator successfully unwraps that foreign key
@@ -164,6 +174,7 @@ describe('slot ownership (continued)', () => {
       get: async (options) => {
         const credential = await auth.get(options)
         await saveLinkingKey(OTHER_LINKING_KEY)
+        await saveWalletMaterial(OTHER_MATERIAL)
         return credential
       },
     }
@@ -220,7 +231,7 @@ describe('slot ownership (continued)', () => {
     })
 
     // When the current wallet rewraps its slots
-    await rewrapAllSlots(LINKING_KEY, new Map([[slot.credentialId, prfOutput]]))
+    await rewrapAllSlots(MATERIAL, new Map([[slot.credentialId, prfOutput]]))
 
     // Then the foreign slot did not require output and remains byte-identical
     expect(readRawSlots()).toContainEqual(foreign)
