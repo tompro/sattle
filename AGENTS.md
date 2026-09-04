@@ -79,7 +79,7 @@ npm run cap:sync           # build + cap sync android
 
 - NixOS: use the flake dev shell (nodejs_22 + chromium for e2e).
   `sass-embedded` is aliased to pure-JS `sass` via npm overrides.
-- `lnurlcash-kit@0.1.1` and `lnurlcash-conformance@0.1.1` are exact npm
+- `lnurlcash-kit@0.8.0` and `lnurlcash-conformance@0.7.0` are exact npm
   registry packages. Keep their manifest pins, registry tarball URLs, and lock
   integrity values intact.
 - Credential and authorization records are bound to the canonical owner ID
