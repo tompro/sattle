@@ -5,6 +5,7 @@ import {hmac} from '@noble/hashes/hmac.js'
 import {sha256} from '@noble/hashes/sha2.js'
 import {secp256k1} from '@noble/curves/secp256k1.js'
 import {bytesToHex, hexToBytes, utf8ToBytes} from '@noble/hashes/utils.js'
+import {cashNodeFromHex, cashNodeToHex, deriveCashRoot, type CashNode} from 'lnurlcash-kit'
 
 import {
   parseStoredSecret,
@@ -14,11 +15,21 @@ import {
   stripStoredSecretOwner,
   STORED_SECRET_VERSION,
   type StoredSecret,
+  type WalletMaterialV2,
 } from './storage/storedSecret'
+import {decryptSecretParts, encryptSecretParts} from './passwordWrap'
 import {LINKING_KEY_STORAGE_KEY} from './storage/walletOwnerEvents'
 
-export {isValidStoredSecret} from './storage/storedSecret'
-export type {StoredSecret} from './storage/storedSecret'
+export {
+  isValidStoredSecret,
+  isValidStoredWalletMaterial,
+  parseWalletMaterial,
+  serializeWalletMaterial,
+} from './storage/storedSecret'
+export type {StoredSecret, StoredWalletMaterial, WalletMaterialV2} from './storage/storedSecret'
+export {decryptSecretParts, encryptSecretParts} from './passwordWrap'
+export type {EncryptedSecretParts} from './passwordWrap'
+export * from './walletMaterialStorage'
 
 // The wallet's identity is derived against this fixed domain rather than
 // window.location.hostname, so the same seed phrase always yields the same
@@ -40,8 +51,7 @@ const readUint32BE = (bytes: Uint8Array, offset: number): number =>
 
 // LUD-05: BIP32-based linking-key derivation, same scheme as lnurl_server -
 // a seed restored there or here produces the same identity for a given domain
-export const deriveLud05LinkingKey = (seedPhrase: string, domain: string): Uint8Array => {
-  const seed = mnemonicToSeedSync(seedPhrase.trim().toLowerCase())
+const deriveLud05LinkingKeyFromSeed = (seed: Uint8Array, domain: string): Uint8Array => {
   const master = HDKey.fromMasterSeed(seed)
 
   const hashingKeyNode = master.derive("m/138'/0")
@@ -58,6 +68,9 @@ export const deriveLud05LinkingKey = (seedPhrase: string, domain: string): Uint8
   return node.privateKey
 }
 
+export const deriveLud05LinkingKey = (seedPhrase: string, domain: string): Uint8Array =>
+  deriveLud05LinkingKeyFromSeed(mnemonicToSeedSync(seedPhrase.trim().toLowerCase()), domain)
+
 // the HMAC half of the derivation, split out so the LUD-05 test vector
 // (which starts from a fixed hashingPrivKey, not a seed phrase) can pin it
 // directly - see keys.test.ts
@@ -69,14 +82,27 @@ export const lud05PathSuffix = (hashingKey: Uint8Array, domain: string): number[
 export const deriveWalletLinkingKey = (seedPhrase: string): Uint8Array =>
   deriveLud05LinkingKey(seedPhrase, WALLET_DOMAIN)
 
+export const deriveWalletMaterial = (seedPhrase: string): WalletMaterialV2 => {
+  const seed = mnemonicToSeedSync(seedPhrase.trim().toLowerCase())
+  try {
+    return {
+      version: 2,
+      linkingKeyHex: bytesToHex(deriveLud05LinkingKeyFromSeed(seed, WALLET_DOMAIN)),
+      cashRootHex: cashNodeToHex(deriveCashRoot(seed)),
+    }
+  } finally {
+    seed.fill(0)
+  }
+}
+
+export const walletMaterialLinkingKey = (material: WalletMaterialV2): Uint8Array =>
+  hexToBytes(material.linkingKeyHex)
+
+export const walletMaterialCashRoot = (material: WalletMaterialV2): CashNode =>
+  cashNodeFromHex(material.cashRootHex)
+
 export const linkingPubKeyHex = (linkingPrivKey: Uint8Array): string =>
   bytesToHex(secp256k1.getPublicKey(linkingPrivKey, true))
-
-// Encrypted-at-rest localStorage secret, same shape as lnurl_server's: the
-// stored value is either plaintext or, if the holder opted in with a
-// password, AES-GCM ciphertext keyed by a PBKDF2 stretch of that password -
-// GCM's auth tag doubles as the "wrong password" check on decrypt.
-const PBKDF2_ITERATIONS = 210_000
 
 const readSecret = (storageKey: string): StoredSecret | null => {
   const raw = localStorage.getItem(storageKey)
@@ -89,69 +115,10 @@ const readSecret = (storageKey: string): StoredSecret | null => {
   }
 }
 
-const deriveAesKeyFromPassword = (password: string, salt: Uint8Array): Promise<CryptoKey> =>
-  crypto.subtle
-    .importKey('raw', utf8ToBytes(password), 'PBKDF2', false, ['deriveKey'])
-    .then((baseKey) =>
-      crypto.subtle.deriveKey(
-        // the copy pins the TS type to Uint8Array<ArrayBuffer> - hexToBytes
-        // returns Uint8Array<ArrayBufferLike>, which BufferSource rejects
-        {
-          name: 'PBKDF2',
-          salt: new Uint8Array(salt),
-          iterations: PBKDF2_ITERATIONS,
-          hash: 'SHA-256',
-        },
-        baseKey,
-        {name: 'AES-GCM', length: 256},
-        false,
-        ['encrypt', 'decrypt'],
-      ),
-    )
-
-export type EncryptedSecretParts = {
-  salt: string
-  iv: string
-  ciphertext: string
-}
-
-export const encryptSecretParts = async (
-  value: string,
-  password: string,
-): Promise<EncryptedSecretParts> => {
-  const salt = crypto.getRandomValues(new Uint8Array(16))
-  const iv = crypto.getRandomValues(new Uint8Array(12))
-  const aesKey = await deriveAesKeyFromPassword(password, salt)
-  const ciphertext = new Uint8Array(
-    await crypto.subtle.encrypt({name: 'AES-GCM', iv}, aesKey, utf8ToBytes(value)),
-  )
-  return {
-    salt: bytesToHex(salt),
-    iv: bytesToHex(iv),
-    ciphertext: bytesToHex(ciphertext),
-  }
-}
-
-// rejects (WebCrypto's own auth-tag check) if the password is wrong
-export const decryptSecretParts = async (
-  parts: EncryptedSecretParts,
-  password: string,
-): Promise<string> => {
-  const salt = hexToBytes(parts.salt)
-  const iv = hexToBytes(parts.iv)
-  const aesKey = await deriveAesKeyFromPassword(password, salt)
-  const plaintext = await crypto.subtle.decrypt(
-    {name: 'AES-GCM', iv},
-    aesKey,
-    hexToBytes(parts.ciphertext),
-  )
-  return new TextDecoder().decode(plaintext)
-}
-
-// The linking key is the only secret this wallet persists - the seed phrase
-// it was derived from is shown once at setup and never stored. Everything
-// else at rest (the bearer tokens) is encrypted with a key derived from it,
-// so protecting this one record with a password protects the whole wallet.
+// The legacy alpha lifecycle below persists only the linking key under its old
+// namespace. Task 5 replaces that lifecycle with the v2 material repository;
+// these APIs stay byte-compatible until the serialized reset can switch every
+// caller atomically rather than creating a split-key wallet.
 //
 // The record also carries an ownerId marker: the lowercase compressed
 // pubkey hex of the key itself (storage/walletOwner.ts), binding every
