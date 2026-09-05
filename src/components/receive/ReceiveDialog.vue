@@ -50,9 +50,7 @@
               </div>
               <div class="col q-ml-md">
                 <div class="text-body1 text-weight-medium">Bearer note</div>
-                <div class="text-caption text-grey-5">
-                  Paste or scan a note someone sent you
-                </div>
+                <div class="text-caption text-grey-5">Paste or scan a note someone sent you</div>
               </div>
               <q-icon name="chevron_right" color="grey-5" size="24px" />
             </div>
@@ -108,7 +106,9 @@ const onReceived = () => {
   border-radius: 12px;
   padding: 14px 16px;
   cursor: pointer;
-  transition: background-color 0.15s ease, border-color 0.15s ease;
+  transition:
+    background-color 0.15s ease,
+    border-color 0.15s ease;
 }
 
 .action-row:hover,

@@ -19,19 +19,14 @@ onMounted(async () => {
       return;
     }
     if (!videoEl.value) return;
-    scanner = new QrScanner(
-      videoEl.value,
-      (result) => emit('decode', result.data),
-      { highlightScanRegion: true },
-    );
+    scanner = new QrScanner(videoEl.value, (result) => emit('decode', result.data), {
+      highlightScanRegion: true,
+    });
     await scanner.start();
     starting.value = false;
   } catch (err) {
     starting.value = false;
-    emit(
-      'error',
-      err instanceof Error ? err.message : 'Camera access failed.',
-    );
+    emit('error', err instanceof Error ? err.message : 'Camera access failed.');
   }
 });
 

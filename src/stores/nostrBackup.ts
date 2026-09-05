@@ -9,7 +9,7 @@ import {
   publishBackup,
 } from '@/lnurlcash/nostrBackup';
 import type { NostrRestoreResult } from '@/lnurlcash/nostrBackup';
-import { loadSettings, persistSettings, readEncryptedBearers } from '@/lnurlcash/storage';
+import { loadSettings, persistSettings, readFundsDocument } from '@/lnurlcash/storage';
 import { readTrustedMints } from '@/lnurlcash/trustedMints';
 import { useWalletStore } from './wallet';
 import { useMintsStore } from './mints';
@@ -62,11 +62,17 @@ export const useNostrBackupStore = defineStore('nostrBackup', () => {
     wallet.state === 'unlocked' ? backupPubkey(deriveBackupKey(wallet.requireLinkingKey())) : null,
   );
 
-  const currentPayload = (): BackupPartPayload => ({
-    notes: readEncryptedBearers(),
-    mints: readTrustedMints(wallet.pubkey ?? undefined),
-    settings: loadSettings(),
-  });
+  const currentPayload = (): BackupPartPayload => {
+    // one document, one getItem: bearers and counters come from the same
+    // locked generation by construction; pending journal state is
+    // device-local and never published
+    const funds = readFundsDocument();
+    return {
+      notes: { bearers: funds.bearers, nextByHost: funds.nextByHost },
+      mints: readTrustedMints(wallet.pubkey ?? undefined),
+      settings: loadSettings(),
+    };
+  };
 
   const publishNow = async (): Promise<void> => {
     const secretKey = deriveBackupKey(wallet.requireLinkingKey());
@@ -97,6 +103,10 @@ export const useNostrBackupStore = defineStore('nostrBackup', () => {
     const schedule = () => publisher?.schedule(currentPayload());
     const stops = [
       watch(() => wallet.bearers, schedule),
+      // counter-only commits (reservations) leave the bearer list untouched,
+      // so watch the persisted document revision as well - a restored or
+      // freshly burned counter must still reach the relays
+      watch(() => wallet.fundsRevision, schedule),
       watch(() => mints.mints, schedule),
       watch(() => mints.defaultMint, schedule),
     ];

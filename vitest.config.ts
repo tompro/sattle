@@ -14,5 +14,8 @@ export default defineConfig({
     // jsdom. The ops suite spins real mock-mint HTTP servers on loopback.
     environment: 'node',
     include: ['src/**/*.test.ts'],
+    // Node 22 (CI) has no navigator.locks; install a passthrough
+    // LockManager where it is absent so the suite is hermetic
+    setupFiles: ['./vitest.setup.ts'],
   },
 });

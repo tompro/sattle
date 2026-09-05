@@ -16,16 +16,58 @@ import {
 import { setNwcTransportForTests, useNwcStore } from './nwc';
 import { useWalletStore } from './wallet';
 
+// a present-but-non-serializing LockManager fake: walletFunds serializes its
+// own mutations, so single-store tests only need locks to EXIST
+const stubPassthroughLocks = (): void => {
+  vi.stubGlobal('navigator', {
+    locks: { request: (_name: string, fn: () => unknown) => Promise.resolve().then(fn) },
+  });
+};
+
 beforeEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
-  vi.stubGlobal('navigator', {});
+  stubPassthroughLocks();
   stubLocalStorage();
   setActivePinia(createPinia());
   setNwcTransportForTests(null);
 });
 
 describe('NWC wallet lifecycle drain', () => {
+  it('keeps one service when enabling twice', async () => {
+    const wallet = useWalletStore();
+    await wallet.create();
+    const relay = createFakeRelay();
+    setNwcTransportForTests(relay.transport);
+    const nwc = useNwcStore();
+    nwc.create(RELAYS, { maxMsat: 50_000, periodMs: 86_400_000 });
+
+    await nwc.setEnabled(true);
+    await nwc.setEnabled(true);
+
+    expect(relay.subscriptionCount()).toBe(1);
+    await nwc.stop();
+    expect(relay.subscriptionCount()).toBe(0);
+  });
+
+  it('drains an accepted foreground fund operation before lock clears its fence', async () => {
+    const wallet = useWalletStore();
+    await wallet.create('password');
+    const operation = wallet.beginFundOperation();
+    let lockSettled = false;
+
+    const locking = wallet.lock().then(() => {
+      lockSettled = true;
+    });
+    await vi.waitFor(() => expect(() => wallet.captureOwnerFence()).toThrow());
+    expect(lockSettled).toBe(false);
+    operation.ownerFence();
+
+    operation.complete();
+    await locking;
+    expect(wallet.state).toBe('locked');
+  });
+
   it('commits an accepted melted payment before ordinary lock invalidates its owner fence', async () => {
     // Given a real encrypted wallet and NWC service whose payment is held
     // after the mint burned its note but before the wallet commits the delta

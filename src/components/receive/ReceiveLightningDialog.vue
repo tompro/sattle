@@ -113,6 +113,7 @@
             {{ claimError }}
           </q-banner>
           <q-btn
+            v-if="claimRetryable"
             unelevated
             color="primary"
             text-color="dark"
@@ -215,6 +216,7 @@ const {
   CUSTOM_MINT,
   amountSats,
   claimError,
+  claimRetryable,
   copyInvoice,
   createInvoice,
   customMint,

@@ -1,13 +1,10 @@
 import { test, expect } from '../fixtures';
 import type { Page } from '@playwright/test';
-import { buildNoteUrl, defaultRandomSecret } from 'lnurlcash-kit';
-import { MINT_ORIGIN, MINT2_ORIGIN, NOTE_PATH } from '../helpers/MintMocker';
-import { createFreshWallet } from '../helpers/wallet';
+import { MINT2_ORIGIN } from '../helpers/MintMocker';
+import { fundMockMintWallet } from '../helpers/wallet';
 
 const AMOUNT_MSAT = 50_000; // 50 sats
-const MINT_PUBKEY = `02${'ab'.repeat(32)}`;
-const TARGET_PUBKEY = `03${'cd'.repeat(32)}`;
-// 64 hex chars - a valid preimage (it becomes the claimed note's secret)
+// 64 hex chars - a valid payment receipt, distinct from the claimed note secret
 const PREIMAGE = 'ef'.repeat(32);
 // amount-less by decodeBolt11AmountMsat, so the kit skips its invoice
 // amount cross-check against the requested value
@@ -15,26 +12,7 @@ const INVOICE = 'lnmock1transfer';
 
 // give the wallet a verified, spendable 50-sat note at the source mint
 const fundSourceMint = async (page: Page, mint: import('../helpers/MintMocker').MintMocker) => {
-  await mint.mockNoteInfo({ amountMsat: AMOUNT_MSAT, mintPubkey: MINT_PUBKEY });
-  await mint.mockRotateOk();
-  await createFreshWallet(page);
-
-  await page.getByRole('button', { name: 'Receive' }).click();
-  const chooser = page.locator('.q-dialog', { hasText: 'Paste or scan a note' });
-  await chooser.getByRole('button', { name: 'Bearer note' }).click();
-  const dialog = page.locator('.q-dialog', { hasText: 'Receive bearer note' });
-  await dialog
-    .locator('textarea')
-    .fill(buildNoteUrl(`${MINT_ORIGIN}${NOTE_PATH}`, defaultRandomSecret(), AMOUNT_MSAT));
-  await dialog.getByRole('button', { name: 'Receive', exact: true }).click();
-  await expect(dialog.getByText('Received 50 sats')).toBeVisible();
-  // the note advertises a mint key, so the first-contact trust prompt opens
-  // as its own dialog - trust it (that also locks the mint)
-  await page
-    .locator('.q-dialog', { hasText: 'New mint' })
-    .getByRole('button', { name: 'Trust this mint' })
-    .click();
-  await dialog.getByRole('button', { name: 'Done' }).click();
+  await fundMockMintWallet(page, mint, AMOUNT_MSAT);
 };
 
 // pick an option from a Quasar select identified by its label
@@ -78,7 +56,6 @@ test.describe('Move funds', () => {
     // the target mint advertises a flat 2-sat receive fee (2000 msat, 0 ppm)
     await mint.mockTargetMint(
       {
-        mintPubkey: TARGET_PUBKEY,
         invoice: INVOICE,
         preimage: PREIMAGE,
         noteAmountMsat: AMOUNT_MSAT,
@@ -100,11 +77,10 @@ test.describe('Move funds', () => {
 
   test('a two-mint transfer moves the balance', async ({ page, mint }) => {
     await fundSourceMint(page, mint);
-    // the target mint: hands out the invoice, reports it settled with the
-    // preimage, and answers the claim's note info + rotation
+    // the target mint commits the wallet-chosen secret, hands out the invoice,
+    // and exposes that note only after the source-mint melt pays it
     await mint.mockTargetMint(
       {
-        mintPubkey: TARGET_PUBKEY,
         invoice: INVOICE,
         preimage: PREIMAGE,
         noteAmountMsat: AMOUNT_MSAT,

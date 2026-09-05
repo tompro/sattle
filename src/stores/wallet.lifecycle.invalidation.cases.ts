@@ -1,7 +1,13 @@
-import { MINT_KEY, mocks, OTHER_OWNER_ID, PASSWORD } from './wallet.lifecycle.testHarness';
+import {
+  MINT_KEY,
+  OTHER_MATERIAL,
+  OTHER_OWNER_ID,
+  PASSWORD,
+  mocks,
+} from './wallet.lifecycle.testHarness';
 import { describe, expect, it, vi } from 'vitest';
 
-import { savedKeyOwnerId } from '@/lnurlcash/keys';
+import { saveWalletMaterial, savedWalletMaterialOwnerId } from '@/lnurlcash/keys';
 import { readNwcEnabled, writeNwcConnections, writeNwcEnabled } from '@/lnurlcash/nwc';
 import type { NwcConnectionRecord } from '@/lnurlcash/nwc';
 import { addTrustedMint, readTrustedMints } from '@/lnurlcash/trustedMints';
@@ -19,20 +25,18 @@ describe('cross-tab owner invalidation', () => {
     if (oldOwner === null) throw new Error('Expected an unlocked old owner.');
 
     // When another tab has already recreated the wallet and a delayed event arrives
-    localStorage.setItem(
-      'sattle_linking_key',
-      JSON.stringify({ enc: false, value: '09'.repeat(32), ownerId: OTHER_OWNER_ID, version: 1 }),
-    );
+    await saveWalletMaterial(OTHER_MATERIAL);
     events.dispatchEvent(
       Object.defineProperties(new Event('storage'), {
-        key: { value: 'sattle_linking_key' },
+        key: { value: 'sattle_wallet_material_v2' },
+        // a stale payload on purpose: the monitor must re-read storage
         newValue: { value: JSON.stringify({ ownerId: oldOwner }) },
       }),
     );
     await vi.waitFor(() => expect(wallet.state).toBe('locked'));
 
-    // Then the stale runtime has no usable key and cannot recreate old-owner state
-    expect(() => wallet.requireLinkingKey()).toThrow('Wallet is locked.');
+    // Then the stale runtime has no usable material and cannot recreate old-owner state
+    expect(() => wallet.requireWalletMaterial()).toThrow('Wallet is locked.');
     await expect(addTrustedMint('stale.example', MINT_KEY, { ownerId: oldOwner })).rejects.toThrow(
       /owner/i,
     );
@@ -54,20 +58,17 @@ describe('cross-tab owner invalidation', () => {
     await nwc.setEnabled(true);
 
     // When another tab replaces the saved wallet owner
-    localStorage.setItem(
-      'sattle_linking_key',
-      JSON.stringify({ enc: false, value: '09'.repeat(32), ownerId: OTHER_OWNER_ID, version: 1 }),
-    );
+    await saveWalletMaterial(OTHER_MATERIAL);
     events.dispatchEvent(
       Object.defineProperties(new Event('storage'), {
-        key: { value: 'sattle_linking_key' },
+        key: { value: 'sattle_wallet_material_v2' },
       }),
     );
     await vi.waitFor(() => expect(wallet.state).toBe('locked'));
 
     // Then the stale runtime is cleared and the queue surfaces the drain failure
     expect(wallet.lifecycleError).toMatch(/stale drain failed/i);
-    expect(() => wallet.requireLinkingKey()).toThrow('Wallet is locked.');
+    expect(() => wallet.requireWalletMaterial()).toThrow('Wallet is locked.');
     expect(nwc.running).toBe(false);
     expect(serviceStop).toHaveBeenCalledTimes(1);
   });
@@ -90,7 +91,7 @@ describe('cross-tab owner invalidation', () => {
 
     // When A is forgotten before successor B is installed
     await wallet.forgetWallet();
-    expect(savedKeyOwnerId()).toBeNull();
+    expect(savedWalletMaterialOwnerId()).toBeNull();
 
     // Then no stale normal mutation can recreate A-owned state in the gap
     await expect(

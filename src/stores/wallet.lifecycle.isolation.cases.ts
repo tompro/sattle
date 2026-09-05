@@ -6,7 +6,11 @@ import {
 } from './wallet.lifecycle.testHarness';
 import { describe, expect, it } from 'vitest';
 
-import { generateSeedPhrase, savedKeyExists } from '@/lnurlcash/keys';
+import {
+  generateSeedPhrase,
+  savedWalletMaterialExists,
+  walletMaterialHash,
+} from '@/lnurlcash/keys';
 import { readNwcConnections, readNwcEnabled } from '@/lnurlcash/nwc';
 import { readPasskeySlots } from '@/lnurlcash/passkeys';
 import { addTrustedMint, readTrustedMints } from '@/lnurlcash/trustedMints';
@@ -48,7 +52,7 @@ describe('foreign wallet isolation', () => {
     // Then it fails explicitly and does not install a partial wallet
     await expect(restoring).rejects.toThrow(/valid sattle backup/i);
     expect(wallet.state).toBe('none');
-    expect(savedKeyExists()).toBe(false);
+    expect(savedWalletMaterialExists()).toBe(false);
   });
 
   it('tears down the installed owner before a foreign seed restore', async () => {
@@ -65,9 +69,11 @@ describe('foreign wallet isolation', () => {
           credentialId: '11'.repeat(16),
           hkdfSalt: '22'.repeat(16),
           iv: '33'.repeat(12),
-          wrappedKey: '44'.repeat(48),
+          materialHash: walletMaterialHash(wallet.requireWalletMaterial()),
+          wrappedMaterial: '44'.repeat(48),
           createdAt: 1,
           ownerId: oldOwner,
+          version: 2,
         },
       ]),
     );

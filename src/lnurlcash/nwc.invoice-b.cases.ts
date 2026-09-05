@@ -6,13 +6,13 @@
 // requests never execute, and a settled preimage only ever reveals an
 // already-rotated (burned) note secret.
 
-import {afterEach, beforeEach, describe, expect, it} from 'vitest'
-import {bytesToHex, hexToBytes} from '@noble/hashes/utils.js'
-import {finalizeEvent, getPublicKey} from 'nostr-tools/pure'
-import {encrypt as nip04Encrypt, decrypt as nip04Decrypt} from 'nostr-tools/nip04'
-import {v2 as nip44v2} from 'nostr-tools/nip44'
-import {buildNoteUrl, fetchNoteInfo, noteK1} from 'lnurlcash-kit'
-import {createMockMint} from 'lnurlcash-conformance/mock-mint'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
+import { finalizeEvent, getPublicKey } from 'nostr-tools/pure';
+import { encrypt as nip04Encrypt, decrypt as nip04Decrypt } from 'nostr-tools/nip04';
+import { v2 as nip44v2 } from 'nostr-tools/nip44';
+import { buildNoteUrl, fetchNoteInfo, noteK1 } from 'lnurlcash-kit';
+import { createMockMint } from 'lnurlcash-conformance/mock-mint';
 
 import {
   NWC_INFO_KIND,
@@ -29,13 +29,13 @@ import {
   startService,
   writeNwcEnabled,
   writeNwcConnections,
-} from './nwc'
-import type {NostrEvent, NwcConnectionRecord, NwcServiceDeps, NwcTransport} from './nwc'
-import type {NostrFilter} from './nwc/transport'
-import type {NwcChangeset} from './nwc'
-import type {Bearer} from './types'
-import {ensureSavedKeyOwner, linkingPubKeyHex, saveLinkingKey} from './keys'
-import {requiredValue, stubLocalStorage} from './test-utils'
+} from './nwc';
+import type { NostrEvent, NwcConnectionRecord, NwcServiceDeps, NwcTransport } from './nwc';
+import type { NostrFilter } from './nwc/transport';
+import type { NwcChangeset } from './nwc';
+import type { Bearer } from './types';
+import { ensureSavedKeyOwner, linkingPubKeyHex, saveLinkingKey } from './keys';
+import { requiredValue, stubLocalStorage } from './test-utils';
 
 import {
   CLIENT_PUBKEY,
@@ -55,187 +55,273 @@ import {
   nowSeconds,
   storeForeignConnection,
   waitFor,
-} from './nwc.testProtocol'
-import {call, makeBearer, mint, readResponse, startTestService} from './nwc.testService'
+} from './nwc.testProtocol';
+import { call, makeBearer, mint, readResponse, startTestService } from './nwc.testService';
+import { SIGNED_BOLT11_FIXTURE } from './nwc.invoice-a.cases';
 describe('service: make_invoice / lookup_invoice (continued)', () => {
   it('drains a rejected invoice settlement and reports it before stop resolves', async () => {
-    const m = await mint({testHooks: true})
-    const commit = deferred()
-    const commitError = new Error('invoice commit rejected during stop')
-    let commitStarted = false
-    const {relay, walletServicePubkey, state, stop} = await startTestService({
+    const m = await mint({ testHooks: true });
+    const commit = deferred();
+    const commitError = new Error('invoice commit rejected during stop');
+    let commitStarted = false;
+    const { relay, walletServicePubkey, state, stop } = await startTestService({
       defaultMint: `mint@127.0.0.1:${m.port}`,
       commitChangeset: () => {
-        commitStarted = true
-        return commit.promise
+        commitStarted = true;
+        return commit.promise;
       },
-    })
+    });
     const made = await call(relay, walletServicePubkey, 'make_invoice', {
       amount: 21_000,
-    })
-    const paymentHash = made.result?.payment_hash
+    });
+    const paymentHash = made.result?.payment_hash;
     if (typeof paymentHash !== 'string') {
-      throw new TypeError('make_invoice did not return a payment hash')
+      throw new TypeError('make_invoice did not return a payment hash');
     }
-    const settleResponse = await fetch(`${m.url}/_test/settle?payment_hash=${paymentHash}`)
-    expect(settleResponse.ok).toBe(true)
-    await waitFor(() => commitStarted)
+    const settleResponse = await fetch(`${m.url}/_test/settle?payment_hash=${paymentHash}`);
+    expect(settleResponse.ok).toBe(true);
+    await waitFor(() => commitStarted);
 
-    let stopped = false
+    let stopped = false;
     const stopping = stop().then(() => {
-      stopped = true
-      return state.errors.length
-    })
-    for (let turn = 0; turn < 10; turn += 1) await Promise.resolve()
-    expect(stopped).toBe(false)
+      stopped = true;
+      return state.errors.length;
+    });
+    for (let turn = 0; turn < 10; turn += 1) await Promise.resolve();
+    expect(stopped).toBe(false);
 
-    commit.reject(commitError)
-    expect(await stopping).toBe(1)
-    expect(state.errors).toEqual([commitError])
-    expect(state.changesets).toHaveLength(0)
-    await stop()
-  })
+    commit.reject(commitError);
+    expect(await stopping).toBe(1);
+    expect(state.errors).toEqual([commitError]);
+    expect(state.changesets).toHaveLength(0);
+    await stop();
+  });
 
   it('does not block stop on an invoice whose claim is still polling', async () => {
     // an unpaid invoice's claim poll can legally run for minutes (the
     // client pays whenever it pays) - stop must interrupt the wait, not
     // sit on it; a settlement that already REACHED the commit phase is
     // still awaited (see the drain tests above)
-    const m = await mint({testHooks: true})
-    const {relay, walletServicePubkey, state, stop} = await startTestService({
+    const m = await mint({ testHooks: true });
+    const { relay, walletServicePubkey, state, stop } = await startTestService({
       defaultMint: `mint@127.0.0.1:${m.port}`,
-      claimPoll: {intervalMs: 50, intervalCapMs: 50, maxWaitMs: 60_000},
-    })
+      claimPoll: { intervalMs: 50, intervalCapMs: 50, maxWaitMs: 60_000 },
+    });
     const made = await call(relay, walletServicePubkey, 'make_invoice', {
       amount: 5_000,
-    })
-    expect(made.error).toBeNull()
+    });
+    expect(made.error).toBeNull();
 
     // nobody pays the invoice; the claim keeps polling. stop must resolve
     // promptly regardless (an un-interrupted stop would wait out the
     // whole 60s claim budget)
-    await stop()
-    expect(state.changesets).toHaveLength(0)
-    expect(state.errors).toHaveLength(0)
-  })
+    await stop();
+    expect(state.changesets).toHaveLength(0);
+    expect(state.errors).toHaveLength(0);
+  });
 
   it('does not start invoice settlement after stop begins during preparation', async () => {
-    const m = await mint({testHooks: true})
-    const prepare = deferred()
-    let prepareStarted = false
-    const {relay, walletServicePubkey, state, stop} = await startTestService({
+    const m = await mint({ testHooks: true });
+    const prepare = deferred();
+    let prepareStarted = false;
+    const { relay, walletServicePubkey, state, stop } = await startTestService({
       defaultMint: `mint@127.0.0.1:${m.port}`,
       kit: {
         fetch: async (input, init) => {
-          prepareStarted = true
-          await prepare.promise
-          return fetch(input, init)
+          prepareStarted = true;
+          await prepare.promise;
+          return fetch(input, init);
         },
       },
-    })
+    });
     const request = methodRequest(walletServicePubkey, 'make_invoice', {
       amount: 21_000,
-    })
-    relay.emit(request)
-    await waitFor(() => prepareStarted)
+    });
+    relay.emit(request);
+    await waitFor(() => prepareStarted);
 
-    let stopped = false
+    let stopped = false;
     const stopping = stop().then(() => {
-      stopped = true
-    })
-    for (let turn = 0; turn < 10; turn += 1) await Promise.resolve()
-    expect(stopped).toBe(false)
+      stopped = true;
+    });
+    for (let turn = 0; turn < 10; turn += 1) await Promise.resolve();
+    expect(stopped).toBe(false);
 
-    prepare.resolve()
-    await stopping
+    prepare.resolve();
+    await stopping;
 
-    expect(state.changesets).toHaveLength(0)
-    expect(readResponse(relay.published, request.id, 'nip44_v2')?.error?.code).toBe('INTERNAL')
-  })
+    expect(state.changesets).toHaveLength(0);
+    expect(readResponse(relay.published, request.id, 'nip44_v2')?.error?.code).toBe('INTERNAL');
+  });
 
   it('marks a paid invoice failed when its bearer commit rejects', async () => {
-    const m = await mint({testHooks: true})
-    const commit = deferred()
-    const commitError = new Error('invoice bearer commit failed')
-    let commitStarted = false
-    const {relay, walletServicePubkey, state, stop} = await startTestService({
+    const m = await mint({ testHooks: true });
+    const commit = deferred();
+    const commitError = new Error('invoice bearer commit failed');
+    let commitStarted = false;
+    const { relay, walletServicePubkey, state, stop } = await startTestService({
       defaultMint: `mint@127.0.0.1:${m.port}`,
       commitChangeset: () => {
-        commitStarted = true
-        return commit.promise
+        commitStarted = true;
+        return commit.promise;
       },
-    })
+    });
     const made = await call(relay, walletServicePubkey, 'make_invoice', {
       amount: 21_000,
-    })
-    const paymentHash = made.result?.payment_hash
+    });
+    const paymentHash = made.result?.payment_hash;
     if (typeof paymentHash !== 'string') {
-      throw new TypeError('make_invoice did not return a payment hash')
+      throw new TypeError('make_invoice did not return a payment hash');
     }
 
-    const settleResponse = await fetch(`${m.url}/_test/settle?payment_hash=${paymentHash}`)
-    expect(settleResponse.ok).toBe(true)
-    await waitFor(() => commitStarted)
-    commit.reject(commitError)
-    await waitFor(() => state.errors.length === 1)
+    const settleResponse = await fetch(`${m.url}/_test/settle?payment_hash=${paymentHash}`);
+    expect(settleResponse.ok).toBe(true);
+    await waitFor(() => commitStarted);
+    commit.reject(commitError);
+    await waitFor(() => state.errors.length === 1);
 
     const failed = await call(relay, walletServicePubkey, 'lookup_invoice', {
       payment_hash: paymentHash,
-    })
-    expect(failed.result?.state).toBe('failed')
-    expect(failed.result?.settled_at).toBeUndefined()
-    expect(failed.result?.preimage).toBeUndefined()
-    expect(state.errors).toEqual([commitError])
-    await stop()
-  })
+    });
+    expect(failed.result?.state).toBe('failed');
+    expect(failed.result?.settled_at).toBeUndefined();
+    expect(failed.result?.preimage).toBeUndefined();
+    expect(state.errors).toEqual([commitError]);
+    await stop();
+  });
 
   it('finds an invoice by its invoice string too', async () => {
-    const m = await mint({testHooks: true})
-    const {relay, walletServicePubkey, stop} = await startTestService({
+    const m = await mint({ testHooks: true });
+    const { relay, walletServicePubkey, stop } = await startTestService({
       defaultMint: `mint@127.0.0.1:${m.port}`,
-      claimPoll: {intervalMs: 1, intervalCapMs: 2, maxWaitMs: 10},
-    })
+      claimPoll: { intervalMs: 1, intervalCapMs: 2, maxWaitMs: 10 },
+    });
     const made = await call(relay, walletServicePubkey, 'make_invoice', {
       amount: 5_000,
-    })
-    const invoice = made.result?.invoice
+    });
+    const invoice = made.result?.invoice;
     if (typeof invoice !== 'string') {
-      throw new TypeError('make_invoice did not return an invoice')
+      throw new TypeError('make_invoice did not return an invoice');
     }
     const found = await call(relay, walletServicePubkey, 'lookup_invoice', {
       invoice: invoice.toUpperCase(),
-    })
-    expect(found.error).toBeNull()
-    expect(found.result?.payment_hash).toBe(made.result?.payment_hash)
-    await stop()
-  })
+    });
+    expect(found.error).toBeNull();
+    expect(found.result?.payment_hash).toBe(made.result?.payment_hash);
+    await stop();
+  });
 
   it('answers an unknown invoice with NOT_FOUND', async () => {
-    const {relay, walletServicePubkey, stop} = await startTestService({})
+    const { relay, walletServicePubkey, stop } = await startTestService({});
     const response = await call(relay, walletServicePubkey, 'lookup_invoice', {
       payment_hash: 'ab'.repeat(32),
-    })
-    expect(response.error?.code).toBe('NOT_FOUND')
-    await stop()
-  })
+    });
+    expect(response.error?.code).toBe('NOT_FOUND');
+    await stop();
+  });
 
   it('answers make_invoice without a default mint with INTERNAL', async () => {
-    const {relay, walletServicePubkey, stop} = await startTestService({
+    const { relay, walletServicePubkey, stop } = await startTestService({
       defaultMint: null,
-    })
+    });
     const response = await call(relay, walletServicePubkey, 'make_invoice', {
       amount: 21_000,
-    })
-    expect(response.error?.code).toBe('INTERNAL')
-    await stop()
-  })
+    });
+    expect(response.error?.code).toBe('INTERNAL');
+    await stop();
+  });
+
+  it('rejects invoice creation when the durable pending-output cap is reached', async () => {
+    const { relay, walletServicePubkey, state, stop } = await startTestService({
+      defaultMint: 'mint@example.com',
+    });
+    for (let index = 0; index < 20; index += 1) {
+      state.bearers.push({
+        id: `pending-${index}`,
+        url: `https://mint.example/w?k1=${index.toString(16).padStart(64, '0')}`,
+        callback: '',
+        amount: 0,
+        verified: false,
+        pendingMint: {},
+        createdAt: index,
+        updatedAt: index,
+      });
+    }
+
+    const response = await call(relay, walletServicePubkey, 'make_invoice', {
+      amount: 21_000,
+    });
+
+    expect(response.error?.code).toBe('QUOTA_EXCEEDED');
+    expect(state.bearers).toHaveLength(20);
+    await stop();
+  });
+
+  it('removes staged outputs when invoice preparation fails before publication', async () => {
+    const m = await mint({ testHooks: true });
+    let rejectQuotes = true;
+    const { relay, walletServicePubkey, state, stop } = await startTestService({
+      defaultMint: `mint@127.0.0.1:${m.port}`,
+      kit: {
+        fetch: (input, init) => {
+          const url =
+            typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+          if (rejectQuotes && url.includes('comment=')) {
+            return Promise.resolve(new Response('quote failed', { status: 500 }));
+          }
+          return fetch(input, init);
+        },
+      },
+    });
+
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      const failed = await call(relay, walletServicePubkey, 'make_invoice', { amount: 21_000 });
+      expect(failed.error?.code).toBe('INTERNAL');
+      expect(state.bearers).toHaveLength(0);
+    }
+
+    rejectQuotes = false;
+    const made = await call(relay, walletServicePubkey, 'make_invoice', { amount: 21_000 });
+    expect(made.error).toBeNull();
+    expect(state.bearers).toHaveLength(1);
+    await stop();
+  });
+
+  it('removes an unpublished stage when retirement persistence fails', async () => {
+    const m = await mint({ testHooks: true });
+    const { relay, walletServicePubkey, state, stop } = await startTestService({
+      defaultMint: `mint@127.0.0.1:${m.port}`,
+      setMintOutputRetirement: () => Promise.reject(new Error('retirement write failed')),
+      kit: {
+        fetch: (input, init) => {
+          const url =
+            typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+          if (url.includes('comment=')) {
+            return Promise.resolve(
+              new Response(JSON.stringify({ pr: SIGNED_BOLT11_FIXTURE }), {
+                status: 200,
+                headers: { 'content-type': 'application/json' },
+              }),
+            );
+          }
+          return fetch(input, init);
+        },
+      },
+    });
+
+    const response = await call(relay, walletServicePubkey, 'make_invoice', { amount: 25_000 });
+
+    expect(response.error?.code).toBe('INTERNAL');
+    expect(state.bearers).toHaveLength(0);
+    await stop();
+  });
 
   it('answers a make_invoice with a bad amount with OTHER', async () => {
-    const {relay, walletServicePubkey, stop} = await startTestService({})
+    const { relay, walletServicePubkey, stop } = await startTestService({});
     const response = await call(relay, walletServicePubkey, 'make_invoice', {
       amount: -5,
-    })
-    expect(response.error?.code).toBe('OTHER')
-    await stop()
-  })
-})
+    });
+    expect(response.error?.code).toBe('OTHER');
+    await stop();
+  });
+});

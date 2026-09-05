@@ -1,4 +1,4 @@
-import type {MintAddressInfo} from 'lnurlcash-kit'
+import type { MintAddressInfo } from 'lnurlcash-kit';
 import {
   adoptLegacyStoredTrustedMints,
   mutateStoredTrustedMints,
@@ -6,8 +6,9 @@ import {
   readOwnedTrustedMints,
   removeStoredTrustedMintsForOwner,
   resetStoredTrustedMints,
-} from './trustedMintsRepository'
-import {linkingPubKeyHex, savedKeyOwnerId} from './keys'
+} from './trustedMintsRepository';
+import { linkingPubKeyHex } from './keys';
+import { savedKeyOwnerAllows } from './storage/currentOwner';
 import {
   addMint,
   cacheMintNodeInfo,
@@ -17,8 +18,8 @@ import {
   grandfatherMint,
   lockMint,
   removeMint,
-} from './trustedMintTransitions'
-import {mergeMints} from './trustedMintMerge'
+} from './trustedMintTransitions';
+import { mergeMints } from './trustedMintMerge';
 
 // A mint's signing key (LUD-25 Offline verification's `mintPubkey`) - not a
 // secret, just a public identity, so this is plain unencrypted localStorage,
@@ -26,13 +27,13 @@ import {mergeMints} from './trustedMintMerge'
 // onTrustedMintsChange) so plain utility code - ops.ts's flows in
 // particular - can touch it too, not just UI components.
 export type TrustedMint = {
-  server: string
-  mintPubkey: string
-  addedAt: number
+  server: string;
+  mintPubkey: string;
+  addedAt: number;
   // true once a bearer is held from this server - trust then follows
   // holding funds there, not a standalone opinion, so it can't be revoked
   // by deleting it here (see removeTrustedMint)
-  locked: boolean
+  locked: boolean;
   // true when this pin came from a backup file or a stored bearer's cached
   // key rather than a live response from the server itself (see
   // mergeTrustedMints / grandfatherTrustedMint): excluded from offline
@@ -40,44 +41,52 @@ export type TrustedMint = {
   // advertises the same key (any lockTrustedMint/addTrustedMint match
   // clears it) - a crafted backup could otherwise plant a pin for a mint it
   // controls and forge "signed" badges on worthless notes
-  unconfirmed?: boolean
+  unconfirmed?: boolean;
   // a DIFFERENT signing key this mint has since advertised (via a note
   // refresh, a lookup, etc) - staged for explicit holder review, never
   // auto-applied. The pinned mintPubkey above stays authoritative until
   // confirmTrustedMintRekey promotes this one; a key that silently rotated
   // would defeat the entire pinning model (a compromised mint could sign
   // unbacked notes that then show the "signed" badge).
-  pendingMintPubkey?: string
+  pendingMintPubkey?: string;
+  // the key this mint signed under immediately BEFORE the holder confirmed
+  // the current pin (set by confirmTrustedMintRekey): notes issued just
+  // before a legitimate rotation stay verifiable against it. Never imported
+  // from a backup (a crafted file could otherwise plant a forgeable
+  // "previous" key, exactly like pendingMintPubkey) and never staged from
+  // an advertisement - only a confirmed rekey creates it, from the key that
+  // was actually pinned.
+  previousMintPubkey?: string;
   // best-effort node identity/capacity, cached from the mint-address
   // discovery endpoint (see the kit's fetchMintAddress) purely for display -
   // absent for a mint that doesn't support it, or one trusted before this
   // wallet learned to ask. Never used for anything security-relevant;
   // mintPubkey above remains the only thing a note's signature is ever
   // checked against.
-  nodeAlias?: string
-  nodeColor?: string
-  nodeCapacityMsat?: number
-  nodeNumChannels?: number
-  nodeNumPeers?: number
+  nodeAlias?: string;
+  nodeColor?: string;
+  nodeCapacityMsat?: number;
+  nodeNumChannels?: number;
+  nodeNumPeers?: number;
   // the local-part this mint was actually reached at ("mint" out of
   // "mint@host" - see the kit's lightningAddressUsername), cached so a
   // later quick-select can reconstruct the exact address instead of
   // guessing "mint@<server>" for a mint that uses a different one. Absent
   // for a mint only ever looked up as a bech32 LNURL, which has no such
   // concept.
-  username?: string
-}
+  username?: string;
+};
 
 // the subset of TrustedMint that's cacheable display metadata, as opposed
 // to the server/mintPubkey/addedAt/locked fields every entry has regardless
 export type TrustedMintNodeInfo = {
-  nodeAlias?: string
-  nodeColor?: string
-  nodeCapacityMsat?: number
-  nodeNumChannels?: number
-  nodeNumPeers?: number
-  username?: string
-}
+  nodeAlias?: string;
+  nodeColor?: string;
+  nodeCapacityMsat?: number;
+  nodeNumChannels?: number;
+  nodeNumPeers?: number;
+  username?: string;
+};
 
 // distills a mint-address lookup (see the kit's fetchMintAddress) down to
 // just the cacheable display fields above - shared by every mint discovery
@@ -90,7 +99,7 @@ export const mintAddressCacheInfo = (
   info: MintAddressInfo | null,
   username: string | null,
 ): TrustedMintNodeInfo | undefined => {
-  if (!info && !username) return undefined
+  if (!info && !username) return undefined;
   return {
     nodeAlias: info?.nodeAlias,
     nodeColor: info?.nodeColor,
@@ -98,8 +107,8 @@ export const mintAddressCacheInfo = (
     nodeNumChannels: info?.nodeNumChannels,
     nodeNumPeers: info?.nodeNumPeers,
     username: username ?? undefined,
-  }
-}
+  };
+};
 
 // A small curated list of known public mints, for a one-click quick start -
 // unrelated to whether any given entry ends up in the trusted-mints
@@ -115,37 +124,49 @@ export const PUBLIC_MINTS = [
   '@moneyer.dev',
   '@lnurl.21linz.at',
   '@minty.exe.xyz',
-]
+];
 
 // the Pinia mints store subscribes here to mirror the registry into
 // reactive state; returns the unsubscribe
 export const onTrustedMintsChange = (listener: () => void): (() => void) =>
-  onStoredTrustedMintsChange(listener)
+  onStoredTrustedMintsChange(listener);
 
-export const readTrustedMints = (ownerId?: string): TrustedMint[] => readOwnedTrustedMints(ownerId)
+export const readTrustedMints = (ownerId?: string): TrustedMint[] => readOwnedTrustedMints(ownerId);
 
 export const isMintTrusted = (server: string, ownerId?: string): boolean =>
-  readTrustedMints(ownerId).some((mint) => mint.server === server)
+  readTrustedMints(ownerId).some((mint) => mint.server === server);
 
 export const getTrustedMintPubkey = (server: string, ownerId?: string): string | null =>
   readTrustedMints(ownerId).find((mint) => mint.server === server && !mint.unconfirmed)
-    ?.mintPubkey ?? null
+    ?.mintPubkey ?? null;
+
+// the keys a landed mutation signature may be checked against for this
+// server: the pinned current key plus the previous one (kept across a
+// confirmed rekey so the old key's last notes still verify). Unconfirmed
+// pins contribute nothing - see TrustedMint.unconfirmed.
+export const getTrustedMintVerificationKeys = (server: string, ownerId?: string): string[] => {
+  const mint = readTrustedMints(ownerId).find(
+    (entry) => entry.server === server && !entry.unconfirmed,
+  );
+  if (!mint) return [];
+  return mint.previousMintPubkey ? [mint.mintPubkey, mint.previousMintPubkey] : [mint.mintPubkey];
+};
 
 // true when a server has a pin that came from a file/storage rather than a
 // live response (see TrustedMint.unconfirmed) - callers should treat a
 // bearer's own cached mintPubkey for such a server as equally
 // uncorroborated
 export const isMintUnconfirmed = (server: string, ownerId?: string): boolean =>
-  readTrustedMints(ownerId).some((mint) => mint.server === server && mint.unconfirmed)
+  readTrustedMints(ownerId).some((mint) => mint.server === server && mint.unconfirmed);
 
 // this mint's self-reported node color, for tinting its notes' background -
 // purely cosmetic. Mint-supplied, so it's only ever handed out as a plain
 // hex color - anything else (a style sink can take far more than colors) is
 // treated as absent
 export const getTrustedMintNodeColor = (server: string, ownerId?: string): string | null => {
-  const color = readTrustedMints(ownerId).find((mint) => mint.server === server)?.nodeColor
-  return color && /^#[0-9a-f]{3}([0-9a-f]{3})?$/i.test(color) ? color : null
-}
+  const color = readTrustedMints(ownerId).find((mint) => mint.server === server)?.nodeColor;
+  return color && /^#[0-9a-f]{3}([0-9a-f]{3})?$/i.test(color) ? color : null;
+};
 
 // the exact Lightning Address this mint was last reached at (see
 // TrustedMint.username), for a quick-select that reconstructs it instead of
@@ -153,23 +174,23 @@ export const getTrustedMintNodeColor = (server: string, ownerId?: string): strin
 // (looked up as a bech32 LNURL, or trusted before this wallet learned to
 // remember one)
 export const getTrustedMintAddress = (server: string, ownerId?: string): string | null => {
-  const username = readTrustedMints(ownerId).find((mint) => mint.server === server)?.username
-  return username ? `${username}@${server}` : null
-}
+  const username = readTrustedMints(ownerId).find((mint) => mint.server === server)?.username;
+  return username ? `${username}@${server}` : null;
+};
 
 // what a lock/add attempt did with the advertised key - 'rekey-pending' is
 // the security-relevant one: the mint advertised a DIFFERENT key than the
 // pinned one, which was staged for review (pendingMintPubkey) instead of
 // silently replacing it. Callers should surface that loudly.
-export type TrustKeyResult = 'added' | 'unchanged' | 'rekey-pending'
+export type TrustKeyResult = 'added' | 'unchanged' | 'rekey-pending';
 
 export type TrustedMintMutationContext = {
-  readonly ownerId: string
-}
+  readonly ownerId: string;
+};
 
 export type AddTrustedMintContext = TrustedMintMutationContext & {
-  readonly nodeInfo?: TrustedMintNodeInfo
-}
+  readonly nodeInfo?: TrustedMintNodeInfo;
+};
 
 // Called whenever this wallet ends up holding (or already holds) a bearer
 // from `server` - minting, receiving, splitting, merging all route through
@@ -185,7 +206,7 @@ export const lockTrustedMint = (
   mintPubkey: string,
   ownerId?: string,
 ): Promise<TrustKeyResult> =>
-  mutateStoredTrustedMints(ownerId, (mints) => lockMint(mints, {server, mintPubkey}))
+  mutateStoredTrustedMints(ownerId, (mints) => lockMint(mints, { server, mintPubkey }));
 
 // unlock-time grandfathering of the mints behind already-stored bearers -
 // the key claims come from local storage, not a live response, so an
@@ -199,7 +220,7 @@ export const grandfatherTrustedMint = (
   mintPubkey: string,
   ownerId?: string,
 ): Promise<TrustKeyResult> =>
-  mutateStoredTrustedMints(ownerId, (mints) => grandfatherMint(mints, {server, mintPubkey}))
+  mutateStoredTrustedMints(ownerId, (mints) => grandfatherMint(mints, { server, mintPubkey }));
 
 // Manual add from the mints settings, or a user-confirmed first encounter -
 // unlocked, since no bearer necessarily backs it yet. Validates and throws
@@ -213,24 +234,24 @@ export const addTrustedMint = (
   mintPubkey: string,
   context?: TrustedMintNodeInfo | AddTrustedMintContext,
 ): Promise<TrustKeyResult> => {
-  const ownerId = context && 'ownerId' in context ? context.ownerId : undefined
-  const nodeInfo = context && 'ownerId' in context ? context.nodeInfo : context
+  const ownerId = context && 'ownerId' in context ? context.ownerId : undefined;
+  const nodeInfo = context && 'ownerId' in context ? context.nodeInfo : context;
   return mutateStoredTrustedMints(ownerId, (mints) =>
-    addMint(mints, {server, mintPubkey, nodeInfo}),
-  )
-}
+    addMint(mints, { server, mintPubkey, nodeInfo }),
+  );
+};
 
 // the holder confirms a mint's advertised new signing key - the pending key
 // becomes the pinned one. Legitimate rotations (a mint moving to a new
 // node) go through here; nothing else ever replaces a pin.
 export const confirmTrustedMintRekey = (server: string, ownerId?: string): Promise<void> =>
-  mutateStoredTrustedMints(ownerId, (mints) => confirmMintRekey(mints, server))
+  mutateStoredTrustedMints(ownerId, (mints) => confirmMintRekey(mints, server));
 
 // the holder rejects the advertised new key - the staged candidate is
 // dropped, the original pin stays. Worth doing only when the change is
 // unexpected; the old key stays authoritative either way until confirmed.
 export const dismissTrustedMintRekey = (server: string, ownerId?: string): Promise<void> =>
-  mutateStoredTrustedMints(ownerId, (mints) => dismissMintRekey(mints, server))
+  mutateStoredTrustedMints(ownerId, (mints) => dismissMintRekey(mints, server));
 
 // refreshes just the cached display info for a server already in the list -
 // never touches mintPubkey/addedAt/locked, and no-ops for a server that
@@ -244,31 +265,31 @@ export const cacheTrustedMintNodeInfo = (
   nodeInfo: TrustedMintNodeInfo,
   ownerId?: string,
 ): Promise<void> =>
-  mutateStoredTrustedMints(ownerId, (mints) => cacheMintNodeInfo(mints, server, nodeInfo))
+  mutateStoredTrustedMints(ownerId, (mints) => cacheMintNodeInfo(mints, server, nodeInfo));
 
 // only succeeds for entries not backed by a held bearer - see
 // TrustedMint.locked
 export const removeTrustedMint = (server: string, ownerId?: string): Promise<void> =>
-  mutateStoredTrustedMints(ownerId, (mints) => removeMint(mints, server))
+  mutateStoredTrustedMints(ownerId, (mints) => removeMint(mints, server));
 
 // wipes the whole registry - part of forgetting a wallet: nothing about a
 // wallet's mints (including otherwise-irremovable locked pins) should
 // linger on the device after it
 export const clearTrustedMints = (ownerId?: string): Promise<void> =>
-  mutateStoredTrustedMints(ownerId, clearMints)
+  mutateStoredTrustedMints(ownerId, clearMints);
 
 export const migrateLegacyTrustedMints = (linkingKey: Uint8Array): Promise<number> => {
-  const ownerId = linkingPubKeyHex(linkingKey)
-  if (savedKeyOwnerId() !== ownerId) {
-    throw new Error('Legacy trusted-mint migration requires a proven owner.')
+  const ownerId = linkingPubKeyHex(linkingKey);
+  if (!savedKeyOwnerAllows(ownerId)) {
+    throw new Error('Legacy trusted-mint migration requires a proven owner.');
   }
-  return adoptLegacyStoredTrustedMints(ownerId)
-}
+  return adoptLegacyStoredTrustedMints(ownerId);
+};
 
 export const removeTrustedMintsForOwner = (ownerId: string): Promise<void> =>
-  removeStoredTrustedMintsForOwner(ownerId)
+  removeStoredTrustedMintsForOwner(ownerId);
 
-export const resetTrustedMintsForReplacement = (): Promise<void> => resetStoredTrustedMints()
+export const resetTrustedMintsForReplacement = (): Promise<void> => resetStoredTrustedMints();
 
 // merges a backup's trusted mints in by server - a server already known on
 // this device keeps its own current entry rather than being overwritten by
@@ -281,4 +302,4 @@ export const resetTrustedMintsForReplacement = (): Promise<void> => resetStoredT
 // signature verification until a live response from that server advertises
 // the same key (a crafted backup could otherwise forge "signed" badges)
 export const mergeTrustedMints = (incoming: unknown[], ownerId?: string): Promise<number> =>
-  mutateStoredTrustedMints(ownerId, (mints) => mergeMints(mints, incoming))
+  mutateStoredTrustedMints(ownerId, (mints) => mergeMints(mints, incoming));

@@ -20,17 +20,17 @@
 // malformed or future metadata must never be downgraded into that adoptable
 // path.
 
-import {secp256k1} from '@noble/curves/secp256k1.js'
+import { secp256k1 } from '@noble/curves/secp256k1.js';
 
 // strict shape AND curve check: exactly what linkingPubKeyHex can produce
 export const isWalletOwnerId = (ownerId: unknown): ownerId is string => {
   if (typeof ownerId !== 'string' || !/^0[23][0-9a-f]{64}$/.test(ownerId)) {
-    return false
+    return false;
   }
   try {
-    secp256k1.Point.fromHex(ownerId)
-    return true
+    secp256k1.Point.fromHex(ownerId);
+    return true;
   } catch {
-    return false
+    return false;
   }
-}
+};

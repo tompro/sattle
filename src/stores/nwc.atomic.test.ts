@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { NwcService, NwcServiceDeps } from '@/lnurlcash/nwc';
 import type * as NwcExports from '@/lnurlcash/nwc';
+import { FUNDS_STORAGE_KEY } from '@/lnurlcash/storage/bearers';
 import { stubLocalStorage } from '@/lnurlcash/test-utils';
 import type { NewBearer } from '@/lnurlcash/types';
 import { useActivityStore } from './activity';
@@ -29,7 +30,11 @@ const note = (secret: string): NewBearer => ({
 beforeEach(() => {
   vi.clearAllMocks();
   vi.unstubAllGlobals();
-  vi.stubGlobal('navigator', {});
+  // a present-but-non-serializing LockManager fake: walletFunds serializes
+  // its own mutations, so single-store tests only need locks to EXIST
+  vi.stubGlobal('navigator', {
+    locks: { request: (_name: string, fn: () => unknown) => Promise.resolve().then(fn) },
+  });
   stubLocalStorage();
   setActivePinia(createPinia());
   mocks.startService.mockResolvedValue({
@@ -69,7 +74,7 @@ describe('NWC store changeset adapter', () => {
       start[1].assertCurrentOwner,
     );
 
-    expect(writes.mock.calls.filter(([key]) => key === 'sattle_bearers')).toHaveLength(1);
+    expect(writes.mock.calls.filter(([key]) => key === FUNDS_STORAGE_KEY)).toHaveLength(1);
     expect(wallet.bearers).toHaveLength(2);
     expect(wallet.bearers.find(({ id }) => id === existing.id)?.spent).toBe(true);
   });

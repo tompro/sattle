@@ -2,10 +2,10 @@
 // fund-critical changeset boundary without mixing it into unrelated storage
 // round-trip and backup cases.
 
-import {describe, expect, it, vi} from 'vitest'
-import {buildNoteUrl} from 'lnurlcash-kit'
+import { describe, expect, it, vi } from 'vitest';
+import { buildNoteUrl } from 'lnurlcash-kit';
 
-import {deriveBearerAesKey, encryptRecord} from './keys'
+import { deriveBearerAesKey, encryptRecord } from './keys';
 import {
   applyBearerChangeset,
   deleteBearerRecord,
@@ -13,16 +13,25 @@ import {
   newBearerId,
   persistBearer,
   readEncryptedBearers,
-} from './storage'
-import type {BearerChangeset} from './storage'
-import type {Bearer, NewBearer} from './types'
+} from './storage';
+import type { BearerChangeset } from './storage';
+import type { Bearer, NewBearer } from './types';
+import { FUNDS_STORAGE_KEY, readFundsDocument, writeFundsDocument } from './storage/bearers';
 
-const LINKING_KEY = new Uint8Array(32).fill(7)
-const OTHER_KEY = new Uint8Array(32).fill(9)
-const K1_A = 'aa'.repeat(32)
-const K1_B = 'bb'.repeat(32)
-const K1_C = 'cc'.repeat(32)
-const K1_D = 'dd'.repeat(32)
+// mutations of the funds document require Web Locks; tests that don't care
+// about lock timing install a present-but-non-serializing fake
+const stubPassthroughLocks = (): void => {
+  vi.stubGlobal('navigator', {
+    locks: { request: (_name: string, fn: () => unknown) => Promise.resolve().then(fn) },
+  });
+};
+
+const LINKING_KEY = new Uint8Array(32).fill(7);
+const OTHER_KEY = new Uint8Array(32).fill(9);
+const K1_A = 'aa'.repeat(32);
+const K1_B = 'bb'.repeat(32);
+const K1_C = 'cc'.repeat(32);
+const K1_D = 'dd'.repeat(32);
 
 const bearerFixture = (overrides: Partial<Bearer> = {}): Bearer => ({
   id: newBearerId(),
@@ -33,7 +42,7 @@ const bearerFixture = (overrides: Partial<Bearer> = {}): Bearer => ({
   createdAt: 1000,
   updatedAt: 1000,
   ...overrides,
-})
+});
 
 const newBearerFixture = (overrides: Partial<NewBearer> = {}): NewBearer => ({
   url: buildNoteUrl('https://mint.example/w', K1_C, 3_000),
@@ -41,35 +50,37 @@ const newBearerFixture = (overrides: Partial<NewBearer> = {}): NewBearer => ({
   amount: 3_000,
   verified: true,
   ...overrides,
-})
+});
 
 describe('baseline: per-record bearer persistence', () => {
   it('writes once for every persist or delete call', async () => {
-    const key = await deriveBearerAesKey(LINKING_KEY)
-    const writes = vi.spyOn(localStorage, 'setItem')
+    stubPassthroughLocks();
+    const key = await deriveBearerAesKey(LINKING_KEY);
+    const writes = vi.spyOn(localStorage, 'setItem');
 
-    await persistBearer(key, bearerFixture({id: 'a'}))
-    await persistBearer(key, bearerFixture({id: 'b'}))
-    await deleteBearerRecord('a')
+    await persistBearer(key, bearerFixture({ id: 'a' }));
+    await persistBearer(key, bearerFixture({ id: 'b' }));
+    await deleteBearerRecord('a');
 
     expect(
-      writes.mock.calls.filter(([storageKey]) => storageKey === 'sattle_bearers'),
-    ).toHaveLength(3)
-  })
-})
+      writes.mock.calls.filter(([storageKey]) => storageKey === FUNDS_STORAGE_KEY),
+    ).toHaveLength(3);
+  });
+});
 
 describe('applyBearerChangeset', () => {
   it('commits additions and spent replacements with exactly one write', async () => {
-    const key = await deriveBearerAesKey(LINKING_KEY)
-    const oldA = bearerFixture({id: 'old-a'})
+    stubPassthroughLocks();
+    const key = await deriveBearerAesKey(LINKING_KEY);
+    const oldA = bearerFixture({ id: 'old-a' });
     const oldB = bearerFixture({
       id: 'old-b',
       url: buildNoteUrl('https://mint.example/w', K1_B, 5_000),
       amount: 5_000,
-    })
-    await persistBearer(key, oldA)
-    await persistBearer(key, oldB)
-    const snapshot = [oldA, oldB]
+    });
+    await persistBearer(key, oldA);
+    await persistBearer(key, oldB);
+    const snapshot = [oldA, oldB];
     const changeset: BearerChangeset = {
       add: [
         newBearerFixture(),
@@ -79,36 +90,37 @@ describe('applyBearerChangeset', () => {
         }),
       ],
       markSpent: ['old-a', 'old-b'],
-    }
-    const writes = vi.spyOn(localStorage, 'setItem')
+    };
+    const writes = vi.spyOn(localStorage, 'setItem');
 
-    const result = await applyBearerChangeset(key, snapshot, changeset)
+    const result = await applyBearerChangeset(key, snapshot, changeset);
 
     expect(
-      writes.mock.calls.filter(([storageKey]) => storageKey === 'sattle_bearers'),
-    ).toHaveLength(1)
-    expect(result).toHaveLength(4)
-    expect(result.slice(2).map((bearer) => bearer.spent)).toEqual([true, true])
-    expect(result[0]?.id).not.toBe(result[1]?.id)
-    expect(snapshot.map((bearer) => bearer.spent)).toEqual([undefined, undefined])
-    expect(changeset.markSpent).toEqual(['old-a', 'old-b'])
-    expect(changeset.add.some((note) => 'id' in note)).toBe(false)
+      writes.mock.calls.filter(([storageKey]) => storageKey === FUNDS_STORAGE_KEY),
+    ).toHaveLength(1);
+    expect(result).toHaveLength(4);
+    expect(result.slice(2).map((bearer) => bearer.spent)).toEqual([true, true]);
+    expect(result[0]?.id).not.toBe(result[1]?.id);
+    expect(snapshot.map((bearer) => bearer.spent)).toEqual([undefined, undefined]);
+    expect(changeset.markSpent).toEqual(['old-a', 'old-b']);
+    expect(changeset.add.some((note) => 'id' in note)).toBe(false);
     expect((await loadBearers(key)).map((bearer) => bearer.id).sort()).toEqual(
       result.map((bearer) => bearer.id).sort(),
-    )
-    const raw = localStorage.getItem('sattle_bearers') ?? ''
-    expect(raw).not.toContain(K1_C)
-    expect(raw).not.toContain(K1_D)
-  })
+    );
+    const raw = localStorage.getItem(FUNDS_STORAGE_KEY) ?? '';
+    expect(raw).not.toContain(K1_C);
+    expect(raw).not.toContain(K1_D);
+  });
 
   it('writes nothing when the second record encryption fails', async () => {
-    const key = await deriveBearerAesKey(LINKING_KEY)
-    await persistBearer(key, bearerFixture({id: 'kept'}))
-    const writes = vi.spyOn(localStorage, 'setItem')
-    const encrypt = vi.spyOn(crypto.subtle, 'encrypt')
+    stubPassthroughLocks();
+    const key = await deriveBearerAesKey(LINKING_KEY);
+    await persistBearer(key, bearerFixture({ id: 'kept' }));
+    const writes = vi.spyOn(localStorage, 'setItem');
+    const encrypt = vi.spyOn(crypto.subtle, 'encrypt');
     encrypt
       .mockResolvedValueOnce(new ArrayBuffer(32))
-      .mockRejectedValueOnce(new Error('second encryption failed'))
+      .mockRejectedValueOnce(new Error('second encryption failed'));
 
     try {
       await expect(
@@ -121,26 +133,26 @@ describe('applyBearerChangeset', () => {
           ],
           markSpent: [],
         }),
-      ).rejects.toThrow('second encryption failed')
-      expect(encrypt).toHaveBeenCalledTimes(2)
+      ).rejects.toThrow('second encryption failed');
+      expect(encrypt).toHaveBeenCalledTimes(2);
       expect(
-        writes.mock.calls.filter(([storageKey]) => storageKey === 'sattle_bearers'),
-      ).toHaveLength(0)
-      expect(readEncryptedBearers().map((record) => record.id)).toEqual(['kept'])
+        writes.mock.calls.filter(([storageKey]) => storageKey === FUNDS_STORAGE_KEY),
+      ).toHaveLength(0);
+      expect(readEncryptedBearers().map((record) => record.id)).toEqual(['kept']);
     } finally {
-      encrypt.mockRestore()
+      encrypt.mockRestore();
     }
-  })
+  });
 
   it('rejects a failed storage write without changing persisted state', async () => {
-    const key = await deriveBearerAesKey(LINKING_KEY)
-    const kept = bearerFixture({id: 'kept'})
-    await persistBearer(key, kept)
-    const before = localStorage.getItem('sattle_bearers')
+    stubPassthroughLocks();
+    const key = await deriveBearerAesKey(LINKING_KEY);
+    const kept = bearerFixture({ id: 'kept' });
+    await persistBearer(key, kept);
+    const before = localStorage.getItem(FUNDS_STORAGE_KEY);
     const write = vi.spyOn(localStorage, 'setItem').mockImplementation(() => {
-      throw new Error('QuotaExceededError')
-    })
-    vi.stubGlobal('navigator', {})
+      throw new Error('QuotaExceededError');
+    });
 
     try {
       await expect(
@@ -148,42 +160,43 @@ describe('applyBearerChangeset', () => {
           add: [newBearerFixture()],
           markSpent: ['kept'],
         }),
-      ).rejects.toThrow('QuotaExceededError')
-      expect(localStorage.getItem('sattle_bearers')).toBe(before)
+      ).rejects.toThrow('QuotaExceededError');
+      expect(localStorage.getItem(FUNDS_STORAGE_KEY)).toBe(before);
     } finally {
-      write.mockRestore()
-      vi.unstubAllGlobals()
+      write.mockRestore();
+      vi.unstubAllGlobals();
     }
-  })
+  });
 
   it('deduplicates repeated spent ids into one stored replacement', async () => {
-    const key = await deriveBearerAesKey(LINKING_KEY)
-    const bearer = bearerFixture({id: 'duplicate'})
-    await persistBearer(key, bearer)
+    stubPassthroughLocks();
+    const key = await deriveBearerAesKey(LINKING_KEY);
+    const bearer = bearerFixture({ id: 'duplicate' });
+    await persistBearer(key, bearer);
 
     const result = await applyBearerChangeset(key, [bearer], {
       add: [],
       markSpent: ['duplicate', 'duplicate'],
-    })
+    });
 
-    expect(readEncryptedBearers().filter((record) => record.id === 'duplicate')).toHaveLength(1)
-    expect(result[0]?.spent).toBe(true)
-    expect((await loadBearers(key))[0]?.spent).toBe(true)
-  })
+    expect(readEncryptedBearers().filter((record) => record.id === 'duplicate')).toHaveLength(1);
+    expect(result[0]?.spent).toBe(true);
+    expect((await loadBearers(key))[0]?.spent).toBe(true);
+  });
 
-  it('encrypts before locking and preserves a fresh unrelated record', async () => {
-    const key = await deriveBearerAesKey(LINKING_KEY)
-    const other = await deriveBearerAesKey(OTHER_KEY)
-    const mine = bearerFixture({id: 'mine'})
+  it('fresh-reads inside the lock and preserves a fresh unrelated record', async () => {
+    const key = await deriveBearerAesKey(LINKING_KEY);
+    const other = await deriveBearerAesKey(OTHER_KEY);
+    const mine = bearerFixture({ id: 'mine' });
     const foreign = bearerFixture({
       id: 'fresh-tab',
       url: buildNoteUrl('https://mint.example/w', K1_B, 9_000),
-    })
-    await persistBearer(key, mine)
-    const {id: foreignId, ...foreignPlain} = foreign
-    const foreignParts = await encryptRecord(other, foreignPlain)
-    const encrypted = vi.spyOn(crypto.subtle, 'encrypt')
-    const queue: {release: () => Promise<void>}[] = []
+    });
+    await persistBearer(key, mine);
+    const { id: foreignId, ...foreignPlain } = foreign;
+    const foreignParts = await encryptRecord(other, foreignPlain);
+    const encrypted = vi.spyOn(crypto.subtle, 'encrypt');
+    const queue: { release: () => Promise<void> }[] = [];
     vi.stubGlobal('navigator', {
       locks: {
         request: (_name: string, fn: () => unknown): Promise<unknown> =>
@@ -192,58 +205,59 @@ describe('applyBearerChangeset', () => {
               release: async () => {
                 await Promise.resolve(fn)
                   .then((callback) => callback())
-                  .then(resolve, reject)
+                  .then(resolve, reject);
               },
-            })
+            });
           }),
       },
-    })
+    });
 
     try {
       const commit = applyBearerChangeset(key, [mine], {
         add: [newBearerFixture()],
         markSpent: [],
-      })
-      await vi.waitFor(() => expect(queue).toHaveLength(1))
-      expect(encrypted).toHaveBeenCalledTimes(1)
-      localStorage.setItem(
-        'sattle_bearers',
-        JSON.stringify([...readEncryptedBearers(), {id: foreignId, ...foreignParts}]),
-      )
-      const pendingLock = queue.at(0)
-      if (pendingLock === undefined) throw new Error('Expected pending lock')
+      });
+      await vi.waitFor(() => expect(queue).toHaveLength(1));
+      // nothing is encrypted before the lock: the document is re-read fresh
+      // inside it, so a record another tab commits in the meantime survives
+      expect(encrypted).toHaveBeenCalledTimes(0);
+      const doc = readFundsDocument();
+      doc.bearers.push({ id: foreignId, ...foreignParts });
+      writeFundsDocument(doc);
+      const pendingLock = queue.at(0);
+      if (pendingLock === undefined) throw new Error('Expected pending lock');
 
-      await pendingLock.release()
-      const result = await commit
+      await pendingLock.release();
+      const result = await commit;
 
       expect(
         readEncryptedBearers()
           .map((record) => record.id)
           .sort(),
-      ).toEqual(['fresh-tab', 'mine', result[0]?.id].sort())
-      expect((await loadBearers(other)).map((bearer) => bearer.id)).toEqual(['fresh-tab'])
+      ).toEqual(['fresh-tab', 'mine', result[0]?.id].sort());
+      expect((await loadBearers(other)).map((bearer) => bearer.id)).toEqual(['fresh-tab']);
     } finally {
-      encrypted.mockRestore()
-      vi.unstubAllGlobals()
+      encrypted.mockRestore();
+      vi.unstubAllGlobals();
     }
-  })
+  });
 
   it('replaces corrupt JSON with the single committed changeset write', async () => {
-    const key = await deriveBearerAesKey(LINKING_KEY)
-    localStorage.setItem('sattle_bearers', 'not json {{{')
-    const writes = vi.spyOn(localStorage, 'setItem')
+    const key = await deriveBearerAesKey(LINKING_KEY);
+    localStorage.setItem(FUNDS_STORAGE_KEY, 'not json {{{');
+    const writes = vi.spyOn(localStorage, 'setItem');
 
     const result = await applyBearerChangeset(key, [], {
       add: [newBearerFixture()],
       markSpent: ['missing'],
-    })
+    });
 
-    expect(result).toHaveLength(1)
+    expect(result).toHaveLength(1);
     expect(
-      writes.mock.calls.filter(([storageKey]) => storageKey === 'sattle_bearers'),
-    ).toHaveLength(1)
+      writes.mock.calls.filter(([storageKey]) => storageKey === FUNDS_STORAGE_KEY),
+    ).toHaveLength(1);
     expect((await loadBearers(key)).map((bearer) => bearer.id)).toEqual(
       result.map((bearer) => bearer.id),
-    )
-  })
-})
+    );
+  });
+});

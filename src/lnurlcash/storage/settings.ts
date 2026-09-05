@@ -3,22 +3,22 @@
 // envelope: absent keys just mean "never set".
 
 export type WalletSettings = {
-  defaultMint?: string
+  defaultMint?: string;
   // nostr backup (see nostrBackup.ts): off unless the holder turns it on;
   // relays are only persisted once edited - absent means the UI's defaults
-  nostrBackupEnabled?: boolean
-  nostrBackupRelays?: string[]
-}
+  nostrBackupEnabled?: boolean;
+  nostrBackupRelays?: string[];
+};
 
-const SETTINGS_STORAGE_KEY = 'sattle_settings'
+const SETTINGS_STORAGE_KEY = 'sattle_settings';
 
 export const loadSettings = (): WalletSettings => {
-  const raw = localStorage.getItem(SETTINGS_STORAGE_KEY)
-  if (!raw) return {}
+  const raw = localStorage.getItem(SETTINGS_STORAGE_KEY);
+  if (!raw) return {};
   try {
-    const parsed: unknown = JSON.parse(raw)
-    if (typeof parsed !== 'object' || parsed === null) return {}
-    const s = parsed as Record<string, unknown>
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== 'object' || parsed === null) return {};
+    const s = parsed as Record<string, unknown>;
     return {
       defaultMint: typeof s.defaultMint === 'string' ? s.defaultMint : undefined,
       nostrBackupEnabled:
@@ -26,16 +26,16 @@ export const loadSettings = (): WalletSettings => {
       nostrBackupRelays: Array.isArray(s.nostrBackupRelays)
         ? s.nostrBackupRelays.filter((r): r is string => typeof r === 'string')
         : undefined,
-    }
+    };
   } catch {
-    return {}
+    return {};
   }
-}
+};
 
 export const persistSettings = (settings: WalletSettings): void => {
-  localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settings))
-}
+  localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settings));
+};
 
 export const clearSettings = (): void => {
-  localStorage.removeItem(SETTINGS_STORAGE_KEY)
-}
+  localStorage.removeItem(SETTINGS_STORAGE_KEY);
+};

@@ -2,9 +2,9 @@ import { computed, ref, watch } from 'vue';
 import { Notify } from 'quasar';
 
 import { writeClipboard } from '@/capabilities/clipboard';
-import { prepareMint, claimMintedNote } from '@/lnurlcash/ops';
+import { MintedNoteSpentError, prepareMint, claimMintedNote } from '@/lnurlcash/ops';
 import type { ClaimedNote, PreparedMint } from '@/lnurlcash/ops';
-import type { NewBearer } from '@/lnurlcash/types';
+import type { Bearer } from '@/lnurlcash/types';
 import { msatToSats, satsToMsat, floorMsatToSat, MSAT_PER_SAT } from '@/lnurlcash/units';
 import { mintAddressCacheInfo } from '@/lnurlcash/trustedMints';
 import { TrustedMintPostCommitError, useWalletStore } from '@/stores/wallet';
@@ -35,8 +35,10 @@ export const useReceiveLightningDialog = (
   const preparing = ref(false);
   const formError = ref('');
   const prepared = ref<PreparedMint | null>(null);
+  const stagedOutput = ref<Bearer | null>(null);
   const waiting = ref(false);
   const claimError = ref('');
+  const claimRetryable = ref(true);
   const receivedSats = ref(0);
   const receivedServer = ref('');
   const rotationWarning = ref('');
@@ -85,23 +87,21 @@ export const useReceiveLightningDialog = (
   const onClaimed = async (
     claimed: ClaimedNote,
     from: PreparedMint,
+    staged: Bearer,
     ownerFence: WalletOwnerFence,
   ): Promise<void> => {
     const server = from.server;
     const wasTrusted = mints.isTrusted(server);
-    const notes: NewBearer[] = claimed.possibleCopy
-      ? [claimed.note, claimed.possibleCopy]
-      : [claimed.note];
     let trustWarning = '';
     try {
-      await wallet.addBearers(notes, ownerFence);
+      await wallet.finalizeStagedMintOutput(staged.id, claimed.note, ownerFence);
     } catch (error) {
       if (!(error instanceof TrustedMintPostCommitError)) throw error;
       trustWarning = error.message;
     }
     receivedSats.value = displaySats(claimed.note.amount);
     receivedServer.value = server;
-    rotationWarning.value = claimed.rotationError ?? '';
+    rotationWarning.value = '';
     await activity.log(
       'mint',
       `Received ${receivedSats.value.toLocaleString()} sats from ${server} over Lightning.`,
@@ -130,23 +130,35 @@ export const useReceiveLightningDialog = (
     }
   };
   const beginClaim = (): void => {
-    if (!prepared.value || claimRun) return;
+    if (!prepared.value || !stagedOutput.value || claimRun) return;
     waiting.value = true;
     claimError.value = '';
+    claimRetryable.value = true;
     const current = prepared.value;
+    const staged = stagedOutput.value;
     claimRun = (async () => {
+      const fundOperation = wallet.beginFundOperation();
       try {
-        const ownerFence = wallet.captureOwnerFence();
+        const ownerFence = fundOperation.ownerFence;
         await onClaimed(
           await claimMintedNote(current, {}, { assertOwner: ownerFence }),
           current,
+          staged,
           ownerFence,
         );
       } catch (error) {
         if (!(error instanceof Error)) throw error;
+        if (error instanceof MintedNoteSpentError) {
+          await wallet.finalizeSpentStagedMintOutput(staged.id, fundOperation.ownerFence);
+          claimRetryable.value = false;
+          claimError.value = errorMessage(error);
+          Notify.create({ type: 'negative', message: claimError.value });
+          return;
+        }
         claimError.value = `${errorMessage(error)} The invoice stays valid — you can try again.`;
         Notify.create({ type: 'negative', message: errorMessage(error) });
       } finally {
+        fundOperation.complete();
         waiting.value = false;
       }
     })();
@@ -156,20 +168,26 @@ export const useReceiveLightningDialog = (
     if (!sats || preparing.value) return;
     preparing.value = true;
     formError.value = '';
+    let fundOperation: ReturnType<typeof wallet.beginFundOperation> | undefined;
     try {
       const input = mintChoice.value === CUSTOM_MINT ? customMint.value.trim() : mintChoice.value;
-      const next = await prepareMint(input, satsToMsat(sats));
-      // named mints claim through the wallet's own secret and may
-      // legitimately serve no verify URL; unnamed mints need one (the
-      // preimage it reveals IS the claim)
-      if (next.mode === 'unnamed' && !next.verifyUrl) {
-        formError.value =
-          'This mint does not support automatic claiming, so sattle cannot receive from it. Choose a different mint.';
-        return;
-      }
+      fundOperation = wallet.beginFundOperation();
+      const ownerFence = fundOperation.ownerFence;
+      let persisted: Bearer | undefined;
+      const next = await prepareMint(input, satsToMsat(sats), {
+        assertOwner: ownerFence,
+        allocateOutputSecrets: (server, count) =>
+          wallet.allocateOutputSecrets(server, count, ownerFence),
+        persistOutput: async (note) => {
+          [persisted] = await wallet.addBearers([note], ownerFence);
+        },
+      });
+      if (!persisted) throw new Error('The pending mint output was not persisted.');
+      stagedOutput.value = persisted;
       prepared.value = next;
       claimRun = null;
       claimError.value = '';
+      claimRetryable.value = true;
       step.value = 'invoice';
       beginClaim();
     } catch (error) {
@@ -177,6 +195,7 @@ export const useReceiveLightningDialog = (
       formError.value = errorMessage(error);
       Notify.create({ type: 'negative', message: formError.value });
     } finally {
+      fundOperation?.complete();
       preparing.value = false;
     }
   };
@@ -211,6 +230,7 @@ export const useReceiveLightningDialog = (
       preparing.value = false;
       formError.value = '';
       prepared.value = null;
+      stagedOutput.value = null;
       waiting.value = false;
       rotationWarning.value = '';
     },
@@ -219,6 +239,7 @@ export const useReceiveLightningDialog = (
     CUSTOM_MINT,
     amountSats,
     claimError,
+    claimRetryable,
     copyInvoice,
     createInvoice,
     customMint,

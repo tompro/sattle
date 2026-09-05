@@ -131,7 +131,7 @@ const lookForBackup = async (): Promise<void> => {
     looked.value = true;
     if (parts.notes || parts.mints || parts.settings) {
       found.value = {
-        notes: parts.notes?.length ?? 0,
+        notes: parts.notes?.bearers.length ?? 0,
         mints: parts.mints?.length ?? 0,
         settings: parts.settings !== undefined,
       };

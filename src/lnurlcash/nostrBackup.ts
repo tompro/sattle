@@ -25,18 +25,18 @@ export {
   buildBackupEvent,
   buildBackupEvents,
   parseBackupEvent,
-} from './nostr/events'
-export type {NostrEvent, BackupPart, BackupPartPayload, ParsedBackupEvent} from './nostr/events'
+} from './nostr/events';
+export type { NostrEvent, BackupPart, BackupPartPayload, ParsedBackupEvent } from './nostr/events';
 
-export type {BackupTransport, NostrFilter} from './nostr/transport'
+export type { BackupTransport, NostrFilter } from './nostr/transport';
 
-export {publishBackup, fetchBackup, restoreFromNostr} from './nostr/sync'
+export { publishBackup, fetchBackup, restoreFromNostr } from './nostr/sync';
 export type {
   PublishBackupOptions,
   PublishBackupResult,
   FetchBackupOptions,
   NostrRestoreResult,
-} from './nostr/sync'
+} from './nostr/sync';
 
-export {createBackupPublisher} from './nostr/publisher'
-export type {BackupPublisher, BackupPublisherOptions} from './nostr/publisher'
+export { createBackupPublisher } from './nostr/publisher';
+export type { BackupPublisher, BackupPublisherOptions } from './nostr/publisher';

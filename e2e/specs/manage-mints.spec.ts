@@ -38,6 +38,7 @@ const mockSuggestionMint = async (page: Page): Promise<void> => {
       callback: 'https://mint.600.wtf/pay',
       minSendable: 1000,
       maxSendable: 100_000_000_000,
+      commentAllowed: 64,
       withdrawLink: 'https://mint.600.wtf/note',
       metadata: '[]',
     }),
@@ -87,8 +88,8 @@ test.describe('Manage mints', () => {
   test('a mint with held notes cannot be removed', async ({ page, mint }) => {
     // hold a 21-sat note from the mock mint - holding funds locks the mint
     // against removal
-    await mint.mockNoteInfo({ amountMsat: 21_000, mintPubkey: MINT_PUBKEY });
-    await mint.mockRotateOk();
+    await mint.mockNoteInfo({ amountMsat: 21_000 });
+    await mint.mockMutationEndpoint();
     await createFreshWallet(page);
 
     await page.getByRole('button', { name: 'Receive' }).click();

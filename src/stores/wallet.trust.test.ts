@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { deriveBearerAesKey } from '@/lnurlcash/keys';
 import { loadBearers } from '@/lnurlcash/storage';
+import { FUNDS_STORAGE_KEY } from '@/lnurlcash/storage/bearers';
 import { stubLocalStorage } from '@/lnurlcash/test-utils';
 import type { NewBearer } from '@/lnurlcash/types';
 import { TrustedMintPostCommitError, useWalletStore } from './wallet';
@@ -21,6 +22,14 @@ const NOTE: NewBearer = {
 type LockRequest = {
   readonly callback: () => unknown;
   readonly resolve: (value: unknown) => void;
+};
+
+// fund mutations require Web Locks; tests that don't care about lock timing
+// install a present-but-non-serializing fake
+const stubPassthroughLocks = (): void => {
+  vi.stubGlobal('navigator', {
+    locks: { request: (_name: string, fn: () => unknown) => Promise.resolve().then(fn) },
+  });
 };
 
 class DeferredLocks {
@@ -46,7 +55,7 @@ beforeEach(() => {
 
 describe('bearer commit trust side effect', () => {
   it('commits a combined addition and spent marker in one bearer write', async () => {
-    vi.stubGlobal('navigator', {});
+    stubPassthroughLocks();
     const storage = stubLocalStorage();
     const wallet = useWalletStore();
     await wallet.create();
@@ -64,13 +73,13 @@ describe('bearer commit trust side effect', () => {
       ownerFence,
     ]);
 
-    expect(writes.mock.calls.filter(([key]) => key === 'sattle_bearers')).toHaveLength(1);
+    expect(writes.mock.calls.filter(([key]) => key === FUNDS_STORAGE_KEY)).toHaveLength(1);
     expect(wallet.bearers).toHaveLength(2);
     expect(wallet.bearers.find(({ id }) => id === existing.id)?.spent).toBe(true);
   });
 
   it('keeps an atomic changeset committed when trust convergence fails afterward', async () => {
-    vi.stubGlobal('navigator', {});
+    stubPassthroughLocks();
     const storage = stubLocalStorage();
     const wallet = useWalletStore();
     await wallet.create();
@@ -119,7 +128,7 @@ describe('bearer commit trust side effect', () => {
   });
 
   it('reports trust failure as post-commit while preserving durable funds', async () => {
-    vi.stubGlobal('navigator', {});
+    stubPassthroughLocks();
     const storage = stubLocalStorage();
     const wallet = useWalletStore();
     await wallet.create();

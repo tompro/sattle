@@ -13,16 +13,16 @@
 // - a kind 13194 replaceable info event advertises the supported methods
 //   and encryption schemes
 
-import type {Event as NostrEvent} from 'nostr-tools/core'
-import {finalizeEvent, verifyEvent} from 'nostr-tools/pure'
-import {encrypt as nip04Encrypt, decrypt as nip04Decrypt} from 'nostr-tools/nip04'
-import {v2 as nip44v2} from 'nostr-tools/nip44'
+import type { Event as NostrEvent } from 'nostr-tools/core';
+import { finalizeEvent, verifyEvent } from 'nostr-tools/pure';
+import { encrypt as nip04Encrypt, decrypt as nip04Decrypt } from 'nostr-tools/nip04';
+import { v2 as nip44v2 } from 'nostr-tools/nip44';
 
-export type {NostrEvent}
+export type { NostrEvent };
 
-export const NWC_REQUEST_KIND = 23194
-export const NWC_RESPONSE_KIND = 23195
-export const NWC_INFO_KIND = 13194
+export const NWC_REQUEST_KIND = 23194;
+export const NWC_RESPONSE_KIND = 23195;
+export const NWC_INFO_KIND = 13194;
 
 export const NWC_METHODS = [
   'get_info',
@@ -30,9 +30,9 @@ export const NWC_METHODS = [
   'make_invoice',
   'pay_invoice',
   'lookup_invoice',
-] as const
+] as const;
 
-export type NwcMethod = (typeof NWC_METHODS)[number]
+export type NwcMethod = (typeof NWC_METHODS)[number];
 
 export type NwcErrorCode =
   | 'RATE_LIMITED'
@@ -45,38 +45,38 @@ export type NwcErrorCode =
   | 'UNSUPPORTED_ENCRYPTION'
   | 'PAYMENT_FAILED'
   | 'NOT_FOUND'
-  | 'OTHER'
+  | 'OTHER';
 
 export type NwcRequest = {
-  method: string
-  params: Record<string, unknown>
-}
+  method: string;
+  params: Record<string, unknown>;
+};
 
 export type NwcResponse = {
-  result_type: string
-  error: {code: NwcErrorCode; message: string} | null
-  result: unknown
-}
+  result_type: string;
+  error: { code: NwcErrorCode; message: string } | null;
+  result: unknown;
+};
 
 export const okResult = (method: string, result: unknown): NwcResponse => ({
   result_type: method,
   error: null,
   result,
-})
+});
 
 export const errResult = (method: string, code: NwcErrorCode, message: string): NwcResponse => ({
   result_type: method,
-  error: {code, message},
+  error: { code, message },
   result: null,
-})
+});
 
 // the two encryption schemes this service speaks; the scheme of a request
 // decides the scheme of its response (NIP-47: "Encrypted using the scheme
 // requested by the client")
-export type NwcEncryption = 'nip44_v2' | 'nip04'
+export type NwcEncryption = 'nip44_v2' | 'nip04';
 
 const conversationKey = (walletSecretKey: Uint8Array, clientPubkey: string): Uint8Array =>
-  nip44v2.utils.getConversationKey(walletSecretKey, clientPubkey)
+  nip44v2.utils.getConversationKey(walletSecretKey, clientPubkey);
 
 export const encryptFor = (
   scheme: NwcEncryption,
@@ -86,7 +86,7 @@ export const encryptFor = (
 ): string =>
   scheme === 'nip44_v2'
     ? nip44v2.encrypt(plaintext, conversationKey(walletSecretKey, clientPubkey))
-    : nip04Encrypt(walletSecretKey, clientPubkey, plaintext)
+    : nip04Encrypt(walletSecretKey, clientPubkey, plaintext);
 
 const decryptFrom = (
   scheme: NwcEncryption,
@@ -96,10 +96,10 @@ const decryptFrom = (
 ): string =>
   scheme === 'nip44_v2'
     ? nip44v2.decrypt(content, conversationKey(walletSecretKey, clientPubkey))
-    : nip04Decrypt(walletSecretKey, clientPubkey, content)
+    : nip04Decrypt(walletSecretKey, clientPubkey, content);
 
 const tagValue = (event: NostrEvent, name: string): string | undefined =>
-  event.tags.find((t) => t[0] === name)?.[1]
+  event.tags.find((t) => t[0] === name)?.[1];
 
 // The outcome of validating + decrypting a candidate request event:
 // - a request to dispatch (encryption scheme carried so the response can
@@ -112,8 +112,8 @@ const tagValue = (event: NostrEvent, name: string): string | undefined =>
 //   dropped silently, exactly what a relay full of strangers' traffic
 //   demands
 export type DecryptedNwcRequest =
-  | {respond: false; request: NwcRequest; encryption: NwcEncryption}
-  | {respond: true; response: NwcResponse; encryption: NwcEncryption}
+  | { respond: false; request: NwcRequest; encryption: NwcEncryption }
+  | { respond: true; response: NwcResponse; encryption: NwcEncryption };
 
 export const decryptRequest = (
   walletSecretKey: Uint8Array,
@@ -122,24 +122,24 @@ export const decryptRequest = (
   event: NostrEvent,
   nowSeconds: number = Math.floor(Date.now() / 1000),
 ): DecryptedNwcRequest | null => {
-  if (event.kind !== NWC_REQUEST_KIND) return null
+  if (event.kind !== NWC_REQUEST_KIND) return null;
   // only the authorized client may talk to this connection, and the
   // request must actually be addressed to it
-  if (event.pubkey !== clientPubkey) return null
-  if (tagValue(event, 'p') !== walletServicePubkey) return null
-  if (!verifyEvent(event)) return null
+  if (event.pubkey !== clientPubkey) return null;
+  if (tagValue(event, 'p') !== walletServicePubkey) return null;
+  if (!verifyEvent(event)) return null;
   // an expired request is ignored, never answered (NIP-47)
-  const expiration = tagValue(event, 'expiration')
+  const expiration = tagValue(event, 'expiration');
   if (expiration !== undefined && Number(expiration) < nowSeconds) {
-    return null
+    return null;
   }
   // encryption negotiation: no tag means legacy NIP-04 (NIP-47)
-  const advertised = tagValue(event, 'encryption')
-  let encryption: NwcEncryption
+  const advertised = tagValue(event, 'encryption');
+  let encryption: NwcEncryption;
   if (advertised === undefined || advertised === 'nip04') {
-    encryption = 'nip04'
+    encryption = 'nip04';
   } else if (advertised === 'nip44_v2') {
-    encryption = 'nip44_v2'
+    encryption = 'nip44_v2';
   } else {
     // the client asked for a scheme we don't speak - answer in the
     // legacy default, the one scheme every NIP-47 client must read
@@ -151,24 +151,24 @@ export const decryptRequest = (
         'UNSUPPORTED_ENCRYPTION',
         `Unsupported encryption scheme: ${advertised}.`,
       ),
-    }
+    };
   }
-  let plaintext: string
+  let plaintext: string;
   try {
-    plaintext = decryptFrom(encryption, walletSecretKey, clientPubkey, event.content)
+    plaintext = decryptFrom(encryption, walletSecretKey, clientPubkey, event.content);
   } catch {
     // undecryptable - indistinguishable from relay noise; stay silent
-    return null
+    return null;
   }
-  let data: unknown
+  let data: unknown;
   try {
-    data = JSON.parse(plaintext)
+    data = JSON.parse(plaintext);
   } catch {
     return {
       respond: true,
       encryption,
       response: errResult('', 'OTHER', 'The request is not valid JSON.'),
-    }
+    };
   }
   if (
     typeof data !== 'object' ||
@@ -180,12 +180,13 @@ export const decryptRequest = (
       respond: true,
       encryption,
       response: errResult('', 'OTHER', 'The request has no method.'),
-    }
+    };
   }
-  const request = data as NwcRequest
-  const params = typeof request.params === 'object' && request.params !== null ? request.params : {}
-  return {respond: false, request: {method: request.method, params}, encryption}
-}
+  const request = data as NwcRequest;
+  const params =
+    typeof request.params === 'object' && request.params !== null ? request.params : {};
+  return { respond: false, request: { method: request.method, params }, encryption };
+};
 
 // signs the kind-23195 answer to a request, mirroring its encryption
 // scheme and referencing it via the 'e' tag
@@ -209,7 +210,7 @@ export const buildResponseEvent = (
       content: encryptFor(encryption, walletSecretKey, clientPubkey, JSON.stringify(response)),
     },
     walletSecretKey,
-  )
+  );
 
 // the replaceable info event advertising this service's capabilities
 export const buildInfoEvent = (
@@ -224,4 +225,4 @@ export const buildInfoEvent = (
       content: NWC_METHODS.join(' '),
     },
     walletSecretKey,
-  )
+  );

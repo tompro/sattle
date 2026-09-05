@@ -5,7 +5,6 @@ import { MINT_ORIGIN, NOTE_PATH } from '../helpers/MintMocker';
 import { createFreshWallet } from '../helpers/wallet';
 
 const AMOUNT_MSAT = 21_000; // 21 sats
-const MINT_PUBKEY = `02${'aa'.repeat(32)}`;
 
 // a syntactically valid bearer note against the mock mint - the k1 is a
 // fresh random secret, so every test redeems a distinct note
@@ -26,7 +25,7 @@ const redeemNote = async (page: Page, noteUrl: string): Promise<void> => {
 test.describe('Receive bearer note', () => {
   test('redeeming a valid note updates the balance', async ({ page, mint }) => {
     await mint.mockNoteInfo({ amountMsat: AMOUNT_MSAT });
-    await mint.mockRotateOk();
+    await mint.mockMutationEndpoint();
     await createFreshWallet(page);
 
     const dialog = page.locator('.q-dialog', { hasText: 'Receive bearer note' });
@@ -38,6 +37,18 @@ test.describe('Receive bearer note', () => {
     // were really consumed (the kit bug this guards against silently fell
     // back to the declared amount without any request)
     await expect(dialog.locator('.q-banner')).toHaveCount(0);
+    // the mint signed the rotation's output (LUD-25) - the wallet's
+    // requireSignatures policy accepted a signed answer, not a rescue
+    expect(
+      mint.signaturesIssued.some(
+        (entry) => entry.origin === MINT_ORIGIN && entry.amountMsat === AMOUNT_MSAT,
+      ),
+    ).toBe(true);
+
+    // the note advertised the mint's key, so the first-contact trust prompt
+    // opened - dismiss it, then close the success screen
+    const trustDialog = page.locator('.q-dialog', { hasText: 'New mint' });
+    await trustDialog.getByRole('button', { name: 'Just this once' }).click();
     await dialog.getByRole('button', { name: 'Done' }).click();
     await expect(page.locator('.balance-card .text-h2')).toHaveText('21');
   });
@@ -64,8 +75,8 @@ test.describe('Receive bearer note', () => {
     page,
     mint,
   }) => {
-    await mint.mockNoteInfo({ amountMsat: AMOUNT_MSAT, mintPubkey: MINT_PUBKEY });
-    await mint.mockRotateOk();
+    await mint.mockNoteInfo({ amountMsat: AMOUNT_MSAT });
+    await mint.mockMutationEndpoint();
     await createFreshWallet(page);
     const receiveDialog = page.locator('.q-dialog', { hasText: 'Receive bearer note' });
     await redeemNote(page, freshNoteUrl());
@@ -87,8 +98,8 @@ test.describe('Receive bearer note', () => {
     page,
     mint,
   }) => {
-    await mint.mockNoteInfo({ amountMsat: AMOUNT_MSAT, mintPubkey: MINT_PUBKEY });
-    await mint.mockRotateOk();
+    await mint.mockNoteInfo({ amountMsat: AMOUNT_MSAT });
+    await mint.mockMutationEndpoint();
     await createFreshWallet(page);
     await page.evaluate(() => {
       localStorage.setItem('sattle_trusted_mints', '{"version":1,"ownerId":"malformed"}');

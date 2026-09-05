@@ -249,7 +249,7 @@ const doEnableBiometric = async () => {
   biometricBusy.value = true;
   banner.value = '';
   try {
-    await enableBiometricUnlock(wallet.requireLinkingKey());
+    await enableBiometricUnlock(wallet.requireWalletMaterial());
     biometricEnrolled.value = true;
     toast('positive', 'Biometric unlock enabled.');
   } catch (err) {
@@ -289,7 +289,7 @@ const doRegister = async () => {
   banner.value = '';
   try {
     const name = registerName.value.trim();
-    await registerPasskey(wallet.requireLinkingKey(), name ? { name } : {});
+    await registerPasskey(wallet.requireWalletMaterial(), name ? { name } : {});
     slots.value = readPasskeySlots();
     registering.value = false;
     toast('positive', 'Passkey added.');
