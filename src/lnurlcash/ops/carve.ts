@@ -2,31 +2,37 @@
 // and/or splitting as needed, into a single fresh note worth exactly the
 // target - the operation every send and every melt starts from.
 //
-// A carve whose mutation landed reports itself through options.onCarve
-// BEFORE returning, so a caller about to do something slow (a settlement
-// wait) can durably commit first - a flow aborted mid-wait must never
-// leave burned inputs looking spendable or strand the fresh outputs.
+// Every output secret is chosen and reported through options.onCarve BEFORE
+// its hash reaches the mint. That first checkpoint stages possible outputs
+// without retiring inputs; a second checkpoint retires the inputs only after
+// the mutation is known to have landed.
 
 import {
   AmbiguousMutationError,
-  mergeNotes,
+  defaultRandomSecret,
+  mergeBatches,
   newSecretsOf,
   noteK1,
   probeBurnedNote,
   requireNoteK1,
   serverOf,
-  settleNote,
   splitNote,
   withNewK1,
 } from 'lnurlcash-kit'
 import type {Bearer, NewBearer} from '../types'
+import {mergeAmbiguitySafe} from './carveRecovery'
 import type {FundOperationOptions} from './shared'
-import {assertFundOwner, probeMutationOutput, UncertainOutcomeError} from './shared'
+import {
+  assertFundOwner,
+  landedNoteVerifies,
+  probeMutationOutput,
+  UncertainOutcomeError,
+  withMutationSafety,
+} from './shared'
 
-// the changeset stores apply after a mutation: `note`/`change` BEFORE
-// `consumed` - the mint call already burned every consumed input
-// server-side, so the outputs are the only money left and must be tracked
-// first; a crash between the two must strand a duplicate, never a secret
+// The same shape serves both checkpoint phases: the pre-wire phase carries
+// note/change with an empty consumed list, and the landed phase carries the
+// already-staged note plus the inputs the caller can now retire.
 export type CarveResult = {
   // the exact-amount note, ready to hand over or melt
   note: NewBearer
@@ -35,6 +41,22 @@ export type CarveResult = {
   // the input notes burned server-side by the carve (empty when a single
   // note already held exactly the target amount)
   consumed: Bearer[]
+}
+
+export class UnsupportedMultiBatchMergeError extends Error {
+  override readonly name = 'UnsupportedMultiBatchMergeError'
+
+  constructor() {
+    super('This carve would require multiple merge requests and cannot be performed safely.')
+  }
+}
+
+export class CarveCheckpointRequiredError extends Error {
+  override readonly name = 'CarveCheckpointRequiredError'
+
+  constructor() {
+    super('A mutating carve requires a durable onCarve checkpoint.')
+  }
 }
 
 // Selection: only notes that can actually take part - verified (callback
@@ -46,12 +68,12 @@ export type CarveResult = {
 //
 // Execution, mirroring lnurl-wallet's SendDialog:
 // - one note already exact: returned as-is, nothing burned
-// - several notes summing exactly: one merge, then settle (reads the true
-//   post-fee value back and rotates, since the read put k1 on the wire)
+// - several notes summing exactly: one merge; folds spanning multiple
+//   requests are rejected because partial progress needs a larger journal
 // - total above target (one or many notes): a single split request (LUD-25
-//   split takes many k1s - no merge round trip first), then the change is
-//   settled for its true value; the target part carries the mint's
-//   signature and needs no settle
+//   split takes many k1s - no merge round trip first); change stays
+//   unverified until refresh because a second settle mutation would create
+//   another crash window
 export const ensureExactAmount = async (
   bearers: Bearer[],
   amountMsat: number,
@@ -60,8 +82,11 @@ export const ensureExactAmount = async (
   if (!Number.isInteger(amountMsat) || amountMsat <= 0) {
     throw new Error('Amount must be a positive whole number of msat.')
   }
+  // the forced mutation policy (signatures required, one byte-identical
+  // replay) applies to every mint call below regardless of caller options
+  const mutationOptions = withMutationSafety(options)
   const eligible = bearers.filter(
-    (b) => !b.spent && b.callback !== '' && !b.deviceId && noteK1(b.url),
+    (b) => b.verified && !b.spent && b.callback !== '' && !b.deviceId && noteK1(b.url),
   )
   // per-server greedy pick: smallest notes first until the target is
   // covered (an exact single-note match short-circuits - no mutation at
@@ -86,13 +111,17 @@ export const ensureExactAmount = async (
   const total = pick.reduce((sum, b) => sum + b.amount, 0)
   const k1s = pick.map((b) => requireNoteK1(b.url))
 
-  // a carve that burned inputs reports itself the moment its outcome is
-  // known, before the caller's flow moves on to anything slow or
-  // uncertain - see FundOperationOptions.onCarve
-  const checkpoint = async (result: CarveResult): Promise<CarveResult> => {
-    await options.onCarve?.(result)
-    return result
+  const checkpoint = async (result: CarveResult): Promise<void> => {
+    if (!options.onCarve) {
+      throw new CarveCheckpointRequiredError()
+    }
+    assertFundOwner(options)
+    await options.onCarve(result)
+    assertFundOwner(options)
   }
+  const stage = (result: CarveResult): Promise<void> =>
+    checkpoint({...result, consumed: []})
+  const retire = (note: NewBearer): Promise<void> => checkpoint({note, consumed: pick})
 
   if (pick.length === 1 && total === amountMsat) {
     // already exact - hand over the note itself, untouched
@@ -109,94 +138,94 @@ export const ensureExactAmount = async (
   }
 
   if (total === amountMsat) {
-    // merge path: many notes, exact sum - merge into one, then settle it
-    // (true value + fresh secret; a failed settle leaves an unverified
-    // note a refresh can repair, not a lost secret)
-    assertFundOwner(options)
-    const merged = await mergeAmbiguitySafe(base, k1s, total, options)
-    const unverified: NewBearer = {
-      url: withNewK1(base.url, merged.k1, total, merged.signature),
+    if (mergeBatches(base.callback, k1s).length !== 1) {
+      throw new UnsupportedMultiBatchMergeError()
+    }
+    const mergeSecret = (options.randomSecret ?? defaultRandomSecret)()
+    const staged: NewBearer = {
+      url: withNewK1(base.url, mergeSecret, total),
       callback: base.callback,
       amount: total,
       verified: false,
       mintPubkey: base.mintPubkey,
     }
-    // a merge whose answer was lost leaves the service in an unknown
-    // state from here - settling fires another mutation (the rotate
-    // inside settleNote) at it, whose own ambiguous failure would strand
-    // the rescued secret. Don't compound: return unverified and let a
-    // refresh repair.
-    if (merged.rescued) return checkpoint({note: unverified, consumed: pick})
-    try {
-      const settled = await settleNote(base.url, merged.k1, total, merged.signature, options)
-      return checkpoint({
-        note: {
-          url: withNewK1(base.url, settled.k1, settled.amountMsat, settled.signature),
-          callback: settled.callback,
-          amount: settled.amountMsat,
-          verified: true,
-          mintPubkey: base.mintPubkey,
-        },
-        consumed: pick,
-      })
-    } catch {
-      return checkpoint({note: unverified, consumed: pick})
-    }
+    await stage({note: staged, consumed: pick})
+    assertFundOwner(options)
+    const merged = await mergeAmbiguitySafe(base, k1s, {
+      ...mutationOptions,
+      randomSecret: () => mergeSecret,
+    })
+    // a landed merge reports its signature (carried in the URL's sig param)
+    // and earns verified only when that signature checks against a trusted
+    // current or previous key; a rescued merge saw no answer, so its note
+    // stays exactly as staged - unverified, same URL
+    const landedUrl = withNewK1(base.url, mergeSecret, total, merged.signature)
+    const result: CarveResult = merged.rescued
+      ? {note: staged, consumed: pick}
+      : {
+          note: {
+            ...staged,
+            url: landedUrl,
+            verified: landedNoteVerifies(landedUrl, options.mintSignatureKeys),
+          },
+          consumed: pick,
+        }
+    await retire(result.note)
+    return result
   }
 
   // split path: total above target - one split request across all picked
   // k1s, carving the target off and leaving the change as a fresh note
-  let partK1: string
+  const randomSecret = options.randomSecret ?? defaultRandomSecret
+  const partK1 = randomSecret()
+  const changeK1 = randomSecret()
   let partSignature: string | undefined
-  let changeK1: string
   let changeSignature: string | undefined
-  let partVerified = false
-  // true when the split's answer was lost and the probe proved the burn -
-  // the carried secrets were rescued, but the service is in an unknown
-  // state, so the change is NOT settled (that would fire another mutation
-  // at it, whose own ambiguous failure would strand the rescued secret)
-  let rescued = false
+  const stagedNote: NewBearer = {
+    url: withNewK1(base.url, partK1, amountMsat),
+    callback: base.callback,
+    amount: amountMsat,
+    verified: false,
+    mintPubkey: base.mintPubkey,
+  }
+  const stagedChange: NewBearer = {
+    url: withNewK1(base.url, changeK1, total - amountMsat),
+    callback: base.callback,
+    amount: total - amountMsat,
+    verified: false,
+    mintPubkey: base.mintPubkey,
+  }
+  await stage({note: stagedNote, change: stagedChange, consumed: pick})
+  let secretIndex = 0
+  const preparedSecret = (): string => {
+    secretIndex += 1
+    if (secretIndex === 1) return partK1
+    if (secretIndex === 2) return changeK1
+    throw new Error('The split requested more output secrets than were staged.')
+  }
   assertFundOwner(options)
   try {
-    const parts = await splitNote(base.callback, k1s, amountMsat, options)
-    partK1 = parts.k1
+    const parts = await splitNote(base.callback, k1s, amountMsat, {
+      ...mutationOptions,
+      randomSecret: preparedSecret,
+    })
     partSignature = parts.signature
-    changeK1 = parts.change
     changeSignature = parts.changeSignature
-    partVerified = true
   } catch (err) {
     if (err instanceof AmbiguousMutationError) {
       // the split request may have landed despite the failure - probe one
       // input before deciding what the carried secrets are worth
-      const outcome = await probeBurnedNote(base.url, options)
+      const outcome = await probeBurnedNote(base.url, mutationOptions)
       if (outcome === 'live') throw err // nothing burned - a plain failure
       if (outcome === 'unknown') {
         // can't tell: surface both possible outputs unverified WITHOUT
         // consuming the inputs, and stop here rather than spend from limbo
         throw new UncertainOutcomeError(
-          'The split may have gone through but could not be confirmed - the possible outputs must be tracked unverified alongside the originals until refreshed.',
-          [
-            {
-              url: withNewK1(base.url, err.newSecrets[0], amountMsat),
-              callback: base.callback,
-              amount: amountMsat,
-              verified: false,
-              mintPubkey: base.mintPubkey,
-            },
-            {
-              url: withNewK1(base.url, err.newSecrets[1], total - amountMsat),
-              callback: base.callback,
-              amount: total - amountMsat,
-              verified: false,
-              mintPubkey: base.mintPubkey,
-            },
-          ],
+          'The split may have gone through but could not be confirmed - its possible outputs were already staged unverified alongside the originals.',
+          [],
         )
       }
       // 'gone': the burn landed - the carried secrets are the only money
-      partK1 = err.newSecrets[0]
-      changeK1 = err.newSecrets[1]
-      rescued = true
     } else {
       // A classified refusal can still be a LANDED split: the callback is
       // a GET and HTTP stacks retry GETs, so the service may have executed
@@ -205,79 +234,53 @@ export const ensureExactAmount = async (
       // one output before deciding they are worthless.
       const carried = newSecretsOf(err)
       if (carried.length !== 2) throw err
-      const outcome = await probeMutationOutput(base.url, carried[0], options)
+      const outcome = await probeMutationOutput(base.url, carried[0], mutationOptions)
       if (outcome === 'absent') throw err // never landed - a plain refusal
       if (outcome === 'unknown') {
         // can't tell whether the refusal named a retry - same limbo as
         // the ambiguous case above: track the possible outputs, consume
         // nothing, stop here
         throw new UncertainOutcomeError(
-          'The split was refused, but the refusal may have named a retry of a split that already landed - the possible outputs must be tracked unverified alongside the originals until refreshed.',
-          [
-            {
-              url: withNewK1(base.url, carried[0], amountMsat),
-              callback: base.callback,
-              amount: amountMsat,
-              verified: false,
-              mintPubkey: base.mintPubkey,
-            },
-            {
-              url: withNewK1(base.url, carried[1], total - amountMsat),
-              callback: base.callback,
-              amount: total - amountMsat,
-              verified: false,
-              mintPubkey: base.mintPubkey,
-            },
-          ],
+          'The split was refused, but the refusal may have named a retry that already landed - its possible outputs were already staged unverified alongside the originals.',
+          [],
         )
       }
       // 'live': the split landed and this answer was its retried twin -
       // the carried secrets are the only money left
-      partK1 = carried[0]
-      changeK1 = carried[1]
-      rescued = true
     }
   }
+  // the landed answer's signatures ride in the URLs (sig param); a rescued
+  // split saw no answer, so its notes keep the staged sig-less URLs. Only a
+  // signature that verifies against a trusted current/previous key earns
+  // verified:true - anything else stays staged unverified for a refresh.
+  const noteUrl =
+    partSignature === undefined
+      ? stagedNote.url
+      : withNewK1(base.url, partK1, amountMsat, partSignature)
   const note: NewBearer = {
-    url: withNewK1(base.url, partK1, amountMsat, partSignature),
+    url: noteUrl,
     callback: base.callback,
     amount: amountMsat,
-    verified: partVerified,
+    verified: landedNoteVerifies(noteUrl, options.mintSignatureKeys),
     mintPubkey: base.mintPubkey,
   }
-  // settleNote: the change may be worth less than total - amount if this
-  // mint charges split fees (LUD-25 deducts them from change, never the
-  // split-off amount) - it comes back at its true value, or stays
-  // unverified at the naive pre-fee one for a refresh to repair
-  let change: NewBearer = {
-    url: withNewK1(base.url, changeK1, total - amountMsat, changeSignature),
+  // The change may be worth less than total - amount when the mint charges
+  // split fees. It remains unverified at that upper bound until refresh;
+  // settling it here would rotate to an unstaged secret in a second request.
+  const changeUrl =
+    changeSignature === undefined
+      ? stagedChange.url
+      : withNewK1(base.url, changeK1, total - amountMsat, changeSignature)
+  const change: NewBearer = {
+    url: changeUrl,
     callback: base.callback,
     amount: total - amountMsat,
     verified: false,
     mintPubkey: base.mintPubkey,
   }
-  if (!rescued) {
-    try {
-      const settled = await settleNote(
-        base.url,
-        changeK1,
-        total - amountMsat,
-        changeSignature,
-        options,
-      )
-      change = {
-        url: withNewK1(base.url, settled.k1, settled.amountMsat, settled.signature),
-        callback: settled.callback,
-        amount: settled.amountMsat,
-        verified: true,
-        mintPubkey: base.mintPubkey,
-      }
-    } catch (error) {
-      // settle is best-effort - the unverified change above is still tracked
-      if (!(error instanceof Error)) throw error
-    }
-  }
-  return checkpoint({note, change, consumed: pick})
+  const result = {note, change, consumed: pick}
+  await retire(note)
+  return result
 }
 
 // smallest-first accumulation until the target is covered; null when the
@@ -300,61 +303,4 @@ const better = (a: Bearer[], b: Bearer[], target: number): boolean => {
   const wasteB = sum(b) - target
   if (wasteA !== wasteB) return wasteA < wasteB
   return a.length < b.length
-}
-
-// merge with the full ambiguity protocol: probe one input, rescue the
-// carried secret only once the burn is confirmed, surface it unverified
-// when the probe can't tell either
-const mergeAmbiguitySafe = async (
-  base: Bearer,
-  k1s: string[],
-  total: number,
-  options: FundOperationOptions,
-): Promise<{k1: string; signature?: string; rescued: boolean}> => {
-  try {
-    const merged = await mergeNotes(base.callback, k1s, options)
-    return {k1: merged.k1, signature: merged.signature, rescued: false}
-  } catch (err) {
-    if (err instanceof AmbiguousMutationError) {
-      const outcome = await probeBurnedNote(base.url, options)
-      if (outcome === 'live') throw err // nothing burned - a plain failure
-      if (outcome === 'unknown') {
-        throw new UncertainOutcomeError(
-          'The merge may have gone through but could not be confirmed - the possible combined note must be tracked unverified alongside the originals until refreshed.',
-          [
-            {
-              url: withNewK1(base.url, err.newSecrets[0], total),
-              callback: base.callback,
-              amount: total,
-              verified: false,
-              mintPubkey: base.mintPubkey,
-            },
-          ],
-        )
-      }
-      // 'gone': the burn landed - the carried secret is the only money left
-      return {k1: err.newSecrets[0], rescued: true}
-    }
-    // same retry-refusal rescue as the split path: the refusal may name a
-    // merge that already landed - probe the would-be combined note
-    const carried = newSecretsOf(err)
-    if (carried.length !== 1) throw err
-    const outcome = await probeMutationOutput(base.url, carried[0], options)
-    if (outcome === 'absent') throw err
-    if (outcome === 'unknown') {
-      throw new UncertainOutcomeError(
-        'The merge was refused, but the refusal may have named a retry of a merge that already landed - the possible combined note must be tracked unverified alongside the originals until refreshed.',
-        [
-          {
-            url: withNewK1(base.url, carried[0], total),
-            callback: base.callback,
-            amount: total,
-            verified: false,
-            mintPubkey: base.mintPubkey,
-          },
-        ],
-      )
-    }
-    return {k1: carried[0], rescued: true}
-  }
 }

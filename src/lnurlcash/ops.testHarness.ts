@@ -24,6 +24,15 @@ afterEach(async () => {
 export const secret = (seed: string): string =>
   bytesToHex(sha256(hexToBytes('00'.repeat(31) + seed)))
 
+export const persistOutput = async (): Promise<void> => undefined
+
+// the trusted signing keys a production caller would serve from the
+// trusted-mint registry: the mock mint's current key plus any it retired
+export const signatureKeysFor =
+  (instance: Mint) =>
+  (): readonly string[] =>
+    [instance.state.pubkey, ...instance.state.previousPubkeys]
+
 export const noteUrl = (instance: Mint, k1: string, amountMsat?: number): string =>
   buildNoteUrl(`${instance.url}/w`, k1, amountMsat)
 

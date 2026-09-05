@@ -5,12 +5,9 @@
 // new/changed notes out - it never mutates wallet state itself.
 //
 // Fund-critical invariants enforced across the flows (see the project plan):
-// - rotate on every receive, and immediately after claiming a fresh mint
-//   from an UNNAMED mint (observer race: anyone who saw the unpaid invoice
-//   knows the payment hash, and the mint necessarily saw the preimage -
-//   the preimage IS the note secret). A NAMED mint (LUD-25 comment /
-//   mintToHash) credits the note to a wallet-chosen secret instead; that
-//   secret never rode an invoice, so no rotate follows its claim
+// - rotate every externally received bearer. Minted notes are staged at a
+//   wallet-chosen secret before invoice creation and claimed there without
+//   rotating; the payment preimage is not bearer material
 // - a note's declared amount is a claim; the service's maxWithdrawable is
 //   authoritative
 // - a melt's "OK" only means the payment is in flight; its verify URL (or
@@ -29,15 +26,29 @@
 //   ops/shared.ts        - bounded polling, UncertainOutcomeError
 
 export {UncertainOutcomeError} from './ops/shared'
-export type {PollOptions} from './ops/shared'
-export {ensureExactAmount} from './ops/carve'
+export type {FundOperationOptions, PollOptions} from './ops/shared'
+export {
+  CarveCheckpointRequiredError,
+  ensureExactAmount,
+  UnsupportedMultiBatchMergeError,
+} from './ops/carve'
 export type {CarveResult} from './ops/carve'
-export {prepareMint, claimMintedNote} from './ops/mint'
-export type {PreparedMint, ClaimedNote} from './ops/mint'
+export {
+  MintedNoteSpentError,
+  prepareMint,
+  claimMintedNote,
+  recoverStagedMintOutput,
+} from './ops/mint'
+export type {
+  PreparedMint,
+  PrepareMintOptions,
+  ClaimedNote,
+  StagedMintRecovery,
+} from './ops/mint'
 export {receiveBearer} from './ops/receiveBearer'
 export {payWithBearers} from './ops/pay'
 export type {PayOutcome, PayResult, PayOptions} from './ops/pay'
-export {transferBetweenMints} from './ops/transfer'
+export {recoverPendingTransferSource, transferBetweenMints} from './ops/transfer'
 export type {
   TransferClaimMaterial,
   TransferOptions,

@@ -17,7 +17,7 @@ import type {Bearer, NewBearer} from '../types'
 import {receiveNote, secureReceivedNote} from '../receive'
 import type {ClaimedNote} from './mint'
 import type {FundOperationOptions} from './shared'
-import {assertFundOwner, probeMutationOutput} from './shared'
+import {assertFundOwner, probeMutationOutput, withMutationSafety} from './shared'
 
 // NoteSpentError / NoteUnknownError / PendingNoteError from the service are
 // definitive and propagate; an unreachable service still yields the note,
@@ -27,13 +27,15 @@ export const receiveBearer = async (
   existing: Bearer[],
   options: FundOperationOptions = {},
 ): Promise<ClaimedNote> => {
+  // the forced mutation policy (see shared.ts) covers the rotate below
+  const mutationOptions = withMutationSafety(options)
   const note = await receiveNote(input, existing)
   if (!note.verified || !note.callback) {
     return {note, rotated: false}
   }
   try {
     assertFundOwner(options)
-    const rotatedUrl = await secureReceivedNote(note, options)
+    const rotatedUrl = await secureReceivedNote(note, mutationOptions)
     return {note: {...note, url: rotatedUrl}, rotated: true}
   } catch (err) {
     // A classified rotate refusal can still be a LANDED rotate: the
@@ -44,7 +46,7 @@ export const receiveBearer = async (
     // it before believing the refusal.
     const carried = newSecretsOf(err)
     if (carried.length === 1 && !(err instanceof AmbiguousMutationError)) {
-      const outcome = await probeMutationOutput(note.url, carried[0], options)
+      const outcome = await probeMutationOutput(note.url, carried[0], mutationOptions)
       if (outcome === 'live') {
         return {
           note: {...note, url: withNewK1(note.url, carried[0], note.amount)},
@@ -81,7 +83,7 @@ export const receiveBearer = async (
       throw err
     }
     if (err instanceof AmbiguousMutationError) {
-      const outcome = await probeBurnedNote(note.url, options)
+      const outcome = await probeBurnedNote(note.url, mutationOptions)
       if (outcome === 'gone') {
         return {
           note: {

@@ -2,15 +2,30 @@ import {describe, expect, it} from 'vitest'
 import {createMockMint} from 'lnurlcash-conformance/mock-mint'
 import {hashK1, noteK1} from 'lnurlcash-kit'
 
-import {transferBetweenMints} from './ops'
-import type {CarveResult} from './ops'
+import {transferBetweenMints as transferBetweenMintsEngine} from './ops'
+import type {CarveResult, TransferOptions} from './ops'
+import type {Bearer} from './types'
 import {requiredValue} from './test-utils'
-import {expectBurned, makeBearer, mint, secret, settleWhenRequested} from './ops.testHarness'
+import {
+  expectBurned,
+  makeBearer,
+  mint,
+  persistOutput,
+  secret,
+  settleWhenRequested,
+} from './ops.testHarness'
+
+const transferBetweenMints = (
+  bearers: Bearer[],
+  amountMsat: number,
+  targetMint: string,
+  options: Omit<TransferOptions, 'persistOutput'> = {},
+) => transferBetweenMintsEngine(bearers, amountMsat, targetMint, {...options, persistOutput})
 
 describe('transferBetweenMints', () => {
   const fastPoll = {intervalMs: 10, intervalCapMs: 50, maxWaitMs: 5_000}
 
-  it('moves value to another mint: melt at source, claim + rotate at target', async () => {
+  it('moves value to another mint at a wallet-chosen target secret', async () => {
     const source = await mint()
     const target = await mint({testHooks: true})
     const k1 = secret('40')
@@ -31,10 +46,9 @@ describe('transferBetweenMints', () => {
     expect(result.sourceServer).not.toBe(result.targetServer)
     await expectBurned(source, k1)
     const claimed = requiredValue(result.mintedAtTarget)
-    expect(claimed.rotated).toBe(true)
     expect(claimed.note.amount).toBe(21_000)
     expect(claimed.note.verified).toBe(true)
-    expect(target.state.noteState(preimage)).toBe('burned')
+    expect(target.state.noteState(preimage)).toBeNull()
     const newK1 = requiredValue(noteK1(claimed.note.url))
     expect(newK1).not.toBe(preimage)
     expect(target.state.noteState(newK1)).toBe('outstanding')
@@ -45,9 +59,15 @@ describe('transferBetweenMints', () => {
     const target = await mint()
     const k1 = secret('41')
     const bearer = await makeBearer(source, k1, 5_000)
+    let persisted = false
     await expect(
-      transferBetweenMints([bearer], 50_000, `mint@127.0.0.1:${target.port}`),
+      transferBetweenMintsEngine([bearer], 50_000, `mint@127.0.0.1:${target.port}`, {
+        persistOutput: () => {
+          persisted = true
+        },
+      }),
     ).rejects.toThrow(/enough/)
+    expect(persisted).toBe(false)
     expect(source.state.noteState(k1)).toBe('outstanding')
   })
 
@@ -72,6 +92,22 @@ describe('transferBetweenMints', () => {
     expect(source.state.noteState(k1)).toBe('outstanding')
   })
 
+  it('reports a definitively spent source before waiting on the target', async () => {
+    const source = await mint()
+    const target = await mint()
+    const k1 = secret('54')
+    const bearer = await makeBearer(source, k1, 21_000)
+    source.state.settleMelt(k1)
+
+    const result = await transferBetweenMints(
+      [bearer],
+      21_000,
+      `mint@127.0.0.1:${target.port}`,
+    )
+
+    expect(result.outcome).toBe('note-already-spent')
+  })
+
   it('recovers from a melt whose answer was lost once the target invoice settles', async () => {
     const source = await mint({unconfirmedMutation: true})
     const target = await mint({testHooks: true})
@@ -85,26 +121,6 @@ describe('transferBetweenMints', () => {
     expect(result.outcome).toBe('settled')
     await expectBurned(source, k1)
     expect(result.mintedAtTarget?.note.amount).toBe(21_000)
-    expect(result.mintedAtTarget?.rotated).toBe(true)
-  })
-
-  it('surfaces the claimable preimage note when the claim fails after a settled melt', async () => {
-    const source = await mint()
-    const target = await mint({testHooks: true, echoWrongK1: true})
-    const k1 = secret('45')
-    const bearer = await makeBearer(source, k1, 21_000)
-    const pending = transferBetweenMints([bearer], 21_000, `mint@127.0.0.1:${target.port}`, {
-      poll: fastPoll,
-    })
-    const preimage = await settleWhenRequested(target)
-    const result = await pending
-    expect(result.outcome).toBe('settled-claim-failed')
-    await expectBurned(source, k1)
-    const note = requiredValue(result.claimMaterial?.note)
-    expect(noteK1(note.url)).toBe(preimage)
-    expect(note.verified).toBe(false)
-    expect(note.amount).toBe(21_000)
-    expect(result.claimMaterial?.withdrawLink).toContain(`${target.port}`)
   })
 
   it('grosses the carve up for the target mint fee, refusing when only the net is covered', async () => {
@@ -140,9 +156,9 @@ describe('transferBetweenMints', () => {
     expect(rotatedNote.amount).toBe(21_000)
   })
 
-  it('moves value to a NAMED target: the note lands at the wallet secret, no rotate', async () => {
+  it('lands the target note at the staged wallet secret without rotating', async () => {
     const source = await mint()
-    const target = await mint({commentAllowed: 64, testHooks: true})
+    const target = await mint({testHooks: true})
     const k1 = secret('48')
     const bearer = await makeBearer(source, k1, 21_000)
     const pending = transferBetweenMints([bearer], 21_000, `mint@127.0.0.1:${target.port}`, {
@@ -153,7 +169,6 @@ describe('transferBetweenMints', () => {
     expect(result.outcome).toBe('settled')
     await expectBurned(source, k1)
     const claimed = requiredValue(result.mintedAtTarget)
-    expect(claimed.rotated).toBe(true)
     expect(claimed.note.amount).toBe(21_000)
     expect(claimed.note.verified).toBe(true)
     const newK1 = requiredValue(noteK1(claimed.note.url))
@@ -166,7 +181,7 @@ describe('transferBetweenMints', () => {
 
   it('keeps the named claim material when the target never credits the note', async () => {
     const source = await mint({meltNeverSettles: true})
-    const target = await mint({commentAllowed: 64, testHooks: true})
+    const target = await mint({testHooks: true})
     const k1 = secret('49')
     const bearer = await makeBearer(source, k1, 21_000)
     const pending = transferBetweenMints([bearer], 21_000, `mint@127.0.0.1:${target.port}`, {
@@ -190,36 +205,7 @@ describe('transferBetweenMints', () => {
     expect(noteK1(material.url)).toBe(noteSecret)
   })
 
-  it('rescues a named transfer through the preimage when the target credited it anyway', async () => {
-    const source = await mint()
-    // the mintToHashIgnoresH adversary: advertises naming, credits the
-    // payment hash - and (non-compliantly) still serves verify
-    const target = await mint({
-      commentAllowed: 64,
-      mintToHashIgnoresH: true,
-      verifyOnUnnamedMint: true,
-      testHooks: true,
-    })
-    const k1 = secret('50')
-    const bearer = await makeBearer(source, k1, 21_000)
-    const pending = transferBetweenMints([bearer], 21_000, `mint@127.0.0.1:${target.port}`, {
-      poll: {intervalMs: 10, intervalCapMs: 20, maxWaitMs: 400},
-    })
-    const preimage = await settleWhenRequested(target)
-    const result = await pending
-    expect(result.outcome).toBe('settled')
-    await expectBurned(source, k1)
-    const claimed = requiredValue(result.mintedAtTarget)
-    expect(claimed.rotated).toBe(true)
-    // claimed through the preimage path and rotated off it, because that
-    // preimage rode the invoice
-    expect(target.state.noteState(preimage)).toBe('burned')
-    const newK1 = requiredValue(noteK1(claimed.note.url))
-    expect(newK1).not.toBe(preimage)
-    expect(target.state.noteState(newK1)).toBe('outstanding')
-  })
-
-  it('fires onCarve after the carve landed and before the melt starts', async () => {
+  it('fires onCarve before the carve or melt reaches the mint', async () => {
     const source = await mint()
     const target = await mint({testHooks: true})
     const bearer = await makeBearer(source, secret('51'), 21_000)
@@ -228,16 +214,21 @@ describe('transferBetweenMints', () => {
       poll: fastPoll,
       onCarve: (carve) => {
         seen.push(carve)
-        // at hook time the melt must NOT have started: the carved note is
-        // still outstanding (a melt would leave it pending)
-        expect(source.state.noteState(requiredValue(noteK1(carve.note.url)))).toBe('outstanding')
+        if (carve.consumed.length === 0) {
+          expect(source.state.noteState(requiredValue(noteK1(carve.note.url)))).toBeNull()
+          expect(source.state.noteState(requiredValue(noteK1(bearer.url)))).toBe('outstanding')
+        } else {
+          expect(source.state.noteState(requiredValue(noteK1(carve.note.url)))).toBe('outstanding')
+          expect(source.state.noteState(requiredValue(noteK1(bearer.url)))).toBe('burned')
+        }
       },
     })
     await settleWhenRequested(target)
     const result = await pending
     expect(result.outcome).toBe('settled')
-    expect(seen).toHaveLength(1)
-    expect(seen[0]?.consumed.map((entry) => entry.id)).toEqual([bearer.id])
+    expect(seen).toHaveLength(2)
+    expect(seen[0]?.consumed).toEqual([])
+    expect(seen[1]?.consumed.map((entry) => entry.id)).toEqual([bearer.id])
   })
 
   it('aborts before the melt when the carve commit hook fails', async () => {
@@ -252,9 +243,25 @@ describe('transferBetweenMints', () => {
         },
       }),
     ).rejects.toThrow(/commit failed/)
-    // the split landed (the input is burned) but the melt never happened:
-    // nothing sits pending at the source, nothing was ever paid
-    expect(source.state.noteState(k1)).toBe('burned')
+    // The checkpoint failed before either split or melt reached the source.
+    expect(source.state.noteState(k1)).toBe('outstanding')
     expect([...source.state.notes.values()].every((note) => note.state !== 'pending')).toBe(true)
+  })
+
+  it('aborts before an exact-note melt when the final checkpoint fails', async () => {
+    const source = await mint()
+    const target = await mint()
+    const k1 = secret('53')
+    const bearer = await makeBearer(source, k1, 21_000)
+
+    await expect(
+      transferBetweenMints([bearer], 21_000, `mint@127.0.0.1:${target.port}`, {
+        onMeltReady: () => {
+          throw new Error('source link commit failed')
+        },
+      }),
+    ).rejects.toThrow(/source link commit failed/)
+
+    expect(source.state.noteState(k1)).toBe('outstanding')
   })
 })

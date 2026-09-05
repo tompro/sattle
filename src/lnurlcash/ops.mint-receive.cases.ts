@@ -10,33 +10,21 @@ import {
 
 import {claimMintedNote, prepareMint, receiveBearer} from './ops'
 import {requiredValue} from './test-utils'
-import {makeBearer, mint, noteUrl, secret, settleLastInvoice} from './ops.testHarness'
+import {
+  makeBearer,
+  mint,
+  noteUrl,
+  persistOutput,
+  secret,
+  settleLastInvoice,
+} from './ops.testHarness'
 
-describe('mint -> claim -> rotate', () => {
-  it('mints a note from a paid invoice and rotates it immediately', async () => {
-    const instance = await mint({testHooks: true})
-    const prepared = await prepareMint(`mint@127.0.0.1:${instance.port}`, 21_000)
-    expect(prepared.invoice).toMatch(/^lnbc/)
-    expect(prepared.verifyUrl).toBeTruthy()
-    expect(prepared.expectedNoteValueMsat).toBe(21_000)
-    const preimage = await settleLastInvoice(instance)
-    const claimed = await claimMintedNote(prepared, {
-      intervalMs: 10,
-      intervalCapMs: 50,
-      maxWaitMs: 5_000,
-    })
-    expect(claimed.rotated).toBe(true)
-    expect(claimed.note.amount).toBe(21_000)
-    expect(claimed.note.verified).toBe(true)
-    expect(instance.state.noteState(preimage)).toBe('burned')
-    const k1 = requiredValue(noteK1(claimed.note.url))
-    expect(k1).not.toBe(preimage)
-    expect(instance.state.noteState(k1)).toBe('outstanding')
-  })
-
+describe('mint fee', () => {
   it('grosses the invoice up for an advertised mint fee', async () => {
     const instance = await mint({testHooks: true, baseFeeMsat: 1_000, feePpm: 2_000})
-    const prepared = await prepareMint(`mint@127.0.0.1:${instance.port}`, 100_000)
+    const prepared = await prepareMint(`mint@127.0.0.1:${instance.port}`, 100_000, {
+      persistOutput,
+    })
     expect(prepared.grossMsat).toBeGreaterThan(100_000)
     await settleLastInvoice(instance)
     const claimed = await claimMintedNote(prepared, {
@@ -48,31 +36,6 @@ describe('mint -> claim -> rotate', () => {
     // from the gross, so the note nets between the asked value and the gross
     expect(claimed.note.amount).toBeGreaterThanOrEqual(99_000)
     expect(claimed.note.amount).toBeLessThanOrEqual(prepared.grossMsat)
-    expect(claimed.rotated).toBe(true)
-  })
-
-  it('refuses a verify response naming a different invoice', async () => {
-    const instance = await mint({testHooks: true})
-    const prepared = await prepareMint(`mint@127.0.0.1:${instance.port}`, 21_000)
-    await settleLastInvoice(instance)
-    // a verify answer that names any invoice but the requested one must
-    // stop the claim - the preimage it carries belongs to another payment
-    const other = `${prepared.invoice.slice(0, -1)}${prepared.invoice.endsWith('q') ? 'p' : 'q'}`
-    await expect(
-      claimMintedNote({...prepared, invoice: other}, {
-        intervalMs: 10,
-        intervalCapMs: 20,
-        maxWaitMs: 5_000,
-      }),
-    ).rejects.toThrow(/different invoice/)
-  })
-
-  it('times out cleanly when the invoice is never paid', async () => {
-    const instance = await mint({testHooks: true})
-    const prepared = await prepareMint(`mint@127.0.0.1:${instance.port}`, 21_000)
-    await expect(
-      claimMintedNote(prepared, {intervalMs: 10, intervalCapMs: 20, maxWaitMs: 100}),
-    ).rejects.toThrow(/not confirmed/i)
   })
 })
 

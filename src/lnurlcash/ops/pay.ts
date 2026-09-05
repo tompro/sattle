@@ -8,6 +8,7 @@ import {
   NoteSpentError,
   PendingNoteError,
   decodeBolt11AmountMsat,
+  defaultRandomSecret,
   fetchPayRequest,
   isBolt11Invoice,
   meltNote,
@@ -24,7 +25,7 @@ import type {CarveResult} from './carve'
 import {ensureExactAmount} from './carve'
 import type {PollOptions} from './shared'
 import type {FundOperationOptions} from './shared'
-import {assertFundOwner, pollVerifyUntilSettled} from './shared'
+import {assertFundOwner, pollVerifyUntilSettled, withMutationSafety} from './shared'
 
 export type PayOutcome =
   | 'settled'
@@ -41,16 +42,7 @@ export type PayResult = {
   invoice: string
   amountMsat: number
   verifyUrl: string | null
-  // on failed-funds-returned, when the classification rotate succeeded:
-  // the returned funds re-secured at a fresh secret. Kept OUT of `carve`
-  // (which always describes the carve as committed by the onCarve
-  // checkpoint) so an early-committed carve and a post-wait rotation can
-  // both be persisted - the carved note the rotate burned must be marked
-  // spent, this note added
   rotatedNote?: NewBearer
-  // a fresh secret rescued from an ambiguous rotate during outcome
-  // classification - the caller must track it unverified; if the rotate
-  // landed, this is the only copy of the (returned) funds
   rescuedNote?: NewBearer
 }
 
@@ -67,6 +59,9 @@ export type PayOptions = {
   // so an abort mid-wait never strands the carve (see
   // FundOperationOptions.onCarve)
   onCarve?: FundOperationOptions['onCarve']
+  // Called before the classification rotate puts its chosen output secret
+  // on the wire. Production callers durably link it to the carved source.
+  onReturnReady?: (carve: CarveResult, recoverySecret: string) => void | Promise<void>
 }
 
 // A melt's resolved promise only means the payment is in flight; the
@@ -82,13 +77,15 @@ export type PayOptions = {
 export const payWithBearers = async (
   bearers: Bearer[],
   input: string,
-  {amountMsat, poll = {}, kit = {}, assertOwner, onCarve}: PayOptions = {},
+  {amountMsat, poll = {}, kit = {}, assertOwner, onCarve, onReturnReady}: PayOptions = {},
 ): Promise<PayResult> => {
-  const options: FundOperationOptions = {
+  // the forced mutation policy (see shared.ts) covers the carve, the melt,
+  // and the classification rotate regardless of caller kit options
+  const options: FundOperationOptions = withMutationSafety({
     ...kit,
     ...(assertOwner ? {assertOwner} : {}),
     ...(onCarve ? {onCarve} : {}),
-  }
+  })
   let invoice: string
   let amount: number
   const trimmed = input.trim()
@@ -159,20 +156,21 @@ export const payWithBearers = async (
     }
     return {outcome: 'settled', carve, invoice, amountMsat: amount, verifyUrl}
   } catch {
-    // the verify budget ran out - probe the note itself with a rotate: a
-    // failed melt is only observable as the note becoming spendable again
+    // The verify budget ran out. Journal the exact output secret before the
+    // classification rotate reaches the mint, so a crash can recover either
+    // the returned source or the rotated replacement.
+    const recoverySecret = kit.randomSecret?.() ?? defaultRandomSecret()
+    await onReturnReady?.(carve, recoverySecret)
     try {
-      const rotated = await rotateNote(carve.note.callback, k1, options)
-      // the rotate succeeded, so the mint restored the note - and k1 had
-      // been on the wire since the melt, so the rotation doubles as the
-      // required re-securing of the returned funds. Reported separately
-      // from `carve` (see PayResult.rotatedNote): the carve may already be
-      // committed, and its note is what this rotate burned
+      const rotated = await rotateNote(carve.note.callback, k1, {
+        ...options,
+        randomSecret: () => recoverySecret,
+      })
       return {
         outcome: 'failed-funds-returned',
         carve,
         rotatedNote: {
-          url: withNewK1(carve.note.url, rotated.k1, amount, rotated.signature),
+          url: withNewK1(carve.note.url, recoverySecret, amount, rotated.signature),
           callback: carve.note.callback,
           amount,
           verified: true,
@@ -184,20 +182,14 @@ export const payWithBearers = async (
       }
     } catch (err) {
       if (err instanceof PendingNoteError) {
-        // still locked mid-melt - no outcome either way
         return {outcome: 'unknown-still-pending', carve, invoice, amountMsat: amount, verifyUrl}
       }
       if (err instanceof NoteSpentError) {
-        // burned without a settled proof - the money is gone either way
         return {outcome: 'settled', carve, invoice, amountMsat: amount, verifyUrl}
       }
       if (err instanceof AmbiguousMutationError) {
-        // the rotate's answer was lost. Had the note still been pending,
-        // the service would have said so cleanly - so the funds ARE back,
-        // but whether the rotation landed is unknown: the original k1 may
-        // be live, or the fresh secret may be the only copy. Surface both.
         const rescuedNote: NewBearer = {
-          url: withNewK1(carve.note.url, err.newSecrets[0], amount),
+          url: withNewK1(carve.note.url, recoverySecret, amount),
           callback: carve.note.callback,
           amount,
           verified: false,

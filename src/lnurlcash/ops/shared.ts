@@ -2,7 +2,15 @@
 // every flow that waits on a payment uses, and the uncertainty type a lost
 // mutation answer surfaces as.
 
-import {fetchInvoiceVerification, fetchNoteInfo, withNewK1} from 'lnurlcash-kit'
+import {
+  fetchInvoiceVerification,
+  fetchNoteInfo,
+  noteK1,
+  noteSignature,
+  serverOf,
+  verifyNoteSignature,
+  withNewK1,
+} from 'lnurlcash-kit'
 import type {LnurlcashOptions, VerifyResult} from 'lnurlcash-kit'
 import {NoteSpentError, NoteUnknownError, noteDeclaredAmount} from 'lnurlcash-kit'
 import type {NewBearer} from '../types'
@@ -10,8 +18,9 @@ import type {CarveResult} from './carve'
 
 // a mutation's answer was lost AND the probe could not tell whether it
 // landed - the possible outputs the fresh secrets would control, for the
-// caller to track unverified alongside the (kept) inputs. Never dropped:
-// if the mutation did land, these are the only money left.
+// caller to track unverified alongside the kept inputs. A pre-wire carve
+// checkpoint may already have persisted them, in which case this list is
+// empty so callers do not add duplicate records.
 export class UncertainOutcomeError extends Error {
   readonly possibleOutputs: NewBearer[]
   constructor(message: string, possibleOutputs: NewBearer[]) {
@@ -32,16 +41,54 @@ export class PollAbortedError extends Error {
 
 export type FundOperationOptions = LnurlcashOptions & {
   readonly assertOwner?: () => void
-  // called by a carve the moment its mutation has LANDED server-side (the
-  // inputs are burned, the outputs are known), before the flow moves on to
-  // anything slow or uncertain - the caller's one chance to durably commit
-  // the changeset so an abort during a long settlement wait can never
-  // strand the outputs or leave burned inputs looking spendable. If it
-  // rejects, the flow stops BEFORE anything further is spent and the
-  // rejection propagates: the carve state is then landed-but-maybe-
-  // uncommitted, which the caller must surface loudly. Never called for a
-  // carve that mutated nothing.
+  // Two durable phases for a mutating carve. Before wire use, unverified
+  // outputs are reported with `consumed: []`. After the mint mutation is
+  // known to have landed, the already-staged note is reported again with
+  // the inputs that can now be retired. A rejection in either phase stops
+  // the flow; exact-note carves call neither phase.
   readonly onCarve?: (carve: CarveResult) => void | Promise<void>
+  // the trusted signing keys a landed mutation output's signature is
+  // checked against before it may report verified: the mint's pinned
+  // current key AND its previous one (a just-rotated mint's last notes
+  // stay verifiable). Production supplies the trusted-mint registry's
+  // keys; an absent source (or empty list) keeps every landed output
+  // staged unverified rather than trusting it blindly.
+  readonly mintSignatureKeys?: MintSignatureKeys
+}
+
+// the trusted signing keys available for one mint server
+export type MintSignatureKeys = (server: string) => readonly string[]
+
+// The mutation safety policy, forced where the engine talks to a mint:
+// every mutation must come back signed (the signature is the only offline
+// proof the mint issued the output) and a lost answer is retried exactly
+// once, byte-identically (the replay the pre-wire staging exists to make
+// safe). Both are lnurlcash-kit's own defaults - restating them AFTER the
+// caller spread means no caller's options object can quietly strip either
+// guarantee.
+export const withMutationSafety = <Options extends LnurlcashOptions>(options: Options): Options => ({
+  ...options,
+  requireSignatures: true,
+  mutationRetries: 1,
+})
+
+// A landed mutation output earns verified:true only when its signature
+// (carried as the URL's sig param) verifies against a trusted key for its
+// server. Missing, malformed, or wrong-key signatures - or no trusted keys
+// on file at all - leave the note staged unverified; a refresh can repair
+// it later. The money is never at stake here (the note exists at the mint
+// either way), only the offline-verifiable badge is.
+export const landedNoteVerifies = (
+  noteUrl: string,
+  keysFor: MintSignatureKeys | undefined,
+): boolean => {
+  if (!keysFor) return false
+  const k1 = noteK1(noteUrl)
+  const amountMsat = noteDeclaredAmount(noteUrl)
+  const signature = noteSignature(noteUrl)
+  if (!k1 || amountMsat === null || !signature) return false
+  const keys = keysFor(serverOf(noteUrl))
+  return keys.length > 0 && verifyNoteSignature(k1, amountMsat, signature, [...keys])
 }
 
 export const assertFundOwner = (options: FundOperationOptions): void => {

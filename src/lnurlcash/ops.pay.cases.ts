@@ -18,10 +18,28 @@ describe('payWithBearers', () => {
 
   it('pays a Lightning Address by requesting an invoice first', async () => {
     const payer = await mint()
-    const payee = await mint()
     const bearer = await makeBearer(payer, secret('31'), 21_000)
-    const result = await payWithBearers([bearer], `mint@127.0.0.1:${payee.port}`, {
+    const payeeFetch: typeof fetch = (input, init) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
+      if (url.startsWith('https://payee.example/.well-known/lnurlp/alice')) {
+        return Promise.resolve(
+          Response.json({
+            tag: 'payRequest',
+            callback: 'https://payee.example/invoice',
+            minSendable: 1_000,
+            maxSendable: 100_000_000,
+            metadata: '[]',
+          }),
+        )
+      }
+      if (url.startsWith('https://payee.example/invoice')) {
+        return Promise.resolve(Response.json({pr: 'lnbc210n1pjqrstuvwxyz'}))
+      }
+      return fetch(input, init)
+    }
+    const result = await payWithBearers([bearer], 'alice@payee.example', {
       amountMsat: 21_000,
+      kit: {fetch: payeeFetch},
       poll: {intervalMs: 10, intervalCapMs: 50, maxWaitMs: 5_000},
     })
     expect(result.outcome).toBe('settled')
@@ -34,6 +52,7 @@ describe('payWithBearers', () => {
     const bearer = await makeBearer(instance, secret('32'), 50_000)
     const result = await payWithBearers([bearer], 'lnbc210n1pjqrstuvwxyz', {
       poll: {intervalMs: 10, intervalCapMs: 50, maxWaitMs: 5_000},
+      onCarve: () => undefined,
     })
     expect(result.outcome).toBe('settled')
     expect(instance.state.noteState(secret('32'))).toBe('burned')
@@ -51,14 +70,35 @@ describe('payWithBearers', () => {
     })
     expect(result.outcome).toBe('failed-funds-returned')
     expect(instance.state.noteState(secret('33'))).toBe('burned')
-    // the returned funds come back re-secured at the classification
-    // rotate's fresh secret - carried as rotatedNote, NOT folded into the
-    // carve (which an onCarve checkpoint may already have committed)
     const rotatedNote = requiredValue(result.rotatedNote)
     expect(rotatedNote.verified).toBe(true)
-    const returnedK1 = requiredValue(noteK1(rotatedNote.url))
-    expect(instance.state.noteState(returnedK1)).toBe('outstanding')
-    expect(rotatedNote.amount).toBe(21_000)
+    expect(instance.state.noteState(requiredValue(noteK1(rotatedNote.url)))).toBe('outstanding')
+  })
+
+  it('waits for durable recovery-secret staging before rotating returned funds', async () => {
+    const instance = await mint({meltAlwaysFails: true})
+    const bearer = await makeBearer(instance, secret('39'), 21_000)
+    let releaseStage: (() => void) | undefined
+    const stageGate = new Promise<void>((resolve) => {
+      releaseStage = resolve
+    })
+    let stageStarted: (() => void) | undefined
+    const stageEntered = new Promise<void>((resolve) => {
+      stageStarted = resolve
+    })
+    const payment = payWithBearers([bearer], 'lnbc210n1pjqrstuvwxyz', {
+      poll: {intervalMs: 10, intervalCapMs: 20, maxWaitMs: 300},
+      onReturnReady: async () => {
+        stageStarted?.()
+        await stageGate
+      },
+    })
+
+    await stageEntered
+    expect(instance.state.noteState(secret('39'))).toBe('outstanding')
+    releaseStage?.()
+    expect((await payment).outcome).toBe('failed-funds-returned')
+    expect(instance.state.noteState(secret('39'))).toBe('burned')
   })
 
   it('classifies a never-settling melt as unknown-still-pending', async () => {
@@ -90,9 +130,8 @@ describe('payWithBearers', () => {
         },
       }),
     ).rejects.toThrow(/commit failed/)
-    // the split landed (the input is burned) but the melt never happened:
-    // nothing sits pending at the mint
-    expect(instance.state.noteState(secret('36'))).toBe('burned')
+    // The checkpoint failed before either split or melt reached the mint.
+    expect(instance.state.noteState(secret('36'))).toBe('outstanding')
     expect([...instance.state.notes.values()].every((note) => note.state !== 'pending')).toBe(true)
   })
 })

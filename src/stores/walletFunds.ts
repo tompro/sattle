@@ -1,6 +1,6 @@
 // allow: SIZE_OK — cohesive encrypted-bearer repository with one serialized mutation boundary.
 import { computed, ref } from 'vue';
-import { deriveCashSecret, serverOf } from 'lnurlcash-kit';
+import { deriveCashSecret, noteK1, serverOf } from 'lnurlcash-kit';
 import type { CashNode } from 'lnurlcash-kit';
 
 import {
@@ -15,7 +15,9 @@ import type { BearerChangeset } from '@/lnurlcash/storage';
 import { lockTrustedMint } from '@/lnurlcash/trustedMints';
 import type { Bearer, NewBearer } from '@/lnurlcash/types';
 import { msatToSats } from '@/lnurlcash/units';
+import { recoverPendingTransferSource } from '@/lnurlcash/ops';
 import type { CarveResult } from '@/lnurlcash/ops';
+import { recoverStagedMintOutput } from '@/lnurlcash/ops/mint';
 import type { WalletOwnerFence } from './walletOwnerFence';
 
 export class TrustedMintPostCommitError extends Error {
@@ -160,10 +162,30 @@ export const createWalletFunds = (options: WalletFundsOptions) => {
 
   const commitCarve = (carve: CarveResult, ownerFence: WalletOwnerFence): Promise<Bearer> =>
     mutate(async () => {
-      const existing = bearers.value.find((bearer) => bearer.url === carve.note.url);
+      // a carve checkpoint is identified by its output secret, not the
+      // whole URL: the landed phase's note carries the mint's signature in
+      // the URL that the pre-wire staged phase could not have had yet
+      const sameOutput = (bearer: Bearer, note: NewBearer): boolean => {
+        const k1 = noteK1(note.url);
+        return (
+          k1 !== null &&
+          serverOf(bearer.url) === serverOf(note.url) &&
+          noteK1(bearer.url) === k1
+        );
+      };
+      const staged = bearers.value.find((bearer) => sameOutput(bearer, carve.note));
+      const change = carve.change;
       const additions: NewBearer[] = [];
-      if (!existing) additions.push(carve.note);
-      if (carve.change) additions.push(carve.change);
+      if (!staged) additions.push(carve.note);
+      if (change && !bearers.value.some((bearer) => sameOutput(bearer, change))) {
+        additions.push(change);
+      }
+      // the landed checkpoint re-reports the staged note with its landed
+      // signature and verification state - refresh the record in place so
+      // a replayed checkpoint is a no-op rather than a duplicate
+      const upserts: Bearer[] = staged
+        ? [{ ...staged, ...carve.note, id: staged.id, updatedAt: Date.now() }]
+        : [];
       ownerFence();
       const next = await applyBearerChangeset(
         options.requireKey(),
@@ -171,13 +193,14 @@ export const createWalletFunds = (options: WalletFundsOptions) => {
         {
           add: additions,
           markSpent: carve.consumed.map((bearer) => bearer.id),
+          upsert: upserts,
         },
         { beforeCommit: ownerFence },
       );
       const added = next.slice(0, additions.length);
       bearers.value = next;
-      await lockCommittedBearers(added);
-      const committed = existing ?? added[0];
+      await lockCommittedBearers([...added, ...upserts]);
+      const committed = upserts[0] ?? added[0];
       if (!committed) throw new Error('The carved note was not tracked.');
       return committed;
     });
@@ -205,6 +228,234 @@ export const createWalletFunds = (options: WalletFundsOptions) => {
         throw postCommitError;
       }
     });
+
+  const reserveStagedMintSource = (
+    stagedId: string,
+    sourceId: string,
+    sourceRecoverySecret: string,
+    ownerFence: WalletOwnerFence,
+  ): Promise<void> =>
+    mutate(async () => {
+      options.setAuxiliaryError('');
+      const staged = bearers.value.find((bearer) => bearer.id === stagedId);
+      const source = bearers.value.find((bearer) => bearer.id === sourceId);
+      if (!staged || !source) throw new BearerNotFoundError();
+      if (!staged.pendingMint) throw new Error('The wallet record is not a pending mint output.');
+      if (source.spent) throw new Error('The source note is already reserved.');
+      ownerFence();
+      const linked: Bearer = {
+        ...staged,
+        pendingMint: {
+          ...staged.pendingMint,
+          sourceBearerId: source.id,
+          sourceRecoverySecret,
+        },
+        updatedAt: Date.now(),
+      };
+      bearers.value = await applyBearerChangeset(
+        options.requireKey(),
+        bearers.value,
+        { add: [], markSpent: [source.id], upsert: [linked] },
+        { beforeCommit: ownerFence },
+      );
+    });
+
+  const restoreStagedMintSource = (
+    stagedId: string,
+    note: NewBearer,
+    ownerFence: WalletOwnerFence,
+  ): Promise<void> =>
+    mutate(async () => {
+      const staged = bearers.value.find((bearer) => bearer.id === stagedId);
+      if (!staged?.pendingMint?.sourceBearerId) throw new BearerNotFoundError();
+      const recoveryK1 = noteK1(note.url);
+      const existing = recoveryK1
+        ? bearers.value.find(
+            (bearer) =>
+              bearer.id !== staged.id &&
+              serverOf(bearer.url) === serverOf(note.url) &&
+              noteK1(bearer.url) === recoveryK1,
+          )
+        : undefined;
+      ownerFence();
+      const additions = existing ? [] : [note];
+      const next = await applyBearerChangeset(
+        options.requireKey(),
+        bearers.value,
+        {
+          add: additions,
+          markSpent: [staged.pendingMint.sourceBearerId],
+          remove: [staged.id],
+          upsert: existing
+            ? [{ ...existing, ...note, id: existing.id, updatedAt: Date.now() }]
+            : [],
+        },
+        { beforeCommit: ownerFence },
+      );
+      bearers.value = next;
+      const committed = existing
+        ? next.find((bearer) => bearer.id === existing.id)
+        : next[0];
+      if (!committed) throw new BearerNotFoundError();
+      await lockCommittedBearers([committed]);
+    });
+
+  const finalizeStagedMintOutput = async (
+    id: string,
+    note: NewBearer,
+    ownerFence: WalletOwnerFence,
+  ): Promise<void> =>
+    mutate(async () => {
+      options.setAuxiliaryError('');
+      const current = bearers.value.find((bearer) => bearer.id === id);
+      if (!current) throw new BearerNotFoundError();
+      if (!current.pendingMint) {
+        if (
+          current.url === note.url &&
+          current.callback === note.callback &&
+          current.amount === note.amount &&
+          current.verified === note.verified &&
+          current.mintPubkey === note.mintPubkey
+        ) {
+          return;
+        }
+        throw new Error('The wallet record is not a pending mint output.');
+      }
+      const sourceBearerId = current.pendingMint.sourceBearerId;
+      if (sourceBearerId && !bearers.value.some((bearer) => bearer.id === sourceBearerId)) {
+        throw new BearerNotFoundError();
+      }
+      ownerFence();
+      const confirmed: Bearer = {
+        ...current,
+        ...note,
+        pendingMint: undefined,
+        updatedAt: Date.now(),
+      };
+      const next = await applyBearerChangeset(
+        options.requireKey(),
+        bearers.value,
+        {
+          add: [],
+          markSpent: sourceBearerId ? [sourceBearerId] : [],
+          upsert: [confirmed],
+        },
+        { beforeCommit: ownerFence },
+      );
+      bearers.value = next;
+      await lockCommittedBearers([confirmed]);
+    });
+
+  const finalizeSpentStagedMintOutput = (id: string, ownerFence: WalletOwnerFence): Promise<void> =>
+    mutate(async () => {
+      options.setAuxiliaryError('');
+      const current = bearers.value.find((bearer) => bearer.id === id);
+      if (!current) throw new BearerNotFoundError();
+      if (!current.pendingMint) return;
+      const sourceBearerId = current.pendingMint.sourceBearerId;
+      ownerFence();
+      const spent: Bearer = {
+        ...current,
+        pendingMint: undefined,
+        spent: true,
+        updatedAt: Date.now(),
+      };
+      bearers.value = await applyBearerChangeset(
+        options.requireKey(),
+        bearers.value,
+        {
+          add: [],
+          markSpent: sourceBearerId ? [sourceBearerId] : [],
+          upsert: [spent],
+        },
+        { beforeCommit: ownerFence },
+      );
+    });
+
+  let recoveryRun: Promise<void> | null = null;
+  const recoverPendingMints = (ownerFence: WalletOwnerFence): Promise<void> => {
+    if (recoveryRun) return recoveryRun;
+    recoveryRun = (async () => {
+      for (const staged of [...bearers.value]) {
+        if (!staged.pendingMint || staged.spent) continue;
+        try {
+          const recoverLinkedSource = async (): Promise<void> => {
+            const sourceBearerId = staged.pendingMint?.sourceBearerId;
+            if (!sourceBearerId) return;
+            const source = bearers.value.find((bearer) => bearer.id === sourceBearerId);
+            if (!source) throw new BearerNotFoundError();
+            const sourceRecovery = await recoverPendingTransferSource(staged, source, {
+              assertOwner: ownerFence,
+            });
+            switch (sourceRecovery.state) {
+              case 'pending':
+                break;
+              case 'returned':
+                await restoreStagedMintSource(staged.id, sourceRecovery.note, ownerFence);
+                break;
+              case 'spent':
+                await finalizeSpentStagedMintOutput(staged.id, ownerFence);
+                break;
+            }
+          };
+          const recovered = await recoverStagedMintOutput(staged, { assertOwner: ownerFence });
+          switch (recovered.state) {
+            case 'unminted':
+              if (
+                !staged.pendingMint.sourceBearerId &&
+                staged.pendingMint.retireAfter !== undefined &&
+                staged.pendingMint.retireAfter <= Math.floor(Date.now() / 1000)
+              ) {
+                await removeNote(staged.id, ownerFence);
+                break;
+              }
+              await recoverLinkedSource();
+              break;
+            case 'pending':
+              await recoverLinkedSource();
+              break;
+            case 'minted':
+              await finalizeStagedMintOutput(staged.id, recovered.note, ownerFence);
+              break;
+            case 'spent':
+              await finalizeSpentStagedMintOutput(staged.id, ownerFence);
+              break;
+          }
+        } catch (error) {
+          ownerFence();
+          if (staged.pendingMint.sourceBearerId) {
+            try {
+              const source = bearers.value.find(
+                (bearer) => bearer.id === staged.pendingMint?.sourceBearerId,
+              );
+              if (!source) throw new BearerNotFoundError();
+              const sourceRecovery = await recoverPendingTransferSource(staged, source, {
+                assertOwner: ownerFence,
+              });
+              if (sourceRecovery.state === 'returned') {
+                await restoreStagedMintSource(staged.id, sourceRecovery.note, ownerFence);
+                continue;
+              }
+            } catch (sourceError) {
+              ownerFence();
+              if (sourceError instanceof TrustedMintPostCommitError) {
+                options.setAuxiliaryError(sourceError.message);
+                continue;
+              }
+            }
+          }
+          options.setAuxiliaryError(
+            error instanceof TrustedMintPostCommitError
+              ? error.message
+              : 'A pending mint output could not be refreshed. It will be retried later.',
+          );
+        }
+      }
+    })().finally(() => {
+      recoveryRun = null;
+    });
+    return recoveryRun;
+  };
 
   const markSpent = async (
     id: string,
@@ -297,6 +548,11 @@ export const createWalletFunds = (options: WalletFundsOptions) => {
       applyChangeset,
       commitCarve,
       updateBearer,
+      reserveStagedMintSource,
+      restoreStagedMintSource,
+      finalizeStagedMintOutput,
+      finalizeSpentStagedMintOutput,
+      recoverPendingMints,
       allocateCashSecrets,
       markSpent,
       removeNote,

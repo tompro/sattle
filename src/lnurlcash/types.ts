@@ -35,6 +35,15 @@ export type Bearer = {
   // blank mirror, kept only so this bearer displays like any other
   // (amount/host/label/state)
   deviceId?: string
+  // A wallet-chosen mint output persisted before invoice creation. It stays
+  // zero-valued until the mint confirms it; transfers also remember the
+  // source record that must be locked when a late settlement is recovered.
+  pendingMint?: {
+    sourceBearerId?: string
+    sourceRecoverySecret?: string
+    mintPubkey?: string
+    retireAfter?: number
+  }
   createdAt: number
   updatedAt: number
 }
@@ -46,4 +55,10 @@ export type NewBearer = {
   verified: boolean
   mintPubkey?: string
   deviceId?: string
+  pendingMint?: {
+    sourceBearerId?: string
+    sourceRecoverySecret?: string
+    mintPubkey?: string
+    retireAfter?: number
+  }
 }
