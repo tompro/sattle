@@ -5,8 +5,9 @@
 // the Pinia mints store and this module's backup both use it.
 //
 // Split by concern; this façade re-exports everything:
-//   storage/bearers.ts     - encrypted bearer records, changeset commits,
-//                            mergeBearers
+//   storage/bearers.ts     - the funds document (sattle_funds_v2): encrypted
+//                            bearer records, pending journal, BIP-32 counters;
+//                            locked single-write commit primitives, mergeBearers
 //   storage/activityLog.ts - the append-only encrypted activity log
 //   storage/settings.ts    - plaintext wallet settings
 //   storage/backup.ts      - buildBackup / applyBackup
@@ -17,14 +18,30 @@ export {
   compareBearerOrder,
   newBearerId,
   readEncryptedBearers,
+  readFundsDocument,
+  readFundsRevision,
+  readNextByHost,
+  readPendingJournal,
   loadBearers,
   persistBearer,
   deleteBearerRecord,
   applyBearerChangeset,
+  reserveCashIndices,
+  commitFundsRestore,
   clearAllBearers,
   mergeBearers,
+  FUNDS_STORAGE_KEY,
 } from './storage/bearers'
-export type {BearerChangeset, EncryptedBearerRecord} from './storage/bearers'
+export type {
+  BearerChangeset,
+  EncryptedBearerRecord,
+  EncryptedJournalRecord,
+  FundsReservation,
+  FundsRestoreMerge,
+  PendingStaging,
+  ReservedCashRange,
+  StoredFundsV2,
+} from './storage/bearers'
 
 export {
   newActivityId,

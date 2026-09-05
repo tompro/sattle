@@ -3,6 +3,7 @@ import {buildNoteUrl} from 'lnurlcash-kit'
 import type {Bearer} from '../types'
 import {deriveBearerAesKey} from '../keys'
 import {deleteBearerRecord, newBearerId, persistBearer} from '../storage'
+import {FUNDS_STORAGE_KEY} from './bearers'
 import {stubLocalStorage} from '../test-utils'
 
 const LINKING_KEY = new Uint8Array(32).fill(7)
@@ -19,11 +20,14 @@ const bearerFixture = (): Bearer => ({
 describe('baseline: per-record bearer persistence', () => {
   it('persistBearer/deleteBearerRecord perform one write per call', async () => {
     const storage = stubLocalStorage()
+    vi.stubGlobal('navigator', {
+      locks: {request: (_name: string, fn: () => unknown) => Promise.resolve().then(fn)},
+    })
     const key = await deriveBearerAesKey(LINKING_KEY)
     const writes = vi.spyOn(storage, 'setItem')
     await persistBearer(key, {...bearerFixture(), id: 'a'})
     await persistBearer(key, {...bearerFixture(), id: 'b'})
     await deleteBearerRecord('a')
-    expect(writes.mock.calls.filter(([keyName]) => keyName === 'sattle_bearers')).toHaveLength(3)
+    expect(writes.mock.calls.filter(([keyName]) => keyName === FUNDS_STORAGE_KEY)).toHaveLength(3)
   })
 })

@@ -22,6 +22,7 @@ import {
   MAX_ACTIVITY_ENTRIES,
 } from './storage'
 import {saveLinkingKey} from './keys'
+import {FUNDS_STORAGE_KEY} from './storage/bearers'
 import {requiredValue, stubLocalStorage} from './test-utils'
 
 const LINKING_KEY = new Uint8Array(32).fill(7)
@@ -52,7 +53,7 @@ describe('encrypted bearer records', () => {
     await persistBearer(key, bearer)
 
     // at rest, nothing plaintext leaks: no k1, no amounts
-    const raw = requiredValue(localStorage.getItem('sattle_bearers'))
+    const raw = requiredValue(localStorage.getItem(FUNDS_STORAGE_KEY))
     expect(raw).not.toContain(K1_A)
     expect(raw).not.toContain('21000')
 
@@ -233,19 +234,22 @@ describe('backup', () => {
       applyBackup({type: 'lnurlwallet-backup', version: 1, bearers: []}),
     ).rejects.toThrow()
     await expect(applyBackup(null)).rejects.toThrow()
+    await expect(applyBackup({type: 'sattle-backup', version: 1, bearers: []})).rejects.toThrow()
+    // a v2 file without the counter map is not a valid backup either
     await expect(applyBackup({type: 'sattle-backup', version: 2, bearers: []})).rejects.toThrow()
   })
 
   it('skips malformed records instead of failing the whole restore', async () => {
     const result = await applyBackup({
       type: 'sattle-backup',
-      version: 1,
+      version: 2,
       createdAt: 1,
       bearers: [
         {id: 'ok', iv: '00'.repeat(12), ciphertext: 'ab'.repeat(40)},
         {id: 42, iv: null, ciphertext: 'xx'},
         'garbage',
       ],
+      nextByHost: {},
     })
     expect(result.added).toBe(1)
     expect(result.skipped).toBe(2)
