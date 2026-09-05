@@ -1,6 +1,7 @@
 // allow: SIZE_OK — indivisible wallet lifecycle state machine and its public Pinia surface.
 import { computed, onScopeDispose, ref } from 'vue';
 import { defineStore } from 'pinia';
+import { cashNodeFromHex } from 'lnurlcash-kit';
 
 import {
   clearSavedLinkingKey,
@@ -176,6 +177,7 @@ export const useWalletStore = defineStore('wallet', () => {
       funds.replace(loaded);
       acceptingOwnerWork = true;
       state.value = 'unlocked';
+      await funds.public.recoverPendingMints(ownerFence.capture());
       idleWatch.start();
     } catch (error) {
       stopOwnerChanges();
@@ -323,6 +325,7 @@ export const useWalletStore = defineStore('wallet', () => {
 
   const funds = createWalletFunds({
     requireKey,
+    requireCashRoot: () => cashNodeFromHex(requireWalletMaterial().cashRootHex),
     ownerId: () => pubkey.value ?? undefined,
     setAuxiliaryError: (message) => {
       auxiliaryError.value = message;

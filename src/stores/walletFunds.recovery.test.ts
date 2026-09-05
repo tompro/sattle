@@ -1,8 +1,10 @@
 import { createPinia, setActivePinia } from 'pinia';
-import { buildNoteUrl } from 'lnurlcash-kit';
+import { buildNoteUrl, cashNodeFromHex } from 'lnurlcash-kit';
 import { createMockMint } from 'lnurlcash-conformance/mock-mint';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { readPendingJournal } from '@/lnurlcash/storage';
+import { readFundsDocument } from '@/lnurlcash/storage/bearers';
 import { stubLocalStorage } from '@/lnurlcash/test-utils';
 import type { NewBearer } from '@/lnurlcash/types';
 import { useWalletStore } from './wallet';
@@ -329,9 +331,9 @@ describe('pending mint recovery', () => {
 
   it('ends recovery when the staged target is definitively spent', async () => {
     const instance = await mint();
-    const secret = '1'.repeat(64);
     const wallet = useWalletStore();
     await wallet.create();
+    const secret = '1'.repeat(64);
     const [staged] = await wallet.addBearers(
       [stagedNote(instance, secret)],
       wallet.captureOwnerFence(),
@@ -346,5 +348,82 @@ describe('pending mint recovery', () => {
       spent: true,
       pendingMint: undefined,
     });
+  });
+
+  it('finalizes a landed receive rotation under the staged record id', async () => {
+    const instance = await mint();
+    const wallet = useWalletStore();
+    await wallet.create();
+    const originalK1 = '1c'.repeat(32);
+    const rotationSecret = '1d'.repeat(32);
+    // the rotate landed before the crash: the mint credited the staged secret
+    instance.state.creditNote(rotationSecret, 21_000);
+    const [staged] = await wallet.addBearers(
+      [
+        {
+          url: buildNoteUrl(`${instance.url}/w`, rotationSecret, 21_000),
+          callback: `${instance.url}/w/cb`,
+          amount: 21_000,
+          verified: false,
+          pendingMint: { sourceRecoverySecret: originalK1 },
+        },
+      ],
+      wallet.captureOwnerFence(),
+    );
+    if (!staged) throw new Error('Expected a staged bearer.');
+
+    await wallet.recoverPendingMints(wallet.captureOwnerFence());
+
+    expect(wallet.bearers.find((bearer) => bearer.id === staged.id)).toMatchObject({
+      amount: 21_000,
+      verified: true,
+      pendingMint: undefined,
+    });
+    expect(wallet.balanceMsat).toBe(21_000);
+  });
+
+  it('restores a received note at its original secret when the rotation never landed', async () => {
+    const instance = await mint();
+    const wallet = useWalletStore();
+    await wallet.create();
+    const originalK1 = '1e'.repeat(32);
+    const rotationSecret = '1f'.repeat(32);
+    // the rotate never reached the mint: the sender's copy is still live
+    instance.state.creditNote(originalK1, 21_000);
+    const [staged] = await wallet.addBearers(
+      [
+        {
+          url: buildNoteUrl(`${instance.url}/w`, rotationSecret, 21_000),
+          callback: `${instance.url}/w/cb`,
+          amount: 21_000,
+          verified: false,
+          pendingMint: { sourceRecoverySecret: originalK1 },
+        },
+      ],
+      wallet.captureOwnerFence(),
+    );
+    if (!staged) throw new Error('Expected a staged bearer.');
+
+    await wallet.recoverPendingMints(wallet.captureOwnerFence());
+
+    const restored = wallet.bearers.find((bearer) => bearer.id === staged.id);
+    expect(restored?.url).toContain(originalK1);
+    expect(restored).toMatchObject({ amount: 21_000, verified: true, pendingMint: undefined });
+    expect(wallet.balanceMsat).toBe(21_000);
+    expect(instance.state.noteState(originalK1)).toBe('outstanding');
+  });
+
+  it('retires cash-allocation journal records once the bearer side is reconciled', async () => {
+    const wallet = useWalletStore();
+    await wallet.create();
+    const root = cashNodeFromHex(wallet.requireWalletMaterial().cashRootHex);
+    await wallet.allocateCashSecrets(root, 'mint.example', 2, wallet.captureOwnerFence());
+    expect(readPendingJournal()).toHaveLength(1);
+
+    await wallet.recoverPendingMints(wallet.captureOwnerFence());
+
+    // the journal record is retired; the reserved counter range never rewinds
+    expect(readPendingJournal()).toEqual([]);
+    expect(readFundsDocument().nextByHost).toEqual({ 'mint.example': 2 });
   });
 });

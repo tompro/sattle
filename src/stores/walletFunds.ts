@@ -1,6 +1,6 @@
 // allow: SIZE_OK — cohesive encrypted-bearer repository with one serialized mutation boundary.
 import { computed, ref } from 'vue';
-import { deriveCashSecret, noteK1, serverOf } from 'lnurlcash-kit';
+import { deriveCashSecret, noteK1, serverOf, withNewK1 } from 'lnurlcash-kit';
 import type { CashNode } from 'lnurlcash-kit';
 
 import {
@@ -9,6 +9,7 @@ import {
   mergeBearers,
   persistBearer,
   readFundsRevision,
+  readPendingJournal,
   reserveCashIndices,
 } from '@/lnurlcash/storage';
 import type { BearerChangeset } from '@/lnurlcash/storage';
@@ -55,6 +56,7 @@ export type AllocatedCashSecrets = {
 
 type WalletFundsOptions = {
   readonly requireKey: () => CryptoKey;
+  readonly requireCashRoot: () => CashNode;
   readonly ownerId: () => string | undefined;
   readonly setAuxiliaryError: (message: string) => void;
 };
@@ -409,6 +411,33 @@ export const createWalletFunds = (options: WalletFundsOptions) => {
                 await removeNote(staged.id, ownerFence);
                 break;
               }
+              if (
+                !staged.pendingMint.sourceBearerId &&
+                staged.pendingMint.sourceRecoverySecret
+              ) {
+                // a receive rotation that never landed: nothing exists at
+                // the staged secret, so the note is restored at the
+                // original k1 it was received on (journal GC below retires
+                // the allocation record separately)
+                await finalizeStagedMintOutput(
+                  staged.id,
+                  {
+                    url: withNewK1(
+                      staged.url,
+                      staged.pendingMint.sourceRecoverySecret,
+                      staged.amount,
+                    ),
+                    callback: staged.callback,
+                    amount: staged.amount,
+                    verified: true,
+                    ...(staged.pendingMint.mintPubkey
+                      ? { mintPubkey: staged.pendingMint.mintPubkey }
+                      : {}),
+                  },
+                  ownerFence,
+                );
+                break;
+              }
               await recoverLinkedSource();
               break;
             case 'pending':
@@ -450,6 +479,28 @@ export const createWalletFunds = (options: WalletFundsOptions) => {
               : 'A pending mint output could not be refreshed. It will be retried later.',
           );
         }
+      }
+      // Retire cash-allocation journal records: their secrets are either
+      // already carried by staged bearer records (the operative journal)
+      // or never reached a mint (staging always precedes the wire), so the
+      // records are crash-window proofs, safe to clear once recovery has
+      // reconciled the bearer side. The counter bump they document is
+      // permanent either way - burned indices are never reused.
+      try {
+        const staleAllocationIds = readPendingJournal()
+          .filter((record) => record.kind === 'cash-allocation')
+          .map((record) => record.id);
+        if (staleAllocationIds.length > 0) {
+          await applyChangeset(
+            { add: [], markSpent: [], clearPending: staleAllocationIds },
+            ownerFence,
+          );
+        }
+      } catch (error) {
+        ownerFence();
+        options.setAuxiliaryError(
+          'Pending allocation records could not be cleared. They will be retired later.',
+        );
       }
     })().finally(() => {
       recoveryRun = null;
@@ -535,6 +586,21 @@ export const createWalletFunds = (options: WalletFundsOptions) => {
       };
     });
 
+  // The operation-facing allocation path: the ops engine asks for exactly
+  // the output secrets it is about to stage, keyed by the mint's canonical
+  // host, and the reservation (counter bump + encrypted journal record)
+  // commits before any of them can reach the wire. The cash root never
+  // leaves the wallet store - it is re-read from the unlocked material per
+  // call.
+  const allocateOutputSecrets = (
+    server: string,
+    count: number,
+    ownerFence: WalletOwnerFence,
+  ): Promise<readonly string[]> =>
+    allocateCashSecrets(options.requireCashRoot(), server, count, ownerFence).then(
+      (allocated) => allocated.secrets,
+    );
+
   return {
     public: {
       bearers,
@@ -554,6 +620,7 @@ export const createWalletFunds = (options: WalletFundsOptions) => {
       finalizeSpentStagedMintOutput,
       recoverPendingMints,
       allocateCashSecrets,
+      allocateOutputSecrets,
       markSpent,
       removeNote,
       mergeExternalBearers,

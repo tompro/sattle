@@ -1,5 +1,5 @@
 import { createPinia, setActivePinia } from 'pinia';
-import { buildNoteUrl, deriveCashRoot, deriveCashSecret } from 'lnurlcash-kit';
+import { buildNoteUrl, cashNodeFromHex, deriveCashRoot, deriveCashSecret } from 'lnurlcash-kit';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { deriveBearerAesKey } from '@/lnurlcash/keys';
@@ -240,5 +240,24 @@ describe('wallet BIP-32 counter allocation', () => {
 
     expect(encrypt).not.toHaveBeenCalled();
     expect(readFundsDocument().nextByHost).toEqual({});
+  });
+
+  it('serves the operation-facing allocation from the unlocked wallet material', async () => {
+    const wallet = useWalletStore();
+    await wallet.create();
+    const root = cashNodeFromHex(wallet.requireWalletMaterial().cashRootHex);
+
+    const secrets = await wallet.allocateOutputSecrets(
+      'mint.example',
+      2,
+      wallet.captureOwnerFence(),
+    );
+
+    expect(secrets).toEqual([
+      deriveCashSecret(root, 'mint.example', 0),
+      deriveCashSecret(root, 'mint.example', 1),
+    ]);
+    expect(readFundsDocument().nextByHost).toEqual({ 'mint.example': 2 });
+    expect(readFundsDocument().pending).toHaveLength(1);
   });
 });
