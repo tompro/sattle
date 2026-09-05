@@ -1,9 +1,10 @@
-import { bytesToHex, utf8ToBytes } from '@noble/hashes/utils.js';
+import { bytesToHex, hexToBytes, utf8ToBytes } from '@noble/hashes/utils.js';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   deriveWalletMaterial,
   serializeWalletMaterial,
+  walletMaterialHash,
   type WalletMaterialV2,
 } from '@/lnurlcash/keys';
 import { walletMaterialOwnerId } from '@/lnurlcash/storage/storedSecret';
@@ -50,6 +51,11 @@ const SEED =
 const OTHER_SEED = 'legal winner thank year wave sausage worth useful legal winner thank yellow';
 const MATERIAL = deriveWalletMaterial(SEED);
 const OTHER_MATERIAL = deriveWalletMaterial(OTHER_SEED);
+// same linking key (same owner) as MATERIAL, but a different, VALID cash root
+const ALTERED_ROOT_MATERIAL: WalletMaterialV2 = {
+  ...MATERIAL,
+  cashRootHex: OTHER_MATERIAL.cashRootHex,
+};
 const WRAP_SECRET = new Uint8Array(32).fill(3);
 const WRAP_RECORD_KEY = 'sattle_biometric_wrap';
 const SECURE_SECRET_KEY = 'sattle-biometric-wrap-secret';
@@ -90,6 +96,7 @@ const deriveFixtureWrapKey = async (
 const storePayload = async (
   plaintext: Uint8Array,
   pubkey: string,
+  materialHash: string,
   secret = WRAP_SECRET,
 ): Promise<void> => {
   const hkdfSalt = new Uint8Array(16).fill(4);
@@ -106,6 +113,7 @@ const storePayload = async (
       iv: bytesToHex(iv),
       wrappedKey: bytesToHex(ciphertext),
       pubkey,
+      materialHash,
       createdAt: 1,
     }),
   );
@@ -115,7 +123,10 @@ const storePayload = async (
 const storeMaterialPayload = async (
   material: WalletMaterialV2,
   pubkey = walletMaterialOwnerId(material),
-): Promise<void> => storePayload(utf8ToBytes(serializeWalletMaterial(material)), pubkey);
+  secret = WRAP_SECRET,
+  materialHash = walletMaterialHash(material),
+): Promise<void> =>
+  storePayload(utf8ToBytes(serializeWalletMaterial(material)), pubkey, materialHash, secret);
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -194,7 +205,11 @@ describe('biometric wallet material', () => {
   ])('returns no material for an authenticated %s and preserves state', async (_label, payload) => {
     // Given an authenticated non-canonical payload bound to the saved owner
     await saveWalletMaterial(MATERIAL);
-    await storePayload(payload, walletMaterialOwnerId(MATERIAL));
+    await storePayload(
+      payload,
+      walletMaterialOwnerId(MATERIAL),
+      walletMaterialHash(MATERIAL),
+    );
     const before = persistedState();
 
     // When biometric unlock decrypts the payload
@@ -266,7 +281,12 @@ describe('biometric wallet material', () => {
     localStorage.setItem('sattle_nwc_connections', 'legacy-nwc-residue');
     localStorage.setItem('sattle_passkey_slots', 'legacy-passkey-residue');
     localStorage.setItem('sattle_trusted_mints', 'legacy-trust-residue');
-    await storeMaterialPayload(OTHER_MATERIAL, walletMaterialOwnerId(MATERIAL));
+    await storeMaterialPayload(
+      OTHER_MATERIAL,
+      walletMaterialOwnerId(MATERIAL),
+      WRAP_SECRET,
+      walletMaterialHash(MATERIAL),
+    );
     const before = persistedState();
 
     // When biometric unlock checks the decrypted linking-key owner
@@ -275,6 +295,143 @@ describe('biometric wallet material', () => {
     // Then neither foreign key part returns and persistence is unchanged
     await expect(attempt).rejects.toThrow('different wallet');
     expect(persistedState()).toEqual(before);
+  });
+});
+
+describe('biometric exact-material commitment', () => {
+  it('rejects same-owner altered-root enrollment before writing either biometric store', async () => {
+    // Given one proven saved owner and well-formed material with only the cash root swapped
+    await saveWalletMaterial(MATERIAL);
+    const before = persistedState();
+
+    // When enrollment is attempted with the same-owner altered-root material
+    const attempt = enableBiometricUnlock(ALTERED_ROOT_MATERIAL);
+
+    // Then the exact-material commitment fails before native or local persistence changes
+    await expect(attempt).rejects.toThrow('saved wallet material');
+    expect(persistedState()).toEqual(before);
+    expect(pluginMocks.secureSet).not.toHaveBeenCalled();
+  });
+
+  it('rejects same-owner altered-root enrollment against encrypted saved material', async () => {
+    // Given the saved material envelope is password-encrypted (no plaintext available)
+    await saveWalletMaterial(MATERIAL, 'password');
+    const before = persistedState();
+
+    // When enrollment is attempted with the same-owner altered-root material
+    const attempt = enableBiometricUnlock(ALTERED_ROOT_MATERIAL);
+
+    // Then the hash commitment alone rejects it before either store changes
+    await expect(attempt).rejects.toThrow('saved wallet material');
+    expect(persistedState()).toEqual(before);
+    expect(pluginMocks.secureSet).not.toHaveBeenCalled();
+  });
+
+  it('rejects enrollment when same-owner saved material changes during the prompt', async () => {
+    // Given valid enrollment input and a prompt-time swap of only the saved cash root
+    await saveWalletMaterial(MATERIAL);
+    pluginMocks.authenticate.mockImplementationOnce(async () => {
+      await saveWalletMaterial(ALTERED_ROOT_MATERIAL);
+    });
+
+    // When enrollment runs the biometric prompt
+    const attempt = enableBiometricUnlock(MATERIAL);
+
+    // Then the post-prompt commitment recheck fails and no biometric store is written
+    await expect(attempt).rejects.toThrow('changed');
+    expect(localStorage.getItem(WRAP_RECORD_KEY)).toBeNull();
+    expect(pluginMocks.secureValues.has(SECURE_SECRET_KEY)).toBe(false);
+    expect(pluginMocks.secureSet).not.toHaveBeenCalled();
+  });
+
+  it('rejects an authenticated well-formed same-owner altered-root payload', async () => {
+    // Given an authenticated wrap that claims the saved commitment but whose
+    // decrypted material swaps only the cash root
+    await saveWalletMaterial(MATERIAL);
+    await storeMaterialPayload(
+      ALTERED_ROOT_MATERIAL,
+      walletMaterialOwnerId(ALTERED_ROOT_MATERIAL),
+      WRAP_SECRET,
+      walletMaterialHash(MATERIAL),
+    );
+    const before = persistedState();
+
+    // When biometric unlock decrypts the well-formed same-owner payload
+    const attempt = unlockWalletMaterialWithBiometrics();
+
+    // Then the material commitment rejects it and both stores stay byte-identical
+    await expect(attempt).rejects.toThrow('wallet material');
+    expect(persistedState()).toEqual(before);
+  });
+
+  it('rejects a wrap whose own commitment differs from the saved material before prompting', async () => {
+    // Given an authenticated wrap committed to same-owner altered-root material
+    await saveWalletMaterial(MATERIAL);
+    await storeMaterialPayload(ALTERED_ROOT_MATERIAL);
+    const before = persistedState();
+
+    // When biometric unlock inspects the record commitment
+    const attempt = unlockWalletMaterialWithBiometrics();
+
+    // Then it rejects before any prompt and both stores stay byte-identical
+    await expect(attempt).rejects.toThrow('wallet material');
+    expect(pluginMocks.authenticate).not.toHaveBeenCalled();
+    expect(persistedState()).toEqual(before);
+  });
+
+  it('rejects a stale wrap after same-owner saved material replacement', async () => {
+    // Given an enrolled wrap and a later saved-material swap of only the cash root
+    await saveWalletMaterial(MATERIAL);
+    await enableBiometricUnlock(MATERIAL);
+    await saveWalletMaterial(ALTERED_ROOT_MATERIAL);
+    const before = persistedState();
+
+    // When the now-stale biometric wrap is used
+    const attempt = unlockWalletMaterialWithBiometrics();
+
+    // Then the stale commitment rejects and both stores stay byte-identical
+    await expect(attempt).rejects.toThrow('wallet material');
+    expect(persistedState()).toEqual(before);
+  });
+
+  it('rejects unlock when same-owner saved material changes during the prompt', async () => {
+    // Given an enrolled wrap and a prompt-time swap of only the saved cash root
+    await saveWalletMaterial(MATERIAL);
+    await enableBiometricUnlock(MATERIAL);
+    let swapped: ReturnType<typeof persistedState> | null = null;
+    pluginMocks.authenticate.mockImplementationOnce(async () => {
+      await saveWalletMaterial(ALTERED_ROOT_MATERIAL);
+      swapped = persistedState();
+    });
+
+    // When biometric unlock runs the prompt
+    const attempt = unlockWalletMaterialWithBiometrics();
+
+    // Then the post-prompt commitment recheck rejects and the ceremony writes nothing
+    await expect(attempt).rejects.toThrow('changed');
+    expect(swapped).not.toBeNull();
+    expect(persistedState()).toEqual(swapped);
+  });
+
+  it('rejects unlock when the wrap record is replaced during the prompt', async () => {
+    // Given an enrolled wrap replaced mid-prompt by another valid same-owner record
+    await saveWalletMaterial(MATERIAL);
+    await enableBiometricUnlock(MATERIAL);
+    let swapped: ReturnType<typeof persistedState> | null = null;
+    pluginMocks.authenticate.mockImplementationOnce(async () => {
+      const secret = pluginMocks.secureValues.get(SECURE_SECRET_KEY);
+      if (typeof secret !== 'string') throw new Error('expected an enrolled secure secret');
+      await storeMaterialPayload(MATERIAL, walletMaterialOwnerId(MATERIAL), hexToBytes(secret));
+      swapped = persistedState();
+    });
+
+    // When biometric unlock runs the prompt
+    const attempt = unlockWalletMaterialWithBiometrics();
+
+    // Then the record recheck rejects and the ceremony writes nothing itself
+    await expect(attempt).rejects.toThrow('changed');
+    expect(swapped).not.toBeNull();
+    expect(persistedState()).toEqual(swapped);
   });
 });
 
