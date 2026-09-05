@@ -1,5 +1,6 @@
 import './passkeys.crypto.cases'
 import './passkeys.commitment.cases'
+import './passkeys.reverify.cases'
 import './passkeys.material.cases'
 import './passkeys.registration.cases'
 import './passkeys.ownership-a.cases'
