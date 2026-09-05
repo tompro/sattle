@@ -164,6 +164,10 @@ export const confirmMintRekey = (mints: TrustedMint[], server: string): MintTran
             ...mint,
             mintPubkey: pending,
             pendingMintPubkey: undefined,
+            // the retiring pin stays verifiable for the notes it already
+            // signed (landed-mutation verification accepts current OR
+            // previous); it is never a target for new trust decisions
+            previousMintPubkey: mint.mintPubkey,
             unconfirmed: undefined,
           }
         : mint,

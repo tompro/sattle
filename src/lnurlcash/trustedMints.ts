@@ -49,6 +49,14 @@ export type TrustedMint = {
   // would defeat the entire pinning model (a compromised mint could sign
   // unbacked notes that then show the "signed" badge).
   pendingMintPubkey?: string
+  // the key this mint signed under immediately BEFORE the holder confirmed
+  // the current pin (set by confirmTrustedMintRekey): notes issued just
+  // before a legitimate rotation stay verifiable against it. Never imported
+  // from a backup (a crafted file could otherwise plant a forgeable
+  // "previous" key, exactly like pendingMintPubkey) and never staged from
+  // an advertisement - only a confirmed rekey creates it, from the key that
+  // was actually pinned.
+  previousMintPubkey?: string
   // best-effort node identity/capacity, cached from the mint-address
   // discovery endpoint (see the kit's fetchMintAddress) purely for display -
   // absent for a mint that doesn't support it, or one trusted before this
@@ -131,6 +139,20 @@ export const isMintTrusted = (server: string, ownerId?: string): boolean =>
 export const getTrustedMintPubkey = (server: string, ownerId?: string): string | null =>
   readTrustedMints(ownerId).find((mint) => mint.server === server && !mint.unconfirmed)
     ?.mintPubkey ?? null
+
+// the keys a landed mutation signature may be checked against for this
+// server: the pinned current key plus the previous one (kept across a
+// confirmed rekey so the old key's last notes still verify). Unconfirmed
+// pins contribute nothing - see TrustedMint.unconfirmed.
+export const getTrustedMintVerificationKeys = (server: string, ownerId?: string): string[] => {
+  const mint = readTrustedMints(ownerId).find(
+    (entry) => entry.server === server && !entry.unconfirmed,
+  )
+  if (!mint) return []
+  return mint.previousMintPubkey
+    ? [mint.mintPubkey, mint.previousMintPubkey]
+    : [mint.mintPubkey]
+}
 
 // true when a server has a pin that came from a file/storage rather than a
 // live response (see TrustedMint.unconfirmed) - callers should treat a

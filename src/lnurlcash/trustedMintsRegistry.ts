@@ -39,6 +39,9 @@ const isTrustedMint = (value: unknown): value is TrustedMint => {
     (value.pendingMintPubkey === undefined ||
       (typeof value.pendingMintPubkey === 'string' &&
         isValidMintPubkey(value.pendingMintPubkey))) &&
+    (value.previousMintPubkey === undefined ||
+      (typeof value.previousMintPubkey === 'string' &&
+        isValidMintPubkey(value.previousMintPubkey))) &&
     isOptionalString(value.nodeAlias) &&
     isOptionalString(value.nodeColor) &&
     isOptionalNumber(value.nodeCapacityMsat) &&

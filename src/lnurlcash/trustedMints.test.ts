@@ -11,6 +11,7 @@ import {
   confirmTrustedMintRekey,
   dismissTrustedMintRekey,
   getTrustedMintPubkey,
+  getTrustedMintVerificationKeys,
   grandfatherTrustedMint,
   isMintTrusted,
   isMintUnconfirmed,
@@ -86,6 +87,29 @@ describe('rekey staging', () => {
     expect(mint.mintPubkey).toBe(KEY_B)
     expect(mint.pendingMintPubkey).toBeUndefined()
     expect(getTrustedMintPubkey(SERVER, OWNER_ID)).toBe(KEY_B)
+  })
+
+  it('keeps the retiring key verifiable as previous after a confirmed rekey', async () => {
+    await lockTrustedMint(SERVER, KEY_A, OWNER_ID)
+    expect(getTrustedMintVerificationKeys(SERVER, OWNER_ID)).toEqual([KEY_A])
+
+    await lockTrustedMint(SERVER, KEY_B, OWNER_ID)
+    // while the rekey is only STAGED, the candidate is not a verification key
+    expect(getTrustedMintVerificationKeys(SERVER, OWNER_ID)).toEqual([KEY_A])
+
+    await confirmTrustedMintRekey(SERVER, OWNER_ID)
+    expect(getTrustedMintVerificationKeys(SERVER, OWNER_ID)).toEqual([KEY_B, KEY_A])
+
+    // dismissing a later staged candidate keeps the previous key intact
+    await lockTrustedMint(SERVER, KEY_C, OWNER_ID)
+    await dismissTrustedMintRekey(SERVER, OWNER_ID)
+    expect(getTrustedMintVerificationKeys(SERVER, OWNER_ID)).toEqual([KEY_B, KEY_A])
+  })
+
+  it('excludes unconfirmed pins from verification keys', async () => {
+    await grandfatherTrustedMint(SERVER, KEY_A, OWNER_ID)
+    expect(getTrustedMintVerificationKeys(SERVER, OWNER_ID)).toEqual([])
+    expect(getTrustedMintVerificationKeys('unknown.example', OWNER_ID)).toEqual([])
   })
 
   it('drops the staged key on dismissal, keeping the original pin', async () => {
