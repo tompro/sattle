@@ -1,3 +1,4 @@
+/// <reference types="node" />
 import { chromium } from '@playwright/test';
 import { execSync } from 'child_process';
 

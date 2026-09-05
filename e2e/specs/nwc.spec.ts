@@ -212,7 +212,7 @@ test.describe('NWC settings page', () => {
     // NIP-47 client sends: kind 23194, NIP-04 encrypted to the service,
     // schnorr-signed by the connection's client secret
     const invoice = 'lnbc210n1pjqrstuvwxyz';
-    const content = await nip04Encrypt(
+    const content = nip04Encrypt(
       clientSecret,
       walletServicePubkey,
       JSON.stringify({ method: 'pay_invoice', params: { invoice } }),
@@ -254,7 +254,7 @@ test.describe('NWC settings page', () => {
     );
     if (!responseEvent) throw new Error('the service published no response');
     const response: unknown = JSON.parse(
-      await nip04Decrypt(clientSecret, walletServicePubkey, responseEvent.content),
+      nip04Decrypt(clientSecret, walletServicePubkey, responseEvent.content),
     );
     if (typeof response !== 'object' || response === null) {
       throw new Error('the service response is not an object');

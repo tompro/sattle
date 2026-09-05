@@ -1,7 +1,7 @@
 import { test, expect } from '../fixtures';
 import type { Page } from '@playwright/test';
 import { MINT2_ORIGIN } from '../helpers/MintMocker';
-import { createFreshWallet, fundMockMintWallet } from '../helpers/wallet';
+import { fundMockMintWallet } from '../helpers/wallet';
 
 const AMOUNT_MSAT = 50_000; // 50 sats
 // 64 hex chars - a valid payment receipt, distinct from the claimed note secret

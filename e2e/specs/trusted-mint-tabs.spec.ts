@@ -3,6 +3,14 @@ import type { Page, TestInfo } from '@playwright/test';
 import { test, expect } from '../fixtures';
 import { createFreshWallet } from '../helpers/wallet';
 
+// the dev-only lifecycle hook (boot/wallet.ts) used to drive the forget
+// transition, which has no UI surface
+declare global {
+  interface Window {
+    __sattleWalletTest: { state: () => string; forget: () => Promise<void> };
+  }
+}
+
 const MINT_KEY_A = `02${'aa'.repeat(32)}`;
 const MINT_KEY_B = `03${'bb'.repeat(32)}`;
 const MINT_KEY_C = `02${'cc'.repeat(32)}`;

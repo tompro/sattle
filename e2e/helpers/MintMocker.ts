@@ -1,7 +1,7 @@
 import type { Page, Route } from '@playwright/test';
 import { hashK1, noteSignatureDigestForHash } from 'lnurlcash-kit';
 import { secp256k1 } from '@noble/curves/secp256k1.js';
-import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
+import { bytesToHex } from '@noble/hashes/utils.js';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { utf8ToBytes } from '@noble/hashes/utils.js';
 
@@ -312,11 +312,7 @@ export class MintMocker {
   // nodeCapacityMsat, which is exactly the 0.1.0 spread bug this exercises.
   // The payLink points back at the lnurlp route below, as prepareMint treats
   // it as the authoritative place to read the payRequest from.
-  private async mockMintAddress(
-    options: MockTargetMintOptions,
-    origin: string,
-    mintPubkey: string,
-  ): Promise<void> {
+  private async mockMintAddress(origin: string, mintPubkey: string): Promise<void> {
     await this.page.route(
       new RegExp(`^${escapeRegExp(`${origin}/.well-known/lnurlw/`)}`),
       async (route: Route) => {
@@ -344,7 +340,7 @@ export class MintMocker {
     const mintPubkey = options.mintPubkey ?? this.signingPubkey(origin);
     let stagedHash: string | null = null;
     let settled = false;
-    await this.mockMintAddress(options, origin, mintPubkey);
+    await this.mockMintAddress(origin, mintPubkey);
     await this.mockMutationEndpoint(origin);
     await this.page.route(
       new RegExp(`^${escapeRegExp(origin + NOTE_PATH)}\\?`),

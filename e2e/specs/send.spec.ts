@@ -7,7 +7,6 @@ import {
   noteSignature,
   verifyNoteSignature,
 } from 'lnurlcash-kit';
-import { MINT_ORIGIN } from '../helpers/MintMocker';
 import { fundMockMintWallet } from '../helpers/wallet';
 
 const FUNDING_MSAT = 50_000; // 50 sats
