@@ -2,7 +2,11 @@ import { createPinia, setActivePinia } from 'pinia';
 import { buildNoteUrl } from 'lnurlcash-kit';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { deriveBearerAesKey, linkingPubKeyHex } from '@/lnurlcash/keys';
+import {
+  deriveBearerAesKey,
+  deriveWalletMaterial,
+  saveWalletMaterial,
+} from '@/lnurlcash/keys';
 import { loadBearers, readEncryptedBearers, readFundsDocument } from '@/lnurlcash/storage';
 import { FUNDS_STORAGE_KEY } from '@/lnurlcash/storage/bearers';
 import { WalletOwnerMismatchError } from '@/lnurlcash/storage/currentOwner';
@@ -11,7 +15,14 @@ import { stubLocalStorage } from '@/lnurlcash/test-utils';
 import type { NewBearer } from '@/lnurlcash/types';
 import { useWalletStore } from './wallet';
 
-const OTHER_OWNER_ID = linkingPubKeyHex(new Uint8Array(32).fill(9));
+// a full v2 material for the successor owner: real BIP-32 cash root, fixed
+// other linking key (same construction as the lifecycle test harness)
+const OTHER_MATERIAL = {
+  ...deriveWalletMaterial(
+    'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about',
+  ),
+  linkingKeyHex: '09'.repeat(32),
+};
 
 // fund commits REQUIRE Web Locks now; tests that don't care about lock
 // timing install a present-but-non-serializing fake
@@ -28,19 +39,13 @@ const note = (secret: string): NewBearer => ({
   verified: true,
 });
 
-// a second tab installing its own wallet: the saved-key record flips to the
-// successor owner. Deliberately NO storage event is dispatched - the fence
-// must not depend on the wakeup arriving first.
-const replacePersistedOwner = (): void => {
-  localStorage.setItem(
-    'sattle_linking_key',
-    JSON.stringify({
-      enc: false,
-      value: '09'.repeat(32),
-      ownerId: OTHER_OWNER_ID,
-      version: 1,
-    }),
-  );
+// a second tab installing its own wallet: the successor lifecycle writes its
+// v2 wallet-material record and deletes the legacy linking-key record, so the
+// saved-key owner flips to the successor. Deliberately NO storage event is
+// dispatched - the fence must not depend on the wakeup arriving first.
+const replacePersistedOwner = async (): Promise<void> => {
+  localStorage.removeItem('sattle_linking_key');
+  await saveWalletMaterial(OTHER_MATERIAL);
 };
 
 type LockRequest = {
@@ -90,7 +95,7 @@ describe('stale-owner fencing of fund commits', () => {
 
     // When another tab replaced the wallet and this (still unlocked) tab
     // tries to commit a fund change
-    replacePersistedOwner();
+    await replacePersistedOwner();
     await expect(
       wallet.applyChangeset({ add: [note('bb')], markSpent: [existing.id] }, ownerFence),
     ).rejects.toBeInstanceOf(WalletOwnerMismatchError);
@@ -109,7 +114,7 @@ describe('stale-owner fencing of fund commits', () => {
     const ownerFence = wallet.captureOwnerFence();
     const [existing] = await wallet.addBearers([note('aa')], ownerFence);
     if (!existing) throw new Error('Expected the initial bearer.');
-    replacePersistedOwner();
+    await replacePersistedOwner();
 
     // When the stale tab marks the note spent
     await expect(wallet.markSpent(existing.id, ownerFence)).rejects.toBeInstanceOf(
@@ -140,7 +145,7 @@ describe('stale-owner fencing of fund commits', () => {
       ownerFence,
     );
     await vi.waitFor(() => expect(locks.requests.length).toBeGreaterThan(0));
-    replacePersistedOwner();
+    await replacePersistedOwner();
     await locks.releaseNext();
 
     // Then the commit fails closed instead of writing stale-owner ciphertext
@@ -185,7 +190,7 @@ describe('stale-owner fencing of fund commits', () => {
 
     const updating = wallet.markSpent(existing.id, ownerFence);
     await vi.waitFor(() => expect(locks.requests.length).toBeGreaterThan(0));
-    replacePersistedOwner();
+    await replacePersistedOwner();
     await locks.releaseNext();
 
     await expect(updating).rejects.toBeInstanceOf(WalletOwnerMismatchError);
@@ -206,7 +211,7 @@ describe('stale-owner fencing of fund commits', () => {
 
     const removing = wallet.removeNote(existing.id, ownerFence);
     await vi.waitFor(() => expect(locks.requests.length).toBeGreaterThan(0));
-    replacePersistedOwner();
+    await replacePersistedOwner();
     await locks.releaseNext();
 
     await expect(removing).rejects.toBeInstanceOf(WalletOwnerMismatchError);

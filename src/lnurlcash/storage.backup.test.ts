@@ -6,7 +6,9 @@
 
 import {beforeEach, describe, expect, it, vi} from 'vitest'
 
-import {linkingPubKeyHex, saveLinkingKey} from './keys'
+import {bytesToHex} from '@noble/hashes/utils.js'
+
+import {deriveWalletMaterial, linkingPubKeyHex, saveWalletMaterial} from './keys'
 import {applyBackup, buildBackup, parseBackupFile} from './storage'
 import {readFundsDocument, writeFundsDocument} from './storage/bearers'
 import {addTrustedMint, readTrustedMints} from './trustedMints'
@@ -16,6 +18,14 @@ const LINKING_KEY = new Uint8Array(32).fill(7)
 const OWNER_ID = linkingPubKeyHex(LINKING_KEY)
 const KEY_A = '02' + 'aa'.repeat(32)
 const KEY_B = '03' + 'bb'.repeat(32)
+// full v2 material for this harness's fixed linking key (real BIP-32 cash
+// root, same construction as the lifecycle test harness)
+const MATERIAL = {
+  ...deriveWalletMaterial(
+    'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about',
+  ),
+  linkingKeyHex: bytesToHex(LINKING_KEY),
+}
 
 type LockRequest = {
   readonly callback: () => unknown
@@ -59,7 +69,7 @@ const backup = (server: string, mintPubkey: string) => ({
   ],
 })
 
-const installProvenOwner = (): Promise<void> => saveLinkingKey(LINKING_KEY)
+const installProvenOwner = (): Promise<void> => saveWalletMaterial(MATERIAL)
 
 beforeEach(() => {
   vi.unstubAllGlobals()

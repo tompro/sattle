@@ -9,7 +9,7 @@ import {finalizeEvent, getPublicKey} from 'nostr-tools/pure'
 import {v2 as nip44v2} from 'nostr-tools/nip44'
 import {buildNoteUrl} from 'lnurlcash-kit'
 
-import {deriveBearerAesKey, linkingPubKeyHex, saveLinkingKey} from './keys'
+import {deriveBearerAesKey, deriveWalletMaterial, linkingPubKeyHex, saveWalletMaterial} from './keys'
 import {
   BACKUP_EVENT_KIND,
   backupPubkey,
@@ -40,6 +40,13 @@ import {requiredValue, stubLocalStorage} from './test-utils'
 const LINKING_KEY = new Uint8Array(32).fill(7)
 const OTHER_KEY = new Uint8Array(32).fill(9)
 const OWNER_ID = linkingPubKeyHex(LINKING_KEY)
+// full v2 material for the fixed harness linking key (real BIP-32 cash root)
+const MATERIAL = {
+  ...deriveWalletMaterial(
+    'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about',
+  ),
+  linkingKeyHex: bytesToHex(LINKING_KEY),
+}
 
 const K1_A = 'aa'.repeat(32)
 const K1_B = 'bb'.repeat(32)
@@ -103,7 +110,7 @@ describe('restoreFromNostr', () => {
     const {transport} = createRecordingTransport()
 
     // device A: one note, one trusted mint, one setting - all published
-    await saveLinkingKey(LINKING_KEY)
+    await saveWalletMaterial(MATERIAL)
     await persistBearer(aesKey, bearerFixture({id: 'note-a'}))
     await addTrustedMint('mint.example', MINT_PUBKEY, {ownerId: OWNER_ID})
     persistSettings({defaultMint: 'mint.example'})
@@ -120,7 +127,7 @@ describe('restoreFromNostr', () => {
 
     // device B: the same seed on empty storage
     stubLocalStorage()
-    await saveLinkingKey(LINKING_KEY)
+    await saveWalletMaterial(MATERIAL)
     const result = await restoreFromNostr(LINKING_KEY, RELAYS, {transport})
 
     expect(result.found).toEqual(['notes', 'mints', 'settings'])
