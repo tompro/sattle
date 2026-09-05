@@ -10,6 +10,9 @@ import type {LnurlcashOptions} from 'lnurlcash-kit'
 import type {Bearer, NewBearer} from '../types'
 import type {NwcConnectionRecord} from '../storage/nwcConnections'
 import type {PreparedMint} from '../ops'
+import type {CarveResult} from '../ops'
+import type {OutputSecretAllocator} from '../ops/allocation'
+import type {MintSignatureKeys} from '../ops/shared'
 import type {PollOptions} from '../ops/shared'
 
 import type {NwcConnectionInfo} from './connection'
@@ -31,6 +34,38 @@ export type NwcServiceDeps = {
   // mint - NIP-47's make_invoice carries no mint choice)
   getDefaultMint: () => string | null
   assertCurrentOwner: () => void
+  // the wallet's durable allocation path (BIP-32 reservation) for every
+  // note output secret a request stages
+  allocateOutputSecrets: (
+    server: string,
+    count: number,
+    assertOwner: () => void,
+  ) => Promise<readonly string[]>
+  // trusted current+previous signing keys a landed carve output verifies
+  // against - the trusted-mint registry, owner-scoped
+  mintSignatureKeys: MintSignatureKeys
+  recoverPendingMints: (assertOwner: () => void) => Promise<void>
+  persistMintOutput: (note: NewBearer, assertOwner: () => void) => Promise<Bearer>
+  discardMintOutput: (staged: Bearer, assertOwner: () => void) => Promise<void>
+  setMintOutputRetirement: (
+    staged: Bearer,
+    retireAfter: number,
+    assertOwner: () => void,
+  ) => Promise<void>
+  reserveMintOutputSource: (
+    staged: Bearer,
+    sourceId: string,
+    recoverySecret: string,
+    assertOwner: () => void,
+  ) => Promise<void>
+  finalizeMintOutput: (staged: Bearer, note: NewBearer, assertOwner: () => void) => Promise<void>
+  finalizePaymentReturn: (
+    staged: Bearer,
+    note: NewBearer,
+    assertOwner: () => void,
+  ) => Promise<void>
+  finalizeSpentMintOutput: (staged: Bearer, assertOwner: () => void) => Promise<void>
+  commitCarve: (carve: CarveResult, assertOwner: () => void) => Promise<Bearer>
   applyChangeset: (
     changeset: NwcChangeset,
     connection: NwcConnectionInfo,
@@ -61,6 +96,7 @@ export type PendingInvoice = {
   createdAt: number // unix seconds
   expiresAt?: number
   prepared: PreparedMint
+  stagedOutput: Bearer
   state: 'pending' | 'settled' | 'failed'
   preimage?: string
   settledAt?: number

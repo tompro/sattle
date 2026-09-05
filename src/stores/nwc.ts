@@ -1,3 +1,4 @@
+// allow: SIZE_OK — indivisible NWC service lifecycle state machine and Pinia control surface.
 import { ref, watch } from 'vue';
 import { defineStore } from 'pinia';
 
@@ -21,6 +22,7 @@ import {
   writeNwcEnabled,
 } from '@/lnurlcash/nwc';
 import { linkingPubKeyHex } from '@/lnurlcash/keys';
+import { getTrustedMintVerificationKeys } from '@/lnurlcash/trustedMints';
 import { msatToSats } from '@/lnurlcash/units';
 import { TrustedMintPostCommitError, useWalletStore } from './wallet';
 import { useMintsStore } from './mints';
@@ -142,11 +144,77 @@ export const useNwcStore = defineStore('nwc', () => {
     lastError.value = '';
     try {
       const ownerFence = wallet.captureOwnerFence();
+      if (wallet.bearers.some((bearer) => bearer.pendingMint && !bearer.spent)) {
+        await wallet.recoverPendingMints(ownerFence);
+        if (token !== startToken || wallet.state !== 'unlocked' || !enabled.value) return;
+      }
       const started = await startService(wallet.requireLinkingKey(), {
         // only spendable notes may back an NWC payment
         getBearers: () => wallet.unspentBearers,
         getDefaultMint: () => mints.defaultMint,
         assertCurrentOwner: ownerFence,
+        allocateOutputSecrets: (server, count, assertOwner) =>
+          wallet.allocateOutputSecrets(server, count, assertOwner),
+        // a mid-request lockdown must not verify anything new: no keys
+        mintSignatureKeys: (server) =>
+          wallet.state === 'unlocked' && wallet.pubkey !== null
+            ? getTrustedMintVerificationKeys(server, wallet.pubkey)
+            : [],
+        recoverPendingMints: (assertOwner) => wallet.recoverPendingMints(assertOwner),
+        persistMintOutput: async (note, assertOwner) => {
+          const [persisted] = await wallet.addBearers([note], assertOwner);
+          if (!persisted) throw new Error('The pending mint output was not persisted.');
+          return persisted;
+        },
+        discardMintOutput: async (staged, assertOwner) => {
+          await wallet.removeNote(staged.id, assertOwner);
+        },
+        setMintOutputRetirement: async (staged, retireAfter, assertOwner) =>
+          wallet.updateBearer(
+            staged.id,
+            { pendingMint: { ...staged.pendingMint, retireAfter } },
+            assertOwner,
+          ),
+        reserveMintOutputSource: async (staged, sourceId, recoverySecret, assertOwner) => {
+          await wallet.reserveStagedMintSource(staged.id, sourceId, recoverySecret, assertOwner);
+        },
+        finalizeMintOutput: async (staged, note, assertOwner) => {
+          try {
+            await wallet.finalizeStagedMintOutput(staged.id, note, assertOwner);
+          } catch (error) {
+            if (!(error instanceof TrustedMintPostCommitError)) throw error;
+            lastError.value = error.message;
+          }
+          await activity.log(
+            'nwc',
+            `Received ${formatSats(note.amount)} sats via NWC.`,
+            (error) => {
+              lastError.value = error.message;
+            },
+          );
+        },
+        finalizePaymentReturn: async (staged, note, assertOwner) => {
+          try {
+            await wallet.finalizeStagedMintOutput(staged.id, note, assertOwner);
+          } catch (error) {
+            if (!(error instanceof TrustedMintPostCommitError)) throw error;
+            lastError.value = error.message;
+          }
+        },
+        finalizeSpentMintOutput: async (staged, assertOwner) => {
+          await wallet.finalizeSpentStagedMintOutput(staged.id, assertOwner);
+        },
+        commitCarve: async (carve, assertOwner) => {
+          try {
+            return await wallet.commitCarve(carve, assertOwner);
+          } catch (error) {
+            if (!(error instanceof TrustedMintPostCommitError)) throw error;
+            lastError.value = error.message;
+            const committed = wallet.bearers.find((bearer) => bearer.url === carve.note.url);
+            if (!committed) throw error;
+            return committed;
+          }
+        },
         applyChangeset,
         transport: transportOverride ?? undefined,
         onError: (error) => {
@@ -193,7 +261,13 @@ export const useNwcStore = defineStore('nwc', () => {
     running.value = false;
     const priorStop = stopping;
     const activeStop = active?.stop() ?? Promise.resolve();
-    const completion = Promise.all([priorStop, activeStop, ...pendingStarts]).then(() => undefined);
+    const completion = Promise.allSettled([priorStop, activeStop, ...pendingStarts]).then(
+      (results) => {
+        for (const result of results) {
+          if (result.status === 'rejected') throw result.reason;
+        }
+      },
+    );
     pendingStop = completion;
     stopping = completion.catch(() => undefined);
     return completion;
@@ -232,6 +306,10 @@ export const useNwcStore = defineStore('nwc', () => {
 
   // ---- settings ----
   const setEnabled = async (value: boolean): Promise<void> => {
+    if (value === enabled.value) {
+      if (value && !running.value && pendingStarts.size === 0) await start();
+      return;
+    }
     const ownerId = ownerFromWallet();
     writeNwcEnabled(ownerId, value);
     enabled.value = value;

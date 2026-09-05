@@ -12,10 +12,12 @@ import {prepareMint} from '../ops'
 import {PollAbortedError} from '../ops/shared'
 
 import type {PendingInvoice, RequestContext} from './context'
-import {invoiceResult, resolvePaymentHash, settleAndClaim} from './invoices'
+import {invoiceResult, invoiceRetireAfter, resolvePaymentHash, settleAndClaim} from './invoices'
 import {handlePayInvoice} from './pay'
 import type {NwcRequest, NwcResponse} from './protocol'
 import {NWC_METHODS, errResult, okResult} from './protocol'
+
+const MAX_PENDING_MINT_OUTPUTS = 20
 
 // the same eligibility carve applies - the balance answers "what could
 // this wallet actually pay with right now"
@@ -55,11 +57,78 @@ const handleMakeInvoice = async (
   if (!mint) {
     return errResult('make_invoice', 'INTERNAL', 'No default mint is configured.')
   }
+  const now = ctx.nowSeconds()
+  if (
+    ctx.deps
+      .getBearers()
+      .some(
+        (bearer) =>
+          !bearer.spent &&
+          bearer.pendingMint?.retireAfter !== undefined &&
+          bearer.pendingMint.retireAfter <= now,
+      )
+  ) {
+    await ctx.deps.recoverPendingMints(ctx.assertOwner)
+  }
+  const pendingOutputs = ctx.deps
+    .getBearers()
+    .filter((bearer) => bearer.pendingMint && !bearer.spent).length
+  if (pendingOutputs >= MAX_PENDING_MINT_OUTPUTS) {
+    return errResult('make_invoice', 'QUOTA_EXCEEDED', 'Too many unpaid invoices are pending.')
+  }
   let prepared: PreparedMint
+  let stagedOutput: Bearer | undefined
   try {
-    prepared = await prepareMint(mint, amountMsat, ctx.deps.kit ?? {})
+    prepared = await prepareMint(mint, amountMsat, {
+      ...(ctx.deps.kit ?? {}),
+      assertOwner: ctx.assertOwner,
+      allocateOutputSecrets: (server, count) =>
+        ctx.deps.allocateOutputSecrets(server, count, ctx.assertOwner),
+      persistOutput: async (note) => {
+        stagedOutput = await ctx.deps.persistMintOutput(note, ctx.assertOwner)
+      },
+    })
   } catch (err) {
+    if (stagedOutput) {
+      try {
+        await ctx.deps.discardMintOutput(stagedOutput, ctx.assertOwner)
+      } catch (cleanupError) {
+        return errResult(
+          'make_invoice',
+          'INTERNAL',
+          cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
+        )
+      }
+    }
     return errResult('make_invoice', 'INTERNAL', err instanceof Error ? err.message : String(err))
+  }
+  if (!stagedOutput) {
+    return errResult('make_invoice', 'INTERNAL', 'The pending mint output was not persisted.')
+  }
+  const retireAfter = invoiceRetireAfter(prepared.invoice)
+  if (retireAfter !== null) {
+    try {
+      await ctx.deps.setMintOutputRetirement(
+        stagedOutput,
+        retireAfter,
+        ctx.assertOwner,
+      )
+    } catch (error) {
+      try {
+        await ctx.deps.discardMintOutput(stagedOutput, ctx.assertOwner)
+      } catch (cleanupError) {
+        return errResult(
+          'make_invoice',
+          'INTERNAL',
+          cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
+        )
+      }
+      return errResult(
+        'make_invoice',
+        'INTERNAL',
+        error instanceof Error ? error.message : String(error),
+      )
+    }
   }
   const entry: PendingInvoice = {
     invoice: prepared.invoice,
@@ -67,6 +136,7 @@ const handleMakeInvoice = async (
     amountMsat: prepared.grossMsat,
     createdAt: ctx.nowSeconds(),
     prepared,
+    stagedOutput,
     state: 'pending',
   }
   if (typeof params.description === 'string' && params.description) {

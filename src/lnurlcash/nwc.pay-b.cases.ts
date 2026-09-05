@@ -138,21 +138,38 @@ describe('service: pay_invoice (continued)', () => {
       // running out, and that wait is the test's own clock
       poll: {intervalMs: 10, intervalCapMs: 20, maxWaitMs: 300},
     })
-    state.bearers = [await makeBearer(m, '01'.repeat(32), 21_000)]
+    const original = await makeBearer(m, '01'.repeat(32), 21_000)
+    state.bearers = [original]
 
     const response = await call(relay, walletServicePubkey, 'pay_invoice', {
       invoice: 'lnbc210n1pjqrstuvwxyz',
     })
     expect(response.error?.code).toBe('PAYMENT_FAILED')
 
-    // the funds came back, re-secured: the old secret burned, a fresh one
-    // tracked unspent via the changeset - and no budget spend recorded
     expect(m.state.noteState('01'.repeat(32))).toBe('burned')
-    const returned = requiredValue(state.bearers.find((b) => b.id.startsWith('added-')))
-    expect(returned.spent).toBeUndefined()
-    expect(returned.amount).toBe(21_000)
-    expect(m.state.noteState(requiredValue(noteK1(returned.url)))).toBe('outstanding')
+    expect(state.bearers.find((bearer) => bearer.id === original.id)?.spent).toBe(true)
+    expect(
+      state.bearers.find((bearer) => bearer.id !== original.id && bearer.amount === 21_000 && !bearer.spent),
+    ).toBeDefined()
+    expect(state.bearers.filter((bearer) => !bearer.spent).reduce((sum, bearer) => sum + bearer.amount, 0)).toBe(21_000)
     expect(requiredValue(readNwcConnections(OWNER_ID)[0]).spent.msat).toBe(0)
+    await stop()
+  })
+
+  it('conserves balance when a split payment fails and returns its carved funds', async () => {
+    const m = await mint({meltAlwaysFails: true})
+    const {relay, walletServicePubkey, state, stop} = await startTestService({
+      poll: {intervalMs: 10, intervalCapMs: 20, maxWaitMs: 300},
+    })
+    state.bearers = [await makeBearer(m, '02'.repeat(32), 30_000)]
+
+    const response = await call(relay, walletServicePubkey, 'pay_invoice', {
+      invoice: 'lnbc210n1pjqrstuvwxyz',
+    })
+
+    expect(response.error?.code).toBe('PAYMENT_FAILED')
+    expect(state.bearers.filter((bearer) => !bearer.spent).reduce((sum, bearer) => sum + bearer.amount, 0)).toBe(30_000)
+    expect(state.bearers.find((bearer) => bearer.amount === 21_000 && !bearer.spent)).toBeDefined()
     await stop()
   })
 })

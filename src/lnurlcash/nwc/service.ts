@@ -89,13 +89,24 @@ export const startService = async (
     )
   }
 
-  // pay_invoice goes through the connection's queue (budget atomicity);
-  // everything else dispatches directly
+  let invoiceQueue: Promise<unknown> = Promise.resolve()
+
+  // Payments serialize per connection for budget atomicity. Invoice
+  // creation serializes across the service so different clients cannot
+  // race the wallet-wide durable pending-output cap.
   const dispatchSerialized = (
     runtime: ConnectionRuntime,
     ctx: RequestContext,
     request: NwcRequest,
   ): Promise<NwcResponse> => {
+    if (request.method === 'make_invoice') {
+      const run = invoiceQueue.then(
+        () => dispatch(ctx, request),
+        () => dispatch(ctx, request),
+      )
+      invoiceQueue = run.catch(() => undefined)
+      return run
+    }
     if (request.method !== 'pay_invoice') return dispatch(ctx, request)
     const run = runtime.queue.then(
       () => dispatch(ctx, request),
@@ -223,8 +234,12 @@ export const startService = async (
     accepting = false
     for (const runtime of runtimes) runtime.sub.close()
     stopController.abort()
-    stopPromise = Promise.all([...inFlight])
-      .then(() => undefined)
+    stopPromise = Promise.allSettled([...inFlight])
+      .then((results) => {
+        for (const result of results) {
+          if (result.status === 'rejected') throw result.reason
+        }
+      })
       .finally(() => {
         for (const runtime of runtimes) {
           runtime.walletSecret?.fill(0)

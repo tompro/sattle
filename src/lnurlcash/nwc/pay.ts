@@ -10,6 +10,7 @@ import {
   fetchInvoiceVerification,
   isBolt11Invoice,
   noteK1,
+  withNewK1,
 } from 'lnurlcash-kit'
 
 import type {Bearer, NewBearer} from '../types'
@@ -33,19 +34,29 @@ import {errResult, okResult} from './protocol'
 export const payChangeset = (bearers: Bearer[], result: PayResult): NwcChangeset => {
   const add: NewBearer[] = []
   const markSpent: string[] = result.carve.consumed.map((b) => b.id)
-  if (result.carve.change) add.push(result.carve.change)
+  // the staged change's URL may lack the signature the landed result's URL
+  // carries - identify outputs by their secret, not the whole URL
+  const changeK1 = result.carve.change ? noteK1(result.carve.change.url) : null
+  if (
+    result.carve.change &&
+    !bearers.some((bearer) => changeK1 !== null && noteK1(bearer.url) === changeK1)
+  ) {
+    add.push(result.carve.change)
+  }
+  const carvedK1 = noteK1(result.carve.note.url)
+  const existing = carvedK1 ? bearers.find((bearer) => noteK1(bearer.url) === carvedK1) : undefined
   if (result.outcome === 'failed-funds-returned') {
-    add.push(result.rotatedNote ?? result.carve.note)
+    if (existing) {
+      const index = markSpent.indexOf(existing.id)
+      if (index >= 0) markSpent.splice(index, 1)
+    }
   } else {
     // settled / still-pending / already-spent: the carved note is gone or
     // locked. When it was one of the wallet's own bearers (an exact-match
     // carve), lock that bearer; a freshly carved note is never added -
     // it was born spent
-    const carvedK1 = noteK1(result.carve.note.url)
-    const existing = carvedK1 ? bearers.find((b) => noteK1(b.url) === carvedK1) : undefined
     if (existing) markSpent.push(existing.id)
   }
-  if (result.rescuedNote) add.push(result.rescuedNote)
   return {add, markSpent}
 }
 
@@ -79,11 +90,40 @@ export const handlePayInvoice = async (
   }
   const bearers = ctx.deps.getBearers()
   let result: PayResult
+  let committedCarve: Bearer | undefined
+  let returnStage: Bearer | undefined
   try {
     result = await payWithBearers(bearers, invoice, {
       poll: ctx.deps.poll ?? {},
       kit: ctx.deps.kit ?? {},
       assertOwner: ctx.assertOwner,
+      allocateOutputSecrets: (server, count) =>
+        ctx.deps.allocateOutputSecrets(server, count, ctx.assertOwner),
+      mintSignatureKeys: ctx.deps.mintSignatureKeys,
+      onCarve: async (carve) => {
+        committedCarve = await ctx.deps.commitCarve(carve, ctx.assertOwner)
+      },
+      onReturnReady: async (carve, recoverySecret) => {
+        const source =
+          committedCarve ?? ctx.deps.getBearers().find((bearer) => bearer.url === carve.note.url)
+        if (!source) throw new Error('The carved note was not tracked.')
+        returnStage = await ctx.deps.persistMintOutput(
+          {
+            url: withNewK1(carve.note.url, recoverySecret, carve.note.amount),
+            callback: '',
+            amount: 0,
+            verified: false,
+            pendingMint: {retireAfter: ctx.nowSeconds() + 14 * 24 * 60 * 60},
+          },
+          ctx.assertOwner,
+        )
+        await ctx.deps.reserveMintOutputSource(
+          returnStage,
+          source.id,
+          recoverySecret,
+          ctx.assertOwner,
+        )
+      },
     })
   } catch (err) {
     if (err instanceof UncertainOutcomeError) {
@@ -109,6 +149,14 @@ export const handlePayInvoice = async (
       message,
     )
   }
+  if (returnStage) {
+    const returned = result.rotatedNote ?? result.rescuedNote
+    if (returned) {
+      await ctx.deps.finalizePaymentReturn(returnStage, returned, ctx.assertOwner)
+    } else if (result.outcome !== 'unknown-still-pending') {
+      await ctx.deps.finalizeSpentMintOutput(returnStage, ctx.assertOwner)
+    }
+  }
   const spendRecorded = (): void => {
     // This conservative budget debit is persisted separately from bearer
     // storage. A later bearer commit failure does not roll it back.
@@ -119,7 +167,7 @@ export const handlePayInvoice = async (
     case 'settled': {
       spendRecorded()
       await ctx.deps.applyChangeset(
-        payChangeset(bearers, result),
+        payChangeset(ctx.deps.getBearers(), result),
         ctx.connection(),
         'pay_invoice',
         ctx.assertOwner,
@@ -142,7 +190,7 @@ export const handlePayInvoice = async (
     }
     case 'failed-funds-returned':
       await ctx.deps.applyChangeset(
-        payChangeset(bearers, result),
+        payChangeset(ctx.deps.getBearers(), result),
         ctx.connection(),
         'pay_invoice',
         ctx.assertOwner,
@@ -154,7 +202,7 @@ export const handlePayInvoice = async (
       )
     case 'note-already-spent':
       await ctx.deps.applyChangeset(
-        payChangeset(bearers, result),
+        payChangeset(ctx.deps.getBearers(), result),
         ctx.connection(),
         'pay_invoice',
         ctx.assertOwner,
@@ -167,7 +215,7 @@ export const handlePayInvoice = async (
     case 'unknown-still-pending':
       spendRecorded()
       await ctx.deps.applyChangeset(
-        payChangeset(bearers, result),
+        payChangeset(ctx.deps.getBearers(), result),
         ctx.connection(),
         'pay_invoice',
         ctx.assertOwner,

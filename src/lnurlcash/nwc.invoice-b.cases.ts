@@ -57,6 +57,7 @@ import {
   waitFor,
 } from './nwc.testProtocol'
 import {call, makeBearer, mint, readResponse, startTestService} from './nwc.testService'
+import {SIGNED_BOLT11_FIXTURE} from './nwc.invoice-a.cases'
 describe('service: make_invoice / lookup_invoice (continued)', () => {
   it('drains a rejected invoice settlement and reports it before stop resolves', async () => {
     const m = await mint({testHooks: true})
@@ -227,6 +228,99 @@ describe('service: make_invoice / lookup_invoice (continued)', () => {
       amount: 21_000,
     })
     expect(response.error?.code).toBe('INTERNAL')
+    await stop()
+  })
+
+  it('rejects invoice creation when the durable pending-output cap is reached', async () => {
+    const {relay, walletServicePubkey, state, stop} = await startTestService({
+      defaultMint: 'mint@example.com',
+    })
+    for (let index = 0; index < 20; index += 1) {
+      state.bearers.push({
+        id: `pending-${index}`,
+        url: `https://mint.example/w?k1=${index.toString(16).padStart(64, '0')}`,
+        callback: '',
+        amount: 0,
+        verified: false,
+        pendingMint: {},
+        createdAt: index,
+        updatedAt: index,
+      })
+    }
+
+    const response = await call(relay, walletServicePubkey, 'make_invoice', {
+      amount: 21_000,
+    })
+
+    expect(response.error?.code).toBe('QUOTA_EXCEEDED')
+    expect(state.bearers).toHaveLength(20)
+    await stop()
+  })
+
+  it('removes staged outputs when invoice preparation fails before publication', async () => {
+    const m = await mint({testHooks: true})
+    let rejectQuotes = true
+    const {relay, walletServicePubkey, state, stop} = await startTestService({
+      defaultMint: `mint@127.0.0.1:${m.port}`,
+      kit: {
+        fetch: (input, init) => {
+          const url =
+            typeof input === 'string'
+              ? input
+              : input instanceof URL
+                ? input.href
+                : input.url
+          if (rejectQuotes && url.includes('comment=')) {
+            return Promise.resolve(new Response('quote failed', {status: 500}))
+          }
+          return fetch(input, init)
+        },
+      },
+    })
+
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      const failed = await call(relay, walletServicePubkey, 'make_invoice', {amount: 21_000})
+      expect(failed.error?.code).toBe('INTERNAL')
+      expect(state.bearers).toHaveLength(0)
+    }
+
+    rejectQuotes = false
+    const made = await call(relay, walletServicePubkey, 'make_invoice', {amount: 21_000})
+    expect(made.error).toBeNull()
+    expect(state.bearers).toHaveLength(1)
+    await stop()
+  })
+
+  it('removes an unpublished stage when retirement persistence fails', async () => {
+    const m = await mint({testHooks: true})
+    const {relay, walletServicePubkey, state, stop} = await startTestService({
+      defaultMint: `mint@127.0.0.1:${m.port}`,
+      setMintOutputRetirement: () => Promise.reject(new Error('retirement write failed')),
+      kit: {
+        fetch: (input, init) => {
+          const url =
+            typeof input === 'string'
+              ? input
+              : input instanceof URL
+                ? input.href
+                : input.url
+          if (url.includes('comment=')) {
+            return Promise.resolve(
+              new Response(JSON.stringify({pr: SIGNED_BOLT11_FIXTURE}), {
+                status: 200,
+                headers: {'content-type': 'application/json'},
+              }),
+            )
+          }
+          return fetch(input, init)
+        },
+      },
+    })
+
+    const response = await call(relay, walletServicePubkey, 'make_invoice', {amount: 25_000})
+
+    expect(response.error?.code).toBe('INTERNAL')
+    expect(state.bearers).toHaveLength(0)
     await stop()
   })
 

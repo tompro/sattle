@@ -7,11 +7,12 @@
 // already-rotated (burned) note secret.
 
 import {afterEach, beforeEach, describe, expect, it} from 'vitest'
-import {bytesToHex, hexToBytes} from '@noble/hashes/utils.js'
+import {sha256} from '@noble/hashes/sha2.js'
+import {bytesToHex, hexToBytes, utf8ToBytes} from '@noble/hashes/utils.js'
 import {finalizeEvent, getPublicKey} from 'nostr-tools/pure'
 import {encrypt as nip04Encrypt, decrypt as nip04Decrypt} from 'nostr-tools/nip04'
 import {v2 as nip44v2} from 'nostr-tools/nip44'
-import {buildNoteUrl, fetchNoteInfo, noteK1} from 'lnurlcash-kit'
+import {buildNoteUrl, fetchNoteInfo, noteK1, serverOf} from 'lnurlcash-kit'
 import {createMockMint} from 'lnurlcash-conformance/mock-mint'
 
 import {
@@ -114,6 +115,7 @@ afterEach(async () => {
 })
 
 let bearerCounter = 0
+let allocationCounter = 0
 export const makeBearer = async (m: Mint, k1: string, amountMsat: number): Promise<Bearer> => {
   m.state.creditNote(k1, amountMsat)
   const url = buildNoteUrl(`${m.url}/w`, k1, amountMsat)
@@ -143,6 +145,7 @@ export const startTestService = async (options: {
   claimPoll?: typeof FAST_POLL
   kit?: NwcServiceDeps['kit']
   commitChangeset?: (changeset: NwcChangeset) => Promise<void>
+  setMintOutputRetirement?: () => Promise<void>
 }): Promise<{
   relay: ReturnType<typeof createFakeRelay>
   walletServicePubkey: string
@@ -164,8 +167,120 @@ export const startTestService = async (options: {
   }
   const service = await startService(options.linkingKey ?? LINKING_KEY, {
     assertCurrentOwner: () => undefined,
+    // deterministic stand-in for the wallet's BIP-32 allocation path
+    allocateOutputSecrets: (_server, count) => {
+      const secrets = Array.from({length: count}, () => {
+        allocationCounter += 1
+        return bytesToHex(sha256(utf8ToBytes(`nwc-test-allocation-${allocationCounter}`)))
+      })
+      return Promise.resolve(secrets)
+    },
+    // the keys a production caller serves from the trusted-mint registry:
+    // each created mock mint's current key plus any it retired
+    mintSignatureKeys: (server) =>
+      mints.flatMap((m) =>
+        new URL(m.url).host === server ? [m.state.pubkey, ...m.state.previousPubkeys] : [],
+      ),
+    recoverPendingMints: () => Promise.resolve(),
     getBearers: () => state.bearers,
     getDefaultMint: () => options.defaultMint ?? null,
+    persistMintOutput: (note) => {
+      bearerCounter += 1
+      const bearer: Bearer = {
+        ...note,
+        id: `staged-${bearerCounter}`,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }
+      state.bearers.push(bearer)
+      return Promise.resolve(bearer)
+    },
+    discardMintOutput: (staged) => {
+      state.bearers = state.bearers.filter((bearer) => bearer.id !== staged.id)
+      return Promise.resolve()
+    },
+    setMintOutputRetirement: (staged, retireAfter) => {
+      const override = options.setMintOutputRetirement?.()
+      if (override) return override
+      const index = state.bearers.findIndex((bearer) => bearer.id === staged.id)
+      if (index < 0) return Promise.reject(new Error('The staged bearer is missing.'))
+      const updated: Bearer = {
+        ...staged,
+        pendingMint: {...staged.pendingMint, retireAfter},
+        updatedAt: Date.now(),
+      }
+      state.bearers[index] = updated
+      return Promise.resolve()
+    },
+    reserveMintOutputSource: (staged, sourceId, recoverySecret) => {
+      const index = state.bearers.findIndex((bearer) => bearer.id === staged.id)
+      const source = state.bearers.find((bearer) => bearer.id === sourceId)
+      if (index < 0 || !source) return Promise.reject(new Error('The payment journal is missing.'))
+      source.spent = true
+      state.bearers[index] = {
+        ...state.bearers[index]!,
+        pendingMint: {
+          ...state.bearers[index]!.pendingMint,
+          sourceBearerId: sourceId,
+          sourceRecoverySecret: recoverySecret,
+        },
+      }
+      return Promise.resolve()
+    },
+    finalizeMintOutput: async (staged, note) => {
+      const changeset: NwcChangeset = {add: [], markSpent: []}
+      await options.commitChangeset?.(changeset)
+      state.changesets.push(changeset)
+      const index = state.bearers.findIndex((bearer) => bearer.id === staged.id)
+      if (index < 0) throw new Error('The staged bearer is missing.')
+      state.bearers[index] = {...staged, ...note, pendingMint: undefined, updatedAt: Date.now()}
+    },
+    finalizePaymentReturn: async (staged, note) => {
+      const index = state.bearers.findIndex((bearer) => bearer.id === staged.id)
+      if (index < 0) throw new Error('The staged bearer is missing.')
+      const sourceId = state.bearers[index]?.pendingMint?.sourceBearerId
+      if (sourceId) {
+        const source = state.bearers.find((bearer) => bearer.id === sourceId)
+        if (source) source.spent = true
+      }
+      state.bearers[index] = {...state.bearers[index]!, ...note, pendingMint: undefined, updatedAt: Date.now()}
+    },
+    finalizeSpentMintOutput: (staged) => {
+      state.bearers = state.bearers.filter((bearer) => bearer.id !== staged.id)
+      return Promise.resolve()
+    },
+    commitCarve: async (carve) => {
+      // a checkpoint is identified by its output secret: the landed phase's
+      // URL carries a signature the staged phase's did not have yet
+      const sameOutput = (url: string, noteUrl: string): boolean =>
+        serverOf(url) === serverOf(noteUrl) &&
+        noteK1(url) !== null &&
+        noteK1(url) === noteK1(noteUrl)
+      const additions = [carve.note, ...(carve.change ? [carve.change] : [])].filter(
+        (note) => !state.bearers.some((bearer) => sameOutput(bearer.url, note.url)),
+      )
+      const changeset: NwcChangeset = {
+        add: additions,
+        markSpent: carve.consumed.map((bearer) => bearer.id),
+      }
+      await options.commitChangeset?.(changeset)
+      state.changesets.push(changeset)
+      for (const bearer of state.bearers) {
+        if (changeset.markSpent.includes(bearer.id)) bearer.spent = true
+      }
+      for (const note of additions) {
+        bearerCounter += 1
+        state.bearers.unshift({
+          ...note,
+          id: `carve-${bearerCounter}`,
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        })
+      }
+      const committed = state.bearers.find((bearer) => sameOutput(bearer.url, carve.note.url))
+      if (!committed) throw new Error('The carved note was not committed.')
+      return committed
+    },
     applyChangeset: async (changeset: NwcChangeset) => {
       await options.commitChangeset?.(changeset)
       state.changesets.push(changeset)

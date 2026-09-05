@@ -57,8 +57,23 @@ import {
   waitFor,
 } from './nwc.testProtocol'
 import {call, makeBearer, mint, readResponse, startTestService} from './nwc.testService'
+import {invoiceRetireAfter} from './nwc/invoices'
+
+export const SIGNED_BOLT11_FIXTURE =
+  'lnbc250n1p4f4d2ysp5s7pqe2590jtlgpqyzw82m4xtn5wpkehf8jt4fcj754p4s2nf3r3qpp5d2zdf3satrdk5qllx00hwah5tlg69h90w5s78flfg8ffq4fagalsdqhd3h82unvvdshx6pqd45kuaqxqyjw5qcqpjrzjqwda3lfx6jhqd33847rqkfclpnyfv9f74pavem0mtvhdyzlam4lnkr83hqqq55cqqyqqqqqqqqqqzsqq9q9qxpqysgql3u9h88pw0pnfqdqh5hdgstgc8gazln7xeleuu7elmw7ea6q488js0mqwchtcq7rphv9uc3q5yqllx6ksdw8yjfq5e9jcgarlqzrk6gq5ksjdz'
+
 describe('service: make_invoice / lookup_invoice', () => {
-  it('issues an invoice, settles it in the background, and reports the preimage', async () => {
+  it('derives a safe retirement time from a signed BOLT11 invoice', () => {
+    expect(invoiceRetireAfter(SIGNED_BOLT11_FIXTURE)).toBeGreaterThan(0)
+  })
+
+  it('rejects a retirement time outside the safe integer range', () => {
+    const timestamp = 'q'.repeat(7)
+    const expiryTag = `xqv${'l'.repeat(12)}`
+    expect(invoiceRetireAfter(`lnbc1${timestamp}${expiryTag}qqqqqq`)).toBeNull()
+  })
+
+  it('stages an output, settles it in the background, and reports the preimage', async () => {
     const m = await mint({testHooks: true})
     const {relay, walletServicePubkey, state, stop} = await startTestService({
       defaultMint: `mint@127.0.0.1:${m.port}`,
@@ -88,7 +103,9 @@ describe('service: make_invoice / lookup_invoice', () => {
     }
     expect(invoice).toMatch(/^lnbc/)
     expect(paymentHash).toMatch(/^[0-9a-f]{64}$/)
-
+    const staged = requiredValue(state.bearers.find((bearer) => bearer.id.startsWith('staged-')))
+    expect(staged.verified).toBe(false)
+    expect(staged.callback).toBe('')
     // before settlement the lookup reports the pending invoice
     const pending = await call(relay, walletServicePubkey, 'lookup_invoice', {
       payment_hash: paymentHash,
@@ -101,7 +118,7 @@ describe('service: make_invoice / lookup_invoice', () => {
     // mints the note
     const settleRes = await fetch(`${m.url}/_test/settle?payment_hash=${paymentHash}`)
     expect(settleRes.ok).toBe(true)
-    await waitFor(() => state.changesets.some((c) => c.add.length > 0))
+    await waitFor(() => state.bearers.some((bearer) => bearer.verified))
 
     const settled = await call(relay, walletServicePubkey, 'lookup_invoice', {
       payment_hash: paymentHash,
@@ -112,138 +129,14 @@ describe('service: make_invoice / lookup_invoice', () => {
     const preimage = requiredString(settled.result?.preimage)
     expect(preimage).toMatch(/^[0-9a-f]{64}$/)
 
-    // the minted note was claimed AND rotated before settlement was
-    // recorded: the preimage the client just learned is a burned secret,
-    // and the wallet's fresh note is the only live one
-    expect(m.state.noteState(preimage)).toBe('burned')
-    const minted = requiredValue(state.bearers.find((b) => b.id.startsWith('added-')))
+    // The staged record was updated in place before settlement became
+    // visible. The payment preimage is only a receipt and keys no note.
+    expect(m.state.noteState(preimage)).toBeNull()
+    const minted = requiredValue(state.bearers.find((b) => b.id === staged.id))
     expect(minted.amount).toBe(21_000)
     expect(minted.verified).toBe(true)
     expect(noteK1(minted.url)).not.toBe(preimage)
     expect(m.state.noteState(requiredValue(noteK1(minted.url)))).toBe('outstanding')
-    await stop()
-  })
-
-  it('settles against a NAMED mint: note at the wallet secret, preimage a plain receipt', async () => {
-    const m = await mint({commentAllowed: 64, testHooks: true})
-    const {relay, walletServicePubkey, state, stop} = await startTestService({
-      defaultMint: `mint@127.0.0.1:${m.port}`,
-    })
-
-    const made = await call(relay, walletServicePubkey, 'make_invoice', {
-      amount: 21_000,
-    })
-    expect(made.error).toBeNull()
-    const paymentHash = made.result?.payment_hash
-    if (typeof paymentHash !== 'string') {
-      throw new TypeError('make_invoice did not return a payment hash')
-    }
-
-    const settleRes = await fetch(`${m.url}/_test/settle?payment_hash=${paymentHash}`)
-    expect(settleRes.ok).toBe(true)
-    await waitFor(() => state.changesets.some((c) => c.add.length > 0))
-
-    const settled = await call(relay, walletServicePubkey, 'lookup_invoice', {
-      payment_hash: paymentHash,
-    })
-    expect(settled.error).toBeNull()
-    expect(settled.result?.state).toBe('settled')
-    // a named mint's verify preimage is an ordinary payment receipt -
-    // it keys nothing at the mint - so it is always safe to hand out
-    const preimage = requiredString(settled.result?.preimage)
-    expect(preimage).toMatch(/^[0-9a-f]{64}$/)
-    expect(m.state.noteState(preimage)).toBeNull()
-
-    // the note was claimed at the wallet's own secret - unrotated,
-    // because nothing exposed it
-    const minted = requiredValue(state.bearers.find((b) => b.id.startsWith('added-')))
-    expect(minted.amount).toBe(21_000)
-    expect(minted.verified).toBe(true)
-    const mintedK1 = requiredValue(noteK1(minted.url))
-    expect(m.state.noteState(mintedK1)).toBe('outstanding')
-    // the quote was bound to that secret's hash
-    expect([...m.state.invoices.values()].at(-1)?.boundTo).toBe(hashK1(mintedK1))
-    await stop()
-  })
-
-  it('rescues a NAMED mint that credited the preimage, and burns it before handing it out', async () => {
-    // the mintToHashIgnoresH adversary: advertises output naming, binds
-    // nothing, credits the payment hash - and (non-compliantly) still
-    // serves verify, so the preimage path can recover the note
-    const m = await mint({
-      commentAllowed: 64,
-      mintToHashIgnoresH: true,
-      verifyOnUnnamedMint: true,
-      testHooks: true,
-    })
-    const {relay, walletServicePubkey, state, stop} = await startTestService({
-      defaultMint: `mint@127.0.0.1:${m.port}`,
-      claimPoll: {intervalMs: 10, intervalCapMs: 20, maxWaitMs: 400},
-    })
-
-    const made = await call(relay, walletServicePubkey, 'make_invoice', {amount: 21_000})
-    const paymentHash = made.result?.payment_hash
-    if (typeof paymentHash !== 'string') {
-      throw new TypeError('make_invoice did not return a payment hash')
-    }
-    const settleRes = await fetch(`${m.url}/_test/settle?payment_hash=${paymentHash}`)
-    expect(settleRes.ok).toBe(true)
-    await waitFor(() => state.changesets.some((c) => c.add.length > 0))
-
-    const settled = await call(relay, walletServicePubkey, 'lookup_invoice', {
-      payment_hash: paymentHash,
-    })
-    expect(settled.result?.state).toBe('settled')
-    // the rescue claimed through the preimage path and rotated off it, so
-    // the receipt handed to the client is a burned secret
-    const preimage = requiredString(settled.result?.preimage)
-    expect(m.state.noteState(preimage)).toBe('burned')
-    const minted = requiredValue(state.bearers.find((b) => b.id.startsWith('added-')))
-    const mintedK1 = requiredValue(noteK1(minted.url))
-    expect(mintedK1).not.toBe(preimage)
-    expect(m.state.noteState(mintedK1)).toBe('outstanding')
-    await stop()
-  })
-
-  it('withholds the preimage when the rescue claim could not rotate', async () => {
-    // same lying mint, but the rotate's request never lands (the mint
-    // dies between the claim and the rotate): the preimage may still be
-    // the note's secret, so it stays a secret even though the invoice
-    // reads settled
-    const m = await mint({
-      commentAllowed: 64,
-      mintToHashIgnoresH: true,
-      verifyOnUnnamedMint: true,
-      testHooks: true,
-    })
-    const rotateFailingFetch: typeof fetch = (input, init) => {
-      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
-      if (url.includes('/w/cb')) return Promise.reject(new Error('connection reset'))
-      return fetch(input, init)
-    }
-    const {relay, walletServicePubkey, state, stop} = await startTestService({
-      defaultMint: `mint@127.0.0.1:${m.port}`,
-      claimPoll: {intervalMs: 10, intervalCapMs: 20, maxWaitMs: 400},
-      kit: {fetch: rotateFailingFetch},
-    })
-
-    const made = await call(relay, walletServicePubkey, 'make_invoice', {amount: 21_000})
-    const paymentHash = made.result?.payment_hash
-    if (typeof paymentHash !== 'string') {
-      throw new TypeError('make_invoice did not return a payment hash')
-    }
-    const settleRes = await fetch(`${m.url}/_test/settle?payment_hash=${paymentHash}`)
-    expect(settleRes.ok).toBe(true)
-    await waitFor(() => state.changesets.some((c) => c.add.length > 0))
-
-    const settled = await call(relay, walletServicePubkey, 'lookup_invoice', {
-      payment_hash: paymentHash,
-    })
-    expect(settled.result?.state).toBe('settled')
-    // settled, but NO receipt: an unrotated preimage may still be the note
-    expect(settled.result?.preimage).toBeUndefined()
-    // the note is tracked either way (it IS money)
-    expect(state.bearers.some((b) => b.id.startsWith('added-'))).toBe(true)
     await stop()
   })
 

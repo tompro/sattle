@@ -67,6 +67,7 @@ export const useWalletStore = defineStore('wallet', () => {
   let currentMaterial: WalletMaterialV2 | null = null;
   let lifecycleToken = 0;
   let acceptingOwnerWork = false;
+  const foregroundFundOperations = new Set<Promise<void>>();
 
   const lockWarningSecondsLeft = ref<number | null>(null);
   const runTransition = createWalletTransitionQueue({
@@ -105,12 +106,22 @@ export const useWalletStore = defineStore('wallet', () => {
     pubkey.value = null;
   };
 
+  const drainAcceptedOwnerWork = async (): Promise<void> => {
+    const results = await Promise.allSettled([
+      stopWalletNwcSession(),
+      ...foregroundFundOperations,
+    ]);
+    for (const result of results) {
+      if (result.status === 'rejected') throw result.reason;
+    }
+  };
+
   const deactivateSession = async (): Promise<void> => {
     acceptingOwnerWork = false;
     stopOwnerChanges();
     idleWatch.stop();
     try {
-      await stopWalletNwcSession();
+      await drainAcceptedOwnerWork();
     } finally {
       // even a rejected drain ends the session: 'locked' never holds key
       // material and no captured fence stays valid
@@ -201,7 +212,7 @@ export const useWalletStore = defineStore('wallet', () => {
       // the drain runs before the fence is invalidated and the runtime is
       // cleared so an in-flight fund-critical changeset can still commit
       // (its applyChangeset needs the live fence and key)
-      await stopWalletNwcSession();
+      await drainAcceptedOwnerWork();
       invalidateLifecycle();
       clearRuntime();
       if (ownerId === null) await clearUnownedAuthorizations();
@@ -323,6 +334,28 @@ export const useWalletStore = defineStore('wallet', () => {
     return currentMaterial;
   };
 
+  const beginFundOperation = (): {
+    readonly ownerFence: () => void;
+    readonly complete: () => void;
+  } => {
+    const captured = ownerFence.capture();
+    let completePromise: (() => void) | undefined;
+    const completion = new Promise<void>((resolve) => {
+      completePromise = resolve;
+    });
+    foregroundFundOperations.add(completion);
+    let active = true;
+    return {
+      ownerFence: captured,
+      complete: () => {
+        if (!active) return;
+        active = false;
+        foregroundFundOperations.delete(completion);
+        completePromise?.();
+      },
+    };
+  };
+
   const funds = createWalletFunds({
     requireKey,
     requireCashRoot: () => cashNodeFromHex(requireWalletMaterial().cashRootHex),
@@ -355,5 +388,6 @@ export const useWalletStore = defineStore('wallet', () => {
     requireLinkingKey,
     requireWalletMaterial,
     captureOwnerFence: ownerFence.capture,
+    beginFundOperation,
   };
 });
