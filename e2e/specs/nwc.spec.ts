@@ -1,10 +1,25 @@
 import { test, expect } from '../fixtures';
-import { createFreshWallet } from '../helpers/wallet';
+import { createFreshWallet, fundMockMintWallet } from '../helpers/wallet';
+import { hexToBytes } from '@noble/hashes/utils.js';
+import { finalizeEvent } from 'nostr-tools/pure';
+import { decrypt as nip04Decrypt, encrypt as nip04Encrypt } from 'nostr-tools/nip04';
 
 // M5 Nostr Wallet Connect settings surface. No real relay traffic: the one
 // test that runs the service injects a fake transport through the dev-only
 // window hook (stores/nwc.ts) before enabling - every other test stays
 // UI-only with the service off.
+
+// a Nostr event as the fake transport carries it - the plain JSON shape
+// NIP-47 requests and responses take on the wire
+type WireEvent = {
+  id: string;
+  pubkey: string;
+  kind: number;
+  created_at: number;
+  tags: string[][];
+  content: string;
+  sig: string;
+};
 
 type FakeSub = { closed: boolean; close: () => void };
 
@@ -12,6 +27,8 @@ declare global {
   interface Window {
     __sattleNwcTest: { setTransport: (transport: unknown) => void };
     __nwcSubs: FakeSub[];
+    __nwcPublished: WireEvent[];
+    __nwcOnEvent?: (event: WireEvent) => void;
   }
 }
 
@@ -145,5 +162,113 @@ test.describe('NWC settings page', () => {
     await expect
       .poll(async () => page.evaluate(() => window.__nwcSubs.every((sub) => sub.closed)))
       .toBe(true);
+  });
+
+  test('a client pays an invoice and the wallet settles it at the mint', async ({ page, mint }) => {
+    // a funded wallet: 50 sats at the mock mint, its signing key pinned
+    await fundMockMintWallet(page, mint, 50_000);
+    await expect(page.locator('.balance-card .text-h2')).toHaveText('50');
+
+    // create a connection and read its one-time URI: the wallet service
+    // pubkey is the host, the client secret the `secret` param
+    await openNwcPage(page);
+    await page.getByRole('button', { name: 'Create connection' }).click();
+    const uri = (await page.locator('.nwc-connection-string').textContent())?.trim();
+    expect(uri).toBeTruthy();
+    if (!uri) throw new Error('Expected the one-time NWC connection string.');
+    await page.getByRole('button', { name: "Done - I've saved it" }).click();
+    const connectionUrl = new URL(uri);
+    const walletServicePubkey = connectionUrl.host;
+    const clientSecret = connectionUrl.searchParams.get('secret') ?? '';
+
+    // a fake transport that captures the request handler and every
+    // published event, installed before the service starts
+    await page.evaluate(() => {
+      window.__nwcSubs = [];
+      window.__nwcPublished = [];
+      window.__sattleNwcTest.setTransport({
+        publish: (_relays: string[], event: WireEvent) => {
+          window.__nwcPublished.push(event);
+          return Promise.resolve();
+        },
+        subscribe: (_relays: string[], _filter: unknown, onEvent: (event: WireEvent) => void) => {
+          window.__nwcOnEvent = onEvent;
+          const sub: FakeSub = {
+            closed: false,
+            close() {
+              this.closed = true;
+            },
+          };
+          window.__nwcSubs.push(sub);
+          return sub;
+        },
+      });
+    });
+    await page.locator('.q-toggle[aria-label="Enable Nostr Wallet Connect"]').click();
+    await expect(page.getByText('Service running', { exact: false })).toBeVisible();
+    await expect.poll(async () => page.evaluate(() => typeof window.__nwcOnEvent)).toBe('function');
+
+    // a 21-sat invoice the mint will settle; the request is exactly what a
+    // NIP-47 client sends: kind 23194, NIP-04 encrypted to the service,
+    // schnorr-signed by the connection's client secret
+    const invoice = 'lnbc210n1pjqrstuvwxyz';
+    const content = await nip04Encrypt(
+      clientSecret,
+      walletServicePubkey,
+      JSON.stringify({ method: 'pay_invoice', params: { invoice } }),
+    );
+    const request = finalizeEvent(
+      {
+        kind: 23194,
+        created_at: Math.floor(Date.now() / 1000),
+        tags: [
+          ['p', walletServicePubkey],
+          ['encryption', 'nip04'],
+        ],
+        content,
+      },
+      hexToBytes(clientSecret),
+    );
+    await page.evaluate((event) => window.__nwcOnEvent?.(event), request);
+
+    // the service pays and answers on the same scheme
+    await expect
+      .poll(async () =>
+        page.evaluate(
+          (id) =>
+            window.__nwcPublished.find(
+              (event) =>
+                event.kind === 23195 && event.tags.some((tag) => tag[0] === 'e' && tag[1] === id),
+            ) ?? null,
+          request.id,
+        ),
+      )
+      .not.toBeNull();
+    const responseEvent = await page.evaluate(
+      (id) =>
+        window.__nwcPublished.find(
+          (event) =>
+            event.kind === 23195 && event.tags.some((tag) => tag[0] === 'e' && tag[1] === id),
+        ) ?? null,
+      request.id,
+    );
+    if (!responseEvent) throw new Error('the service published no response');
+    const response: unknown = JSON.parse(
+      await nip04Decrypt(clientSecret, walletServicePubkey, responseEvent.content),
+    );
+    if (typeof response !== 'object' || response === null) {
+      throw new Error('the service response is not an object');
+    }
+    const result = response as { result_type?: unknown; error?: unknown; result?: unknown };
+    expect(result.result_type).toBe('pay_invoice');
+    expect(result.error).toBeNull();
+    // the receipt is the melt's payment preimage from the mint's own
+    // settle proof - 64 hex chars, never a note secret
+    const payload = result.result as { preimage?: unknown };
+    expect(payload.preimage).toMatch(/^[0-9a-f]{64}$/);
+
+    // the wallet paid 21 of its 50 sats; the change stays in the wallet
+    await page.goto('/#/');
+    await expect(page.locator('.balance-card .text-h2')).toHaveText('29');
   });
 });

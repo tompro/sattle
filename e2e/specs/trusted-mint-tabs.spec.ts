@@ -23,7 +23,7 @@ const addMint = async (page: Page, server: string, mintPubkey: string): Promise<
 
 const ownerId = async (page: Page): Promise<string | null> =>
   page.evaluate(() => {
-    const raw = localStorage.getItem('sattle_linking_key');
+    const raw = localStorage.getItem('sattle_wallet_material_v2');
     if (raw === null) return null;
     const saved: unknown = JSON.parse(raw);
     if (typeof saved !== 'object' || saved === null || !('ownerId' in saved)) return null;
