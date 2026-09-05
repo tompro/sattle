@@ -1,7 +1,7 @@
-import { MINT_KEY, PASSWORD, deferred, mocks } from './wallet.lifecycle.testHarness';
+import { MINT_KEY, PASSWORD, WALLET_MATERIAL_KEY, deferred, mocks } from './wallet.lifecycle.testHarness';
 import { describe, expect, it, vi } from 'vitest';
 
-import { savedKeyExists } from '@/lnurlcash/keys';
+import { savedWalletMaterialExists, walletMaterialHash } from '@/lnurlcash/keys';
 import { addTrustedMint } from '@/lnurlcash/trustedMints';
 import { useNwcStore } from './nwc';
 import { useWalletStore } from './wallet';
@@ -24,7 +24,7 @@ describe('complete owner teardown', () => {
     await expect(locking).rejects.toThrow('NWC lock drain failed');
     expect(wallet.state).toBe('locked');
     expect(wallet.lifecycleError).toMatch(/NWC lock drain failed/i);
-    expect(() => wallet.requireLinkingKey()).toThrow('Wallet is locked.');
+    expect(() => wallet.requireWalletMaterial()).toThrow('Wallet is locked.');
     expect(wallet.bearers).toEqual([]);
     expect(nwc.running).toBe(false);
     expect(serviceStop).toHaveBeenCalledTimes(1);
@@ -58,9 +58,11 @@ describe('complete owner teardown', () => {
           credentialId: '11'.repeat(16),
           hkdfSalt: '22'.repeat(16),
           iv: '33'.repeat(12),
-          wrappedKey: '44'.repeat(48),
+          materialHash: walletMaterialHash(wallet.requireWalletMaterial()),
+          wrappedMaterial: '44'.repeat(48),
           createdAt: 1,
           ownerId,
+          version: 2,
         },
       ]),
     );
@@ -79,19 +81,19 @@ describe('complete owner teardown', () => {
     // Then completion and destructive storage removal wait for the drain,
     // and the session stays commit-capable (fence and keys live) until it
     // finishes so accepted NWC work can still reach its durable outcome
-    expect(savedKeyExists()).toBe(true);
+    expect(savedWalletMaterialExists()).toBe(true);
     expect(wallet.state).toBe('unlocked');
     drain.resolve();
     await forgetting;
     expect(wallet.state).toBe('none');
-    expect(savedKeyExists()).toBe(false);
+    expect(savedWalletMaterialExists()).toBe(false);
     expect(localStorage.getItem('sattle_passkey_slots')).toBeNull();
     expect(localStorage.getItem('sattle_nwc_connections')).toBeNull();
     expect(localStorage.getItem('sattle_nwc_enabled')).toBeNull();
     expect(localStorage.getItem('sattle_trusted_mints')).toBeNull();
     expect([...listeners.values()].every((registered) => registered.size === 0)).toBe(true);
     expect(cleanupOrder.indexOf('listener:scroll')).toBeLessThan(
-      cleanupOrder.indexOf('storage:sattle_linking_key'),
+      cleanupOrder.indexOf(`storage:${WALLET_MATERIAL_KEY}`),
     );
   });
 
@@ -105,12 +107,12 @@ describe('complete owner teardown', () => {
     // When forget reaches biometric teardown
     const forgetting = wallet.forgetWallet();
 
-    // Then the caller sees failure and the saved key is not falsely removed
+    // Then the caller sees failure and the saved material is not falsely removed
     await expect(forgetting).rejects.toThrow('secure delete failed');
     expect(wallet.state).toBe('locked');
     expect(wallet.lifecycleError).toMatch(/secure delete failed/i);
-    expect(savedKeyExists()).toBe(true);
-    expect(() => wallet.requireLinkingKey()).toThrow('Wallet is locked.');
+    expect(savedWalletMaterialExists()).toBe(true);
+    expect(() => wallet.requireWalletMaterial()).toThrow('Wallet is locked.');
   });
 
   it('surfaces NWC drain failure without removing the saved owner', async () => {
@@ -127,8 +129,8 @@ describe('complete owner teardown', () => {
     await expect(forgetting).rejects.toThrow('NWC drain failed');
     expect(wallet.state).toBe('locked');
     expect(wallet.lifecycleError).toMatch(/NWC drain failed/i);
-    expect(savedKeyExists()).toBe(true);
-    expect(() => wallet.requireLinkingKey()).toThrow('Wallet is locked.');
+    expect(savedWalletMaterialExists()).toBe(true);
+    expect(() => wallet.requireWalletMaterial()).toThrow('Wallet is locked.');
   });
 
   it('completes teardown on retry after a transient biometric deletion failure', async () => {
@@ -146,6 +148,6 @@ describe('complete owner teardown', () => {
     // Then teardown completes and the error surface clears
     expect(wallet.state).toBe('none');
     expect(wallet.lifecycleError).toBe('');
-    expect(savedKeyExists()).toBe(false);
+    expect(savedWalletMaterialExists()).toBe(false);
   });
 });

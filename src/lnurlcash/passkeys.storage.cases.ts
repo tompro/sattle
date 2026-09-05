@@ -20,7 +20,6 @@ import {
   registerPasskey,
   removePasskey,
   rewrapAllSlots,
-  unlockWithPasskey,
   unwrapWalletMaterialWithPrf,
   wrapWalletMaterialWithPrf,
 } from './passkeys'
@@ -148,7 +147,7 @@ beforeEach(async () => {
 describe('slot storage hygiene', () => {
   it('drops malformed entries instead of throwing', async () => {
     const auth = new FakeAuthenticator()
-    const slot = await registerPasskey(LINKING_KEY, {credentials: auth})
+    const slot = await registerPasskey(MATERIAL, {credentials: auth})
     const stored = parseJsonArray(localStorage.getItem('sattle_passkey_slots') ?? '[]')
     localStorage.setItem(
       'sattle_passkey_slots',

@@ -7,7 +7,8 @@ import {
   removeStoredTrustedMintsForOwner,
   resetStoredTrustedMints,
 } from './trustedMintsRepository'
-import {linkingPubKeyHex, savedKeyOwnerId} from './keys'
+import {linkingPubKeyHex} from './keys'
+import {savedKeyOwnerAllows} from './storage/currentOwner'
 import {
   addMint,
   cacheMintNodeInfo,
@@ -259,7 +260,7 @@ export const clearTrustedMints = (ownerId?: string): Promise<void> =>
 
 export const migrateLegacyTrustedMints = (linkingKey: Uint8Array): Promise<number> => {
   const ownerId = linkingPubKeyHex(linkingKey)
-  if (savedKeyOwnerId() !== ownerId) {
+  if (!savedKeyOwnerAllows(ownerId)) {
     throw new Error('Legacy trusted-mint migration requires a proven owner.')
   }
   return adoptLegacyStoredTrustedMints(ownerId)

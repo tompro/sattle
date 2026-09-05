@@ -20,7 +20,6 @@ import {
   registerPasskey,
   removePasskey,
   rewrapAllSlots,
-  unlockWithPasskey,
   unwrapWalletMaterialWithPrf,
   wrapWalletMaterialWithPrf,
 } from './passkeys'

@@ -20,21 +20,22 @@ import {
   registerPasskey,
   removePasskey,
   rewrapAllSlots,
-  unlockWithPasskey,
+  unlockWalletMaterialWithPasskey,
   unwrapWalletMaterialWithPrf,
   wrapWalletMaterialWithPrf,
 } from './passkeys'
 import {
   decryptRecord,
-  decryptSavedLinkingKey,
+  decryptSavedWalletMaterial,
   deriveBearerAesKey,
   deriveWalletMaterial,
-  ensureSavedKeyOwner,
   encryptRecord,
+  ensureSavedWalletMaterialOwner,
   linkingPubKeyHex,
-  savedKeyOwnerId,
+  savedWalletMaterialOwnerId,
   saveLinkingKey,
   saveWalletMaterial,
+  walletMaterialLinkingKey,
 } from './keys'
 import {parseJsonObject, parseJsonObjectArray, stubLocalStorage} from './test-utils'
 
@@ -133,10 +134,10 @@ const writeRawSlots = (slots: Array<Record<string, unknown>>): void => {
 }
 
 const removeSavedOwnerMarker = (): void => {
-  const stored = parseJsonObject(localStorage.getItem('sattle_linking_key') ?? '{}')
+  const stored = parseJsonObject(localStorage.getItem('sattle_wallet_material_v2') ?? '{}')
   delete stored.ownerId
   delete stored.version
-  localStorage.setItem('sattle_linking_key', JSON.stringify(stored))
+  localStorage.setItem('sattle_wallet_material_v2', JSON.stringify(stored))
 }
 
 beforeEach(async () => {
@@ -151,7 +152,7 @@ describe('slot ownership', () => {
     const auth = new FakeAuthenticator()
 
     // When its linking key registers a passkey
-    const slot = await registerPasskey(LINKING_KEY, {credentials: auth})
+    const slot = await registerPasskey(MATERIAL, {credentials: auth})
 
     // Then the slot carries that same canonical owner
     expect(slot.ownerId).toBe(linkingPubKeyHex(LINKING_KEY))
@@ -161,7 +162,7 @@ describe('slot ownership', () => {
   it('filters foreign, malformed, and unowned slots from reads and availability', async () => {
     // Given one valid current-owner slot plus copies with untrusted owners
     const auth = new FakeAuthenticator()
-    const current = await registerPasskey(LINKING_KEY, {credentials: auth})
+    const current = await registerPasskey(MATERIAL, {credentials: auth})
     const foreign = {
       ...current,
       credentialId: '11'.repeat(16),
@@ -191,9 +192,9 @@ describe('slot ownership', () => {
   })
 
   it('does not offer markerless slots for passkey-first unlock', async () => {
-    // Given a legacy slot and a saved key with no proven owner marker
+    // Given a legacy slot and a saved wallet with no proven owner marker
     const auth = new FakeAuthenticator()
-    await registerPasskey(LINKING_KEY, {credentials: auth})
+    await registerPasskey(MATERIAL, {credentials: auth})
     const legacy = readRawSlots()
     delete legacy[0]?.ownerId
     delete legacy[0]?.version
@@ -201,7 +202,7 @@ describe('slot ownership', () => {
     removeSavedOwnerMarker()
 
     // When passkey unlock is attempted before another proof path
-    const attempt = unlockWithPasskey({credentials: auth})
+    const attempt = unlockWalletMaterialWithPasskey({credentials: auth})
 
     // Then it fails before asking the authenticator
     await expect(attempt).rejects.toThrow('No passkeys')
@@ -212,7 +213,7 @@ describe('slot ownership', () => {
   it('does not auto-adopt legacy slots when a foreign wallet is saved', async () => {
     // Given markerless residue from the old wallet
     const auth = new FakeAuthenticator()
-    await registerPasskey(LINKING_KEY, {credentials: auth})
+    await registerPasskey(MATERIAL, {credentials: auth})
     const legacy = readRawSlots()
     delete legacy[0]?.ownerId
     delete legacy[0]?.version
@@ -231,24 +232,24 @@ describe('slot ownership', () => {
   it('adopts legacy slots only after the saved wallet owner is proven', async () => {
     // Given a legacy encrypted wallet and its markerless passkey slot
     const auth = new FakeAuthenticator()
-    await registerPasskey(LINKING_KEY, {credentials: auth})
+    await registerPasskey(MATERIAL, {credentials: auth})
     const legacy = readRawSlots()
     delete legacy[0]?.ownerId
     delete legacy[0]?.version
     writeRawSlots(legacy)
-    await saveLinkingKey(LINKING_KEY, 'correct horse')
+    await saveWalletMaterial(MATERIAL, 'correct horse')
     removeSavedOwnerMarker()
 
     // When migration is attempted before and then after password proof
     await expect(migrateLegacyPasskeySlots(LINKING_KEY)).rejects.toThrow('proven owner')
-    const provenKey = await decryptSavedLinkingKey('correct horse')
-    ensureSavedKeyOwner(provenKey)
-    await migrateLegacyPasskeySlots(provenKey)
+    const provenMaterial = await decryptSavedWalletMaterial('correct horse')
+    ensureSavedWalletMaterialOwner(provenMaterial)
+    await migrateLegacyPasskeySlots(walletMaterialLinkingKey(provenMaterial))
 
     // Then the same slot is stamped once for that proven owner and unlocks
-    expect(savedKeyOwnerId()).toBe(linkingPubKeyHex(LINKING_KEY))
+    expect(savedWalletMaterialOwnerId()).toBe(linkingPubKeyHex(LINKING_KEY))
     expect(readPasskeySlots()).toHaveLength(1)
     expect(readPasskeySlots()[0]?.ownerId).toBe(linkingPubKeyHex(LINKING_KEY))
-    await expect(unlockWithPasskey({credentials: auth})).resolves.toEqual(LINKING_KEY)
+    await expect(unlockWalletMaterialWithPasskey({credentials: auth})).resolves.toEqual(MATERIAL)
   })
 })

@@ -47,7 +47,6 @@ import {
   savedWalletMaterialOwnerId,
   serializeWalletMaterial,
   walletMaterialHash,
-  walletMaterialLinkingKey,
   type WalletMaterialV2,
 } from '@/lnurlcash/keys';
 import { isJsonObject } from '@/lnurlcash/jsonParsing';
@@ -188,12 +187,9 @@ const authenticateOrThrow = async (reason: string): Promise<void> => {
 };
 
 export const enableBiometricUnlock = async (
-  material: WalletMaterialV2 | Uint8Array,
+  material: WalletMaterialV2,
 ): Promise<void> => {
   if (!isNative()) throw new Error('Biometric unlock is only available in the native app.');
-  if (material instanceof Uint8Array) {
-    throw new Error('Biometric enrollment requires complete v2 wallet material.');
-  }
   const serialized = serializeWalletMaterial(material);
   const canonicalMaterial = parseWalletMaterial(serialized);
   if (canonicalMaterial === null) throw new Error('Biometric wallet material is invalid.');
@@ -305,9 +301,6 @@ export const unlockWalletMaterialWithBiometrics = async (): Promise<WalletMateri
   }
   return material;
 };
-
-export const unlockWithBiometrics = async (): Promise<Uint8Array> =>
-  walletMaterialLinkingKey(await unlockWalletMaterialWithBiometrics());
 
 // Native deletion goes first so a failure leaves the complete enrollment
 // available for the locked lifecycle to retry safely.

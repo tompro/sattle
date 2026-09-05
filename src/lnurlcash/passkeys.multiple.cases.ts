@@ -20,7 +20,7 @@ import {
   registerPasskey,
   removePasskey,
   rewrapAllSlots,
-  unlockWithPasskey,
+  unlockWalletMaterialWithPasskey,
   unwrapWalletMaterialWithPrf,
   wrapWalletMaterialWithPrf,
 } from './passkeys'
@@ -149,11 +149,11 @@ describe('multiple passkeys', () => {
   it('keeps slots independent: each passkey unlocks the same key', async () => {
     const laptop = new FakeAuthenticator()
     const phone = new FakeAuthenticator()
-    const laptopSlot = await registerPasskey(LINKING_KEY, {
+    const laptopSlot = await registerPasskey(MATERIAL, {
       credentials: laptop,
       name: 'laptop',
     })
-    const phoneSlot = await registerPasskey(LINKING_KEY, {
+    const phoneSlot = await registerPasskey(MATERIAL, {
       credentials: phone,
       name: 'phone',
     })
@@ -162,25 +162,25 @@ describe('multiple passkeys', () => {
     expect(laptopSlot.hkdfSalt).not.toBe(phoneSlot.hkdfSalt)
     expect(laptopSlot.wrappedMaterial).not.toBe(phoneSlot.wrappedMaterial)
 
-    expect(bytesToHex(await unlockWithPasskey({credentials: laptop}))).toBe(bytesToHex(LINKING_KEY))
-    expect(bytesToHex(await unlockWithPasskey({credentials: phone}))).toBe(bytesToHex(LINKING_KEY))
+    expect(await unlockWalletMaterialWithPasskey({credentials: laptop})).toEqual(MATERIAL)
+    expect(await unlockWalletMaterialWithPasskey({credentials: phone})).toEqual(MATERIAL)
   })
 
   it('removePasskey drops exactly one slot and leaves the rest working', async () => {
     const laptop = new FakeAuthenticator()
     const phone = new FakeAuthenticator()
-    const laptopSlot = await registerPasskey(LINKING_KEY, {
+    const laptopSlot = await registerPasskey(MATERIAL, {
       credentials: laptop,
     })
-    await registerPasskey(LINKING_KEY, {credentials: phone})
+    await registerPasskey(MATERIAL, {credentials: phone})
 
     await expect(removePasskey(laptopSlot.credentialId)).resolves.toBe(true)
     expect(readPasskeySlots()).toHaveLength(1)
 
     // the removed passkey no longer matches any offered credential
-    await expect(unlockWithPasskey({credentials: laptop})).rejects.toThrow('cancelled')
+    await expect(unlockWalletMaterialWithPasskey({credentials: laptop})).rejects.toThrow('cancelled')
     // the survivor is unaffected
-    expect(bytesToHex(await unlockWithPasskey({credentials: phone}))).toBe(bytesToHex(LINKING_KEY))
+    expect(await unlockWalletMaterialWithPasskey({credentials: phone})).toEqual(MATERIAL)
     // removing again is a no-op
     await expect(removePasskey(laptopSlot.credentialId)).resolves.toBe(false)
   })

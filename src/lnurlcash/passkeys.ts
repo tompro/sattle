@@ -24,7 +24,6 @@
 import {sha256} from '@noble/hashes/sha2.js'
 import {bytesToHex, hexToBytes, utf8ToBytes} from '@noble/hashes/utils.js'
 
-import {getPlainWalletMaterial, walletMaterialLinkingKey} from './keys'
 import {withStorageLock} from './storageLock'
 import type {PasskeySlot} from './storage/passkeySlots'
 import {
@@ -154,27 +153,15 @@ export type RegisterPasskeyOptions = {
 }
 
 // Registers a new passkey and persists a slot wrapping the complete material.
-// The Uint8Array input exists only until Task 5 updates the UI caller; it can
-// select already-saved plaintext v2 material but can never create a key-only
-// slot. The ceremony is navigator.credentials.create with the PRF
+// The ceremony is navigator.credentials.create with the PRF
 // extension evaluated on creation. Some authenticators only report
 // prf.enabled during create and evaluate the secret on the first get -
 // those get a follow-up get() against the fresh credential.
 export const registerPasskey = async (
-  material: WalletMaterialV2 | Uint8Array,
+  material: WalletMaterialV2,
   options: RegisterPasskeyOptions = {},
 ): Promise<PasskeySlot> => {
-  let walletMaterial: WalletMaterialV2
-  if (material instanceof Uint8Array) {
-    const savedMaterial = getPlainWalletMaterial()
-    if (savedMaterial === null || savedMaterial.linkingKeyHex !== bytesToHex(material)) {
-      throw new Error('Passkey registration requires complete v2 wallet material.')
-    }
-    walletMaterial = savedMaterial
-  } else {
-    walletMaterial = material
-  }
-  const ownerId = requireCurrentPasskeyMaterialOwner(walletMaterial)
+  const ownerId = requireCurrentPasskeyMaterialOwner(material)
   const credentials = options.credentials ?? defaultCredentials()
   const credential = await credentials.create({
     publicKey: {
@@ -209,7 +196,7 @@ export const registerPasskey = async (
     }
     prfOutput = await getPasskeyPrfOutput(credentialId, {credentials})
   }
-  const wrap = await wrapWalletMaterialWithPrf(prfOutput, walletMaterial)
+  const wrap = await wrapWalletMaterialWithPrf(prfOutput, material)
   const slot: PasskeySlot = {
     credentialId,
     ...wrap,
@@ -219,7 +206,7 @@ export const registerPasskey = async (
     version: PASSKEY_SLOT_VERSION,
   }
   await withStorageLock(PASSKEY_SLOTS_STORAGE_KEY, () => {
-    if (requireCurrentPasskeyMaterialOwner(walletMaterial) !== ownerId) {
+    if (requireCurrentPasskeyMaterialOwner(material) !== ownerId) {
       throw new Error('Saved wallet material changed during passkey registration.')
     }
     const slots = readPasskeySlots().filter((s) => s.credentialId !== credentialId)
@@ -285,13 +272,6 @@ export const unlockWalletMaterialWithPasskey = async (
   }
   return material
 }
-
-// Task 5 replaces this temporary projection when lifecycle activation accepts
-// complete wallet material. Slots already contain only canonical v2 material.
-export const unlockWithPasskey = async (
-  options: {credentials?: PasskeyCredentials} = {},
-): Promise<Uint8Array> =>
-  walletMaterialLinkingKey(await unlockWalletMaterialWithPasskey(options))
 
 // Removes the slot only: WebAuthn has no API to delete the credential from
 // the authenticator - an orphaned passkey simply finds nothing to unwrap.

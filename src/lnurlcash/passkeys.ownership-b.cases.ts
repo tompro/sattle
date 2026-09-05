@@ -20,7 +20,7 @@ import {
   registerPasskey,
   removePasskey,
   rewrapAllSlots,
-  unlockWithPasskey,
+  unlockWalletMaterialWithPasskey,
   unwrapWalletMaterialWithPrf,
   wrapWalletMaterialWithPrf,
 } from './passkeys'
@@ -151,7 +151,7 @@ describe('slot ownership (continued)', () => {
     // Given a current-owner slot whose authenticated wrap was replaced with
     // a valid wrap of another wallet key
     const auth = new FakeAuthenticator()
-    const slot = await registerPasskey(LINKING_KEY, {credentials: auth})
+    const slot = await registerPasskey(MATERIAL, {credentials: auth})
     const prfOutput = await getPasskeyPrfOutput(slot.credentialId, {
       credentials: auth,
     })
@@ -159,7 +159,7 @@ describe('slot ownership (continued)', () => {
     writeRawSlots([{...slot, ...foreignWrap}])
 
     // When the authenticator successfully unwraps that foreign key
-    const attempt = unlockWithPasskey({credentials: auth})
+    const attempt = unlockWalletMaterialWithPasskey({credentials: auth})
 
     // Then owner validation rejects it before activation can receive it
     await expect(attempt).rejects.toThrow('different wallet')
@@ -168,7 +168,7 @@ describe('slot ownership (continued)', () => {
   it('rejects a stale unlock when the saved owner changes during the ceremony', async () => {
     // Given an authenticator that replaces the saved wallet before returning
     const auth = new FakeAuthenticator()
-    await registerPasskey(LINKING_KEY, {credentials: auth})
+    await registerPasskey(MATERIAL, {credentials: auth})
     const stale: PasskeyCredentials = {
       create: auth.create,
       get: async (options) => {
@@ -180,7 +180,7 @@ describe('slot ownership (continued)', () => {
     }
 
     // When the old wallet's ceremony completes after replacement
-    const attempt = unlockWithPasskey({credentials: stale})
+    const attempt = unlockWalletMaterialWithPasskey({credentials: stale})
 
     // Then the old linking key is never returned for activation
     await expect(attempt).rejects.toThrow('different wallet')
@@ -189,7 +189,7 @@ describe('slot ownership (continued)', () => {
   it('does not adopt a slot carrying a malformed owner marker', async () => {
     // Given an otherwise valid slot whose owner claim is malformed
     const auth = new FakeAuthenticator()
-    const slot = await registerPasskey(LINKING_KEY, {credentials: auth})
+    const slot = await registerPasskey(MATERIAL, {credentials: auth})
     const malformed = {...slot, ownerId: 'not-an-owner'}
     writeRawSlots([malformed])
 
@@ -204,7 +204,7 @@ describe('slot ownership (continued)', () => {
   it('cannot remove a foreign-owner slot', async () => {
     // Given a slot owned by another wallet remains in shared storage
     const auth = new FakeAuthenticator()
-    const slot = await registerPasskey(LINKING_KEY, {credentials: auth})
+    const slot = await registerPasskey(MATERIAL, {credentials: auth})
     const foreign = {...slot, ownerId: linkingPubKeyHex(OTHER_LINKING_KEY)}
     writeRawSlots([foreign])
 
@@ -219,7 +219,7 @@ describe('slot ownership (continued)', () => {
   it('rewraps only current-owner slots and preserves foreign slots', async () => {
     // Given current and foreign slots share storage
     const auth = new FakeAuthenticator()
-    const slot = await registerPasskey(LINKING_KEY, {credentials: auth})
+    const slot = await registerPasskey(MATERIAL, {credentials: auth})
     const foreign = {
       ...slot,
       credentialId: '44'.repeat(16),

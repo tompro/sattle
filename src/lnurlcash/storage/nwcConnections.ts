@@ -4,7 +4,7 @@
 // parsed before use; ownerless v0 records remain hidden until an already
 // proven saved wallet explicitly migrates them.
 
-import {linkingPubKeyHex, savedKeyOwnerId} from '../keys'
+import {linkingPubKeyHex} from '../keys'
 import {
   clearNwcEnabledForOwner,
   clearUnownedNwcEnabled,
@@ -177,7 +177,7 @@ export type NwcLegacyMigrationResult = {
 
 export const migrateLegacyNwcStorage = (linkingKey: Uint8Array): NwcLegacyMigrationResult => {
   const ownerId = linkingPubKeyHex(linkingKey)
-  if (savedKeyOwnerId() !== ownerId) {
+  if (!savedKeyOwnerAllows(ownerId)) {
     throw new Error('Legacy NWC migration requires a proven saved wallet owner.')
   }
 

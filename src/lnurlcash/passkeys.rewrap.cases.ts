@@ -20,7 +20,7 @@ import {
   registerPasskey,
   removePasskey,
   rewrapAllSlots,
-  unlockWithPasskey,
+  unlockWalletMaterialWithPasskey,
   unwrapWalletMaterialWithPrf,
   wrapWalletMaterialWithPrf,
 } from './passkeys'
@@ -149,10 +149,10 @@ describe('rewrap for the current owner', () => {
   it('refreshes every current-owner wrap all-or-nothing', async () => {
     const laptop = new FakeAuthenticator()
     const phone = new FakeAuthenticator()
-    const laptopSlot = await registerPasskey(LINKING_KEY, {
+    const laptopSlot = await registerPasskey(MATERIAL, {
       credentials: laptop,
     })
-    const phoneSlot = await registerPasskey(LINKING_KEY, {
+    const phoneSlot = await registerPasskey(MATERIAL, {
       credentials: phone,
     })
 
@@ -166,7 +166,7 @@ describe('rewrap for the current owner', () => {
       ],
     ])
     await expect(rewrapAllSlots(MATERIAL, partial)).rejects.toThrow('partial re-wrap')
-    expect(bytesToHex(await unlockWithPasskey({credentials: laptop}))).toBe(bytesToHex(LINKING_KEY))
+    expect(await unlockWalletMaterialWithPasskey({credentials: laptop})).toEqual(MATERIAL)
 
     // full coverage refreshes both wraps around the same proven owner key
     const fresh = new Map([
@@ -184,8 +184,8 @@ describe('rewrap for the current owner', () => {
       ],
     ])
     await rewrapAllSlots(MATERIAL, fresh)
-    expect(bytesToHex(await unlockWithPasskey({credentials: laptop}))).toBe(bytesToHex(LINKING_KEY))
-    expect(bytesToHex(await unlockWithPasskey({credentials: phone}))).toBe(bytesToHex(LINKING_KEY))
+    expect(await unlockWalletMaterialWithPasskey({credentials: laptop})).toEqual(MATERIAL)
+    expect(await unlockWalletMaterialWithPasskey({credentials: phone})).toEqual(MATERIAL)
     expect(readPasskeySlots()[0]?.wrappedMaterial).not.toBe(laptopSlot.wrappedMaterial)
     // credential ids and labels survive the re-wrap
     expect(

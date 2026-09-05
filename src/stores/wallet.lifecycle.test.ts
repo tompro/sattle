@@ -1,4 +1,6 @@
 import './wallet.lifecycle.activation.cases';
+import './wallet.lifecycle.material.cases';
+import './wallet.lifecycle.legacyReset.cases';
 import './wallet.lifecycle.teardown.cases';
 import './wallet.lifecycle.lockFailure.cases';
 import './wallet.lifecycle.isolation.cases';

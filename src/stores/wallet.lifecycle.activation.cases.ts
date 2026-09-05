@@ -2,13 +2,13 @@ import {
   OWNER_ID,
   PASSWORD,
   deferred,
-  installLegacyEncryptedWallet,
   installLegacyOwnerlessResidue,
+  installOwnerlessEncryptedWalletMaterial,
   mocks,
 } from './wallet.lifecycle.testHarness';
 import { describe, expect, it, vi } from 'vitest';
 
-import { savedKeyExists, savedKeyOwnerId } from '@/lnurlcash/keys';
+import { savedWalletMaterialExists, savedWalletMaterialOwnerId } from '@/lnurlcash/keys';
 import { readNwcConnections } from '@/lnurlcash/nwc';
 import { readPasskeySlots } from '@/lnurlcash/passkeys';
 import { readTrustedMints } from '@/lnurlcash/trustedMints';
@@ -17,8 +17,8 @@ import { useWalletStore } from './wallet';
 
 describe('serialized wallet activation', () => {
   it('migrates a proven legacy owner before NWC can observe unlocked', async () => {
-    // Given an encrypted legacy wallet with ownerless authorization residue
-    await installLegacyEncryptedWallet();
+    // Given a restored (ownerless) v2 wallet with ownerless authorization residue
+    await installOwnerlessEncryptedWalletMaterial();
     installLegacyOwnerlessResidue();
     const wallet = useWalletStore();
     useNwcStore();
@@ -27,7 +27,7 @@ describe('serialized wallet activation', () => {
     await wallet.unlock(PASSWORD);
 
     // Then every legacy namespace belongs to the proven owner before startup
-    expect(savedKeyOwnerId()).toBe(OWNER_ID);
+    expect(savedWalletMaterialOwnerId()).toBe(OWNER_ID);
     expect(readPasskeySlots()).toHaveLength(1);
     expect(readNwcConnections(OWNER_ID)).toHaveLength(1);
     expect(readTrustedMints(OWNER_ID)).toHaveLength(1);
@@ -50,7 +50,7 @@ describe('serialized wallet activation', () => {
 
     // Then the successor cannot install until the old owner drain completes,
     // and the session keeps its commit capability while the drain runs
-    expect(savedKeyExists()).toBe(true);
+    expect(savedWalletMaterialExists()).toBe(true);
     expect(wallet.state).toBe('unlocked');
     drain.resolve();
     await forgetting;
@@ -70,9 +70,10 @@ describe('serialized wallet activation', () => {
     // When a valid file restore starts
     const restoring = wallet.restoreFromBackup({
       type: 'sattle-backup',
-      version: 1,
+      version: 2,
       createdAt: 1,
       bearers: [],
+      nextByHost: {},
     });
     await vi.waitFor(() => expect(stopSpy).toHaveBeenCalled());
 

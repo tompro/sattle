@@ -1,13 +1,18 @@
+// allow: SIZE_OK — indivisible wallet lifecycle state machine and its public Pinia surface.
 import { computed, onScopeDispose, ref } from 'vue';
 import { defineStore } from 'pinia';
 
 import {
-  deriveBearerAesKey,
-  savedKeyExists,
-  savedKeyIsEncrypted,
-  savedKeyOwnerId,
   clearSavedLinkingKey,
+  clearSavedWalletMaterial,
+  deriveBearerAesKey,
+  savedWalletMaterialExists,
+  savedWalletMaterialIsEncrypted,
+  savedWalletMaterialOwnerId,
+  walletMaterialLinkingKey,
 } from '@/lnurlcash/keys';
+import type { WalletMaterialV2 } from '@/lnurlcash/keys';
+import { walletMaterialOwnerId } from '@/lnurlcash/storage/storedSecret';
 import {
   loadBearers,
   clearAllBearers,
@@ -32,7 +37,7 @@ import {
   createSeedInstaller,
   createWalletTransitionQueue,
   migrateProvenLegacyOwner,
-  ownerOf,
+  resetUnsupportedLegacyWalletState,
   stopWalletNwcSession,
   WalletLifecycleError,
 } from './walletLifecycle';
@@ -40,23 +45,25 @@ import {
 export { TrustedMintPostCommitError } from './walletFunds';
 
 // 'none': no wallet on this device yet -> setup
-// 'locked': linking key present but password-encrypted -> unlock
-// 'unlocked': linking key (and thus the bearer AES key) in memory
+// 'locked': wallet material present but password-encrypted -> unlock
+// 'unlocked': the complete material (linking key + cash root) is in memory
 export type { WalletState } from './walletOwnerFence';
 
-// a plaintext-stored key also starts 'locked' - init() unlocks it
-// immediately without a password, keeping a single code path for deriving
+// a plaintext-stored material record also starts 'locked' - init() unlocks
+// it immediately without a password, keeping a single code path for deriving
 // the AES key and loading bearers
 export const useWalletStore = defineStore('wallet', () => {
-  const state = ref<WalletState>(savedKeyExists() ? 'locked' : 'none');
+  const state = ref<WalletState>(savedWalletMaterialExists() ? 'locked' : 'none');
   const pubkey = ref<string | null>(null);
   const auxiliaryError = ref('');
   const lifecycleError = ref('');
   let aesKey: CryptoKey | null = null;
-  // the linking key itself, only while unlocked - needed by backup/passkey
-  // operations (nostrBackup derives the backup key from it, passkey
-  // registration wraps it). Never exposed reactively; cleared on lock/forget
-  let currentLinkingKey: Uint8Array | null = null;
+  // the complete v2 wallet material, only while unlocked - the cash root
+  // funds every BIP-32 secret derivation and the linking key inside it backs
+  // backup/passkey operations (nostrBackup derives the backup key from it,
+  // passkey and biometric enrollment wrap the whole value). Never exposed
+  // reactively; cleared on lock/forget/failed activation
+  let currentMaterial: WalletMaterialV2 | null = null;
   let lifecycleToken = 0;
   let acceptingOwnerWork = false;
 
@@ -68,7 +75,7 @@ export const useWalletStore = defineStore('wallet', () => {
     },
   }).run;
 
-  const encrypted = computed(() => savedKeyIsEncrypted());
+  const encrypted = computed(() => savedWalletMaterialIsEncrypted());
 
   const ownerFence = createWalletOwnerFence({
     state: () => state.value,
@@ -79,7 +86,7 @@ export const useWalletStore = defineStore('wallet', () => {
 
   const clearRuntime = (): void => {
     aesKey = null;
-    currentLinkingKey = null;
+    currentMaterial = null;
     pubkey.value = null;
     funds.clear();
     useActivityStore().unload();
@@ -124,12 +131,12 @@ export const useWalletStore = defineStore('wallet', () => {
 
   const lock = (): Promise<void> =>
     runTransition(async () => {
-      if (!savedKeyIsEncrypted()) return;
+      if (!savedWalletMaterialIsEncrypted()) return;
       await deactivateSession();
     });
 
   const idleWatch = createWalletIdleWatch({
-    isEncrypted: savedKeyIsEncrypted,
+    isEncrypted: savedWalletMaterialIsEncrypted,
     isUnlocked: () => state.value === 'unlocked',
     isLockWarningVisible: () => lockWarningSecondsLeft.value !== null,
     lock,
@@ -138,30 +145,53 @@ export const useWalletStore = defineStore('wallet', () => {
     },
   });
 
-  const activate = async (linkingKey: Uint8Array, ownerWasMissing: boolean): Promise<void> => {
+  // Activation enters the unlocked state for exactly the saved material.
+  // The owner monitor is subscribed BEFORE the first async gap and the saved
+  // owner is re-read immediately before exposing 'unlocked': a replacement
+  // that landed during deferred loading must fence this activation instead
+  // of letting a stale owner through
+  const activate = async (material: WalletMaterialV2, ownerWasMissing: boolean): Promise<void> => {
     auxiliaryError.value = '';
-    await migrateProvenLegacyOwner(linkingKey, ownerWasMissing);
-    const key = await deriveBearerAesKey(linkingKey);
-    const loaded = await loadBearers(key);
-    const activity = useActivityStore();
-    await activity.loadFor(key);
-    const ownerId = ownerOf(linkingKey);
-    await restoreHeldMintTrust(loaded, ownerId, (message) => {
-      auxiliaryError.value = message;
-    });
-    aesKey = key;
-    currentLinkingKey = linkingKey;
-    lifecycleToken += 1;
+    const ownerId = walletMaterialOwnerId(material);
     observeOwnerChanges();
-    pubkey.value = ownerId;
-    funds.replace(loaded);
-    acceptingOwnerWork = true;
-    state.value = 'unlocked';
-    idleWatch.start();
+    try {
+      await migrateProvenLegacyOwner(material, ownerWasMissing);
+      if (savedWalletMaterialOwnerId() !== ownerId) {
+        throw new WalletLifecycleError('activate', new Error('saved wallet changed'));
+      }
+      const key = await deriveBearerAesKey(walletMaterialLinkingKey(material));
+      const loaded = await loadBearers(key);
+      const activity = useActivityStore();
+      await activity.loadFor(key);
+      await restoreHeldMintTrust(loaded, ownerId, (message) => {
+        auxiliaryError.value = message;
+      });
+      if (savedWalletMaterialOwnerId() !== ownerId) {
+        throw new WalletLifecycleError('activate', new Error('saved wallet changed'));
+      }
+      aesKey = key;
+      currentMaterial = material;
+      lifecycleToken += 1;
+      pubkey.value = ownerId;
+      funds.replace(loaded);
+      acceptingOwnerWork = true;
+      state.value = 'unlocked';
+      idleWatch.start();
+    } catch (error) {
+      stopOwnerChanges();
+      acceptingOwnerWork = false;
+      lifecycleToken += 1;
+      pubkey.value = null;
+      clearRuntime();
+      // a failed activation is locked when a wallet record exists (retry via
+      // unlock) and uninstalled when none does - never half-installed
+      state.value = savedWalletMaterialExists() ? 'locked' : 'none';
+      throw error;
+    }
   };
 
   const teardownCurrentOwner = async (resetRegistry = false): Promise<void> => {
-    const ownerId = savedKeyOwnerId() ?? pubkey.value;
+    const ownerId = savedWalletMaterialOwnerId() ?? pubkey.value;
     acceptingOwnerWork = false;
     stopOwnerChanges();
     idleWatch.stop();
@@ -178,7 +208,12 @@ export const useWalletStore = defineStore('wallet', () => {
       clearAllBearers();
       useActivityStore().unloadAndClear();
       clearSettings();
+      // invalidate the legacy saved-key entry too: old tabs watching it must
+      // fence themselves, and the record is residue under the v2 lifecycle
       clearSavedLinkingKey();
+      // the saved material goes last: a failure above leaves the complete
+      // enrollment (and this record) in place for a safe retry
+      clearSavedWalletMaterial();
       state.value = 'none';
     } finally {
       // a failed teardown still ends the session: 'locked' must never hold
@@ -189,12 +224,16 @@ export const useWalletStore = defineStore('wallet', () => {
   };
 
   const prepareInstallation = async (nextOwnerId: string): Promise<void> => {
-    const installedOwner = savedKeyOwnerId() ?? pubkey.value;
-    if (savedKeyExists() && installedOwner === nextOwnerId) {
+    // the install path re-runs the alpha reset, so a boot-time reset that
+    // failed (e.g. native biometric deletion) is retried before any
+    // successor is installed
+    await resetUnsupportedLegacyWalletState();
+    const installedOwner = savedWalletMaterialOwnerId() ?? pubkey.value;
+    if (savedWalletMaterialExists() && installedOwner === nextOwnerId) {
       if (state.value === 'unlocked') await deactivateSession();
       return;
     }
-    if (savedKeyExists() || state.value === 'unlocked') {
+    if (savedWalletMaterialExists() || state.value === 'unlocked') {
       await teardownCurrentOwner(true);
     }
     await clearUnownedAuthorizations();
@@ -202,7 +241,7 @@ export const useWalletStore = defineStore('wallet', () => {
 
   const installSeed = createSeedInstaller({
     prepareInstallation,
-    activate: (linkingKey) => activate(linkingKey, false),
+    activate: (material) => activate(material, false),
   });
 
   const access = createWalletAccess({
@@ -210,19 +249,25 @@ export const useWalletStore = defineStore('wallet', () => {
     installSeed,
     activate,
     canInit: () => state.value === 'locked',
+    onResetError: (error) => {
+      lifecycleError.value = error instanceof Error ? error.message : 'Wallet reset failed.';
+    },
   });
 
   const restoreFromBackup = (data: unknown): Promise<RestoreResult> =>
     runTransition(async () => {
       const backup = parseBackupFile(data);
-      const hadSavedKey = savedKeyExists();
+      const hadSavedMaterial = savedWalletMaterialExists();
       const activeOwner = pubkey.value;
-      const activeKey = state.value === 'unlocked' ? requireLinkingKey() : null;
-      if (activeKey !== null) await deactivateSession();
-      if (!hadSavedKey) await clearUnownedAuthorizations();
+      const activeMaterial = state.value === 'unlocked' ? requireWalletMaterial() : null;
+      if (activeMaterial !== null) await deactivateSession();
+      if (!hadSavedMaterial) await clearUnownedAuthorizations();
       const result = await applyBackup(backup, activeOwner ?? undefined);
-      if (activeKey !== null) await activate(activeKey, false);
-      else if (result.linkingKeyRestored) state.value = 'locked';
+      // a file-carried legacy linking key can never become v2 material (the
+      // cash root is unrecoverable from it): the record applyBackup just
+      // installed is residue here, and removing it keeps old tabs fenced
+      clearSavedLinkingKey();
+      if (activeMaterial !== null) await activate(activeMaterial, false);
       return result;
     });
 
@@ -232,21 +277,21 @@ export const useWalletStore = defineStore('wallet', () => {
     password?: string,
   ): Promise<void> =>
     runTransition(() =>
-      installSeed(seedPhrase, password, async (linkingKey) => {
-        await restoreFromNostrEngine(linkingKey, relays);
+      installSeed(seedPhrase, password, async (material) => {
+        await restoreFromNostrEngine(walletMaterialLinkingKey(material), relays);
       }),
     );
 
   const restoreCurrentFromNostr = (relays: string[]) =>
     runTransition(async () => {
-      const linkingKey = requireLinkingKey();
+      const material = requireWalletMaterial();
       await deactivateSession();
-      const result = await restoreFromNostrEngine(linkingKey, relays);
-      await activate(linkingKey, false);
+      const result = await restoreFromNostrEngine(walletMaterialLinkingKey(material), relays);
+      await activate(material, false);
       return result;
     });
 
-  // wipes this wallet from the device entirely - the linking key, every
+  // wipes this wallet from the device entirely - the wallet material, every
   // bearer record, the activity log, and the non-secret registries that
   // would otherwise linger as a fingerprint of it. Not recoverable by
   // restoring the same seed afterward (the ciphertexts themselves are
@@ -267,9 +312,13 @@ export const useWalletStore = defineStore('wallet', () => {
   // narrow accessor for the operations that need the key material itself
   // (nostr backup key derivation, passkey registration) - never reactive,
   // throws when locked, so callers can't accidentally hold a stale key
-  const requireLinkingKey = (): Uint8Array => {
-    if (!acceptingOwnerWork || !currentLinkingKey) throw new Error('Wallet is locked.');
-    return currentLinkingKey;
+  const requireLinkingKey = (): Uint8Array => walletMaterialLinkingKey(requireWalletMaterial());
+
+  // the complete material for the enrollment flows that wrap it (passkey,
+  // biometric) - same access rules as requireLinkingKey
+  const requireWalletMaterial = (): WalletMaterialV2 => {
+    if (!acceptingOwnerWork || !currentMaterial) throw new Error('Wallet is locked.');
+    return currentMaterial;
   };
 
   const funds = createWalletFunds({
@@ -301,6 +350,7 @@ export const useWalletStore = defineStore('wallet', () => {
     forgetWallet,
     postponeLock: idleWatch.postpone,
     requireLinkingKey,
+    requireWalletMaterial,
     captureOwnerFence: ownerFence.capture,
   };
 });

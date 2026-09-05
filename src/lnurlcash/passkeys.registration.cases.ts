@@ -20,7 +20,7 @@ import {
   registerPasskey,
   removePasskey,
   rewrapAllSlots,
-  unlockWithPasskey,
+  unlockWalletMaterialWithPasskey,
   unwrapWalletMaterialWithPrf,
   wrapWalletMaterialWithPrf,
 } from './passkeys'
@@ -147,9 +147,9 @@ beforeEach(async () => {
 })
 
 describe('registration and unlock', () => {
-  it('registers a passkey and unlocks the same linking key', async () => {
+  it('registers a passkey and unlocks the same complete material', async () => {
     const auth = new FakeAuthenticator()
-    const slot = await registerPasskey(LINKING_KEY, {
+    const slot = await registerPasskey(MATERIAL, {
       credentials: auth,
       name: 'laptop',
     })
@@ -157,33 +157,32 @@ describe('registration and unlock', () => {
     expect(readPasskeySlots()).toEqual([slot])
     expect(hasPasskeySlots()).toBe(true)
 
-    const unwrapped = await unlockWithPasskey({credentials: auth})
-    expect(bytesToHex(unwrapped)).toBe(bytesToHex(LINKING_KEY))
+    const unwrapped = await unlockWalletMaterialWithPasskey({credentials: auth})
+    expect(unwrapped).toEqual(MATERIAL)
   })
 
   it('never stores the linking key in the clear', async () => {
     const auth = new FakeAuthenticator()
-    await registerPasskey(LINKING_KEY, {credentials: auth})
+    await registerPasskey(MATERIAL, {credentials: auth})
     const raw = localStorage.getItem('sattle_passkey_slots')
     expect(raw).toBeTruthy()
     expect(raw).not.toContain(bytesToHex(LINKING_KEY))
   })
 
-  it('yields the same key material unlock(password) yields', async () => {
+  it('yields the same wallet material unlock(password) yields', async () => {
     await saveWalletMaterial(MATERIAL, 'correct horse')
     const auth = new FakeAuthenticator()
     await registerPasskey(MATERIAL, {credentials: auth})
 
     const viaPassword = await decryptSavedWalletMaterial('correct horse')
-    const viaPasskey = await unlockWithPasskey({credentials: auth})
-    const passwordLinkingKey = walletMaterialLinkingKey(viaPassword)
-    expect(bytesToHex(viaPasskey)).toBe(bytesToHex(passwordLinkingKey))
+    const viaPasskey = await unlockWalletMaterialWithPasskey({credentials: auth})
+    expect(viaPasskey).toEqual(viaPassword)
 
     // and the practical consequence: a bearer record encrypted after a
     // password unlock decrypts after a passkey unlock
-    const passwordAes = await deriveBearerAesKey(passwordLinkingKey)
+    const passwordAes = await deriveBearerAesKey(walletMaterialLinkingKey(viaPassword))
     const record = await encryptRecord(passwordAes, {note: 'still readable'})
-    const passkeyAes = await deriveBearerAesKey(viaPasskey)
+    const passkeyAes = await deriveBearerAesKey(walletMaterialLinkingKey(viaPasskey))
     await expect(decryptRecord(passkeyAes, record)).resolves.toEqual({
       note: 'still readable',
     })
@@ -192,17 +191,17 @@ describe('registration and unlock', () => {
   it('falls back to a get ceremony when create only reports prf.enabled', async () => {
     const auth = new FakeAuthenticator()
     auth.prfResultsOnCreate = false
-    const slot = await registerPasskey(LINKING_KEY, {credentials: auth})
+    const slot = await registerPasskey(MATERIAL, {credentials: auth})
     expect(auth.getCalls).toBe(1)
-    const unwrapped = await unlockWithPasskey({credentials: auth})
-    expect(bytesToHex(unwrapped)).toBe(bytesToHex(LINKING_KEY))
+    const unwrapped = await unlockWalletMaterialWithPasskey({credentials: auth})
+    expect(unwrapped).toEqual(MATERIAL)
     expect(readPasskeySlots()[0]?.credentialId).toBe(slot.credentialId)
   })
 
   it('refuses registration when the authenticator has no PRF support', async () => {
     const auth = new FakeAuthenticator()
     auth.supportsPrf = false
-    await expect(registerPasskey(LINKING_KEY, {credentials: auth})).rejects.toThrow('PRF')
+    await expect(registerPasskey(MATERIAL, {credentials: auth})).rejects.toThrow('PRF')
     expect(hasPasskeySlots()).toBe(false)
   })
 
@@ -211,7 +210,7 @@ describe('registration and unlock', () => {
       create: async () => null,
       get: async () => null,
     }
-    await expect(registerPasskey(LINKING_KEY, {credentials: cancelled})).rejects.toThrow(
+    await expect(registerPasskey(MATERIAL, {credentials: cancelled})).rejects.toThrow(
       'cancelled',
     )
     expect(hasPasskeySlots()).toBe(false)
@@ -219,20 +218,24 @@ describe('registration and unlock', () => {
 
   it('throws before any ceremony when no passkeys are registered', async () => {
     const auth = new FakeAuthenticator()
-    await expect(unlockWithPasskey({credentials: auth})).rejects.toThrow('No passkeys')
+    await expect(unlockWalletMaterialWithPasskey({credentials: auth})).rejects.toThrow(
+      'No passkeys',
+    )
     expect(auth.getCalls).toBe(0)
   })
 
   it('rejects unlock when the passkey returns no PRF secret', async () => {
     const auth = new FakeAuthenticator()
-    await registerPasskey(LINKING_KEY, {credentials: auth})
+    await registerPasskey(MATERIAL, {credentials: auth})
     auth.prfResultsOnGet = false
-    await expect(unlockWithPasskey({credentials: auth})).rejects.toThrow('PRF secret')
+    await expect(unlockWalletMaterialWithPasskey({credentials: auth})).rejects.toThrow(
+      'PRF secret',
+    )
   })
 
   it('rejects unlock when the ceremony yields an unregistered credential', async () => {
     const auth = new FakeAuthenticator()
-    await registerPasskey(LINKING_KEY, {credentials: auth})
+    await registerPasskey(MATERIAL, {credentials: auth})
     const rogue: PasskeyCredentials = {
       create: async () => null,
       get: async () => ({
@@ -243,13 +246,15 @@ describe('registration and unlock', () => {
         }),
       }),
     }
-    await expect(unlockWithPasskey({credentials: rogue})).rejects.toThrow('not registered')
+    await expect(unlockWalletMaterialWithPasskey({credentials: rogue})).rejects.toThrow(
+      'not registered',
+    )
   })
 
   it('rejects unlock after the authenticator secret changed underneath the slot', async () => {
     const auth = new FakeAuthenticator()
-    const slot = await registerPasskey(LINKING_KEY, {credentials: auth})
+    const slot = await registerPasskey(MATERIAL, {credentials: auth})
     auth.rotateSecret(slot.credentialId)
-    await expect(unlockWithPasskey({credentials: auth})).rejects.toThrow()
+    await expect(unlockWalletMaterialWithPasskey({credentials: auth})).rejects.toThrow()
   })
 })

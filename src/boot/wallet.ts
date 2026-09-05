@@ -13,9 +13,12 @@ declare global {
 }
 
 // Wallet lifecycle bootstrap: reflects whatever is on this device into the
-// wallet store at app start - a plaintext-stored key unlocks straight away,
-// a password-encrypted one lands on 'locked' for the unlock screen, and no
-// key at all lands on 'none' for onboarding.
+// wallet store at app start - a plaintext-stored material record unlocks
+// straight away, a password-encrypted one lands on 'locked' for the unlock
+// screen, and no record at all lands on 'none' for onboarding. init() first
+// runs the alpha reset: unsupported legacy state (the linking-key-only
+// record or the pre-v2 bearer namespace) is wiped, never migrated, before
+// any route can expose it.
 export default defineBoot(async () => {
   const wallet = useWalletStore();
   await wallet.init();
