@@ -20,6 +20,8 @@ import {
   withNewK1,
 } from 'lnurlcash-kit'
 import type {Bearer, NewBearer} from '../types'
+import type {OutputSecretAllocator} from './allocation'
+import {requireOutputSecrets} from './allocation'
 import {mergeAmbiguitySafe} from './carveRecovery'
 import type {FundOperationOptions} from './shared'
 import {
@@ -59,6 +61,15 @@ export class CarveCheckpointRequiredError extends Error {
   }
 }
 
+export type CarveOptions = FundOperationOptions & {
+  // the caller's durable allocation path for the carve's output secrets
+  // (split: target + change; merge: the combined note). When present the
+  // secrets come from the wallet's reserved BIP-32 indices; when absent the
+  // carve falls back to random secrets (legacy callers only - production
+  // always allocates).
+  readonly allocateOutputSecrets?: OutputSecretAllocator
+}
+
 // Selection: only notes that can actually take part - verified (callback
 // known), not locally spent, holding a real k1 (device-backed mirrors are
 // excluded; the ops engine cannot mutate a secret it doesn't hold). Notes
@@ -77,7 +88,7 @@ export class CarveCheckpointRequiredError extends Error {
 export const ensureExactAmount = async (
   bearers: Bearer[],
   amountMsat: number,
-  options: FundOperationOptions = {},
+  options: CarveOptions = {},
 ): Promise<CarveResult> => {
   if (!Number.isInteger(amountMsat) || amountMsat <= 0) {
     throw new Error('Amount must be a positive whole number of msat.')
@@ -141,7 +152,9 @@ export const ensureExactAmount = async (
     if (mergeBatches(base.callback, k1s).length !== 1) {
       throw new UnsupportedMultiBatchMergeError()
     }
-    const mergeSecret = (options.randomSecret ?? defaultRandomSecret)()
+    const [mergeSecret] = options.allocateOutputSecrets
+      ? await requireOutputSecrets(options.allocateOutputSecrets, serverOf(base.url), 1)
+      : [(options.randomSecret ?? defaultRandomSecret)()]
     const staged: NewBearer = {
       url: withNewK1(base.url, mergeSecret, total),
       callback: base.callback,
@@ -177,8 +190,9 @@ export const ensureExactAmount = async (
   // split path: total above target - one split request across all picked
   // k1s, carving the target off and leaving the change as a fresh note
   const randomSecret = options.randomSecret ?? defaultRandomSecret
-  const partK1 = randomSecret()
-  const changeK1 = randomSecret()
+  const [partK1, changeK1] = options.allocateOutputSecrets
+    ? await requireOutputSecrets(options.allocateOutputSecrets, serverOf(base.url), 2)
+    : [randomSecret(), randomSecret()]
   let partSignature: string | undefined
   let changeSignature: string | undefined
   const stagedNote: NewBearer = {

@@ -23,6 +23,8 @@ import {
 import type {MintAddressInfo, MintClaim} from 'lnurlcash-kit'
 import type {Bearer, NewBearer} from '../types'
 import {ceilMsatToSat} from '../units'
+import type {OutputSecretAllocator} from './allocation'
+import {requireOutputSecrets} from './allocation'
 import type {PollOptions} from './shared'
 import type {FundOperationOptions} from './shared'
 import {assertFundOwner, pollUntil, withMutationSafety} from './shared'
@@ -54,6 +56,11 @@ export type PrepareMintOptions = FundOperationOptions & {
     readonly grossMsat: number
     readonly server: string
   }) => void | Promise<void>
+  // the caller's durable allocation path for the staged note's secret.
+  // When present the secret comes from the wallet's reserved BIP-32
+  // indices; when absent a random secret is generated (legacy callers
+  // only - production always allocates).
+  readonly allocateOutputSecrets?: OutputSecretAllocator
 }
 
 // Resolve a mint (Lightning Address, bare domain, bech32 LNURL), discover
@@ -101,7 +108,9 @@ export const prepareMint = async (
   }
   const server = serverOf(payUrl)
   await beforePersist?.({grossMsat, server})
-  const noteSecret = (kitOptions.randomSecret ?? defaultRandomSecret)()
+  const [noteSecret] = options.allocateOutputSecrets
+    ? await requireOutputSecrets(options.allocateOutputSecrets, server, 1)
+    : [(kitOptions.randomSecret ?? defaultRandomSecret)()]
   const mintPubkey = nodeInfo ? nodeInfo.mintPubkey : info.mintPubkey
   const staged: NewBearer = {
     url: buildNoteUrl(info.withdrawLink, noteSecret, amountMsat),

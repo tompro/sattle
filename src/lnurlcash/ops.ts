@@ -27,12 +27,14 @@
 
 export {UncertainOutcomeError} from './ops/shared'
 export type {FundOperationOptions, PollOptions} from './ops/shared'
+export {OutputSecretAllocationRequiredError} from './ops/allocation'
+export type {OutputSecretAllocator} from './ops/allocation'
 export {
   CarveCheckpointRequiredError,
   ensureExactAmount,
   UnsupportedMultiBatchMergeError,
 } from './ops/carve'
-export type {CarveResult} from './ops/carve'
+export type {CarveOptions, CarveResult} from './ops/carve'
 export {
   MintedNoteSpentError,
   prepareMint,
@@ -46,6 +48,7 @@ export type {
   StagedMintRecovery,
 } from './ops/mint'
 export {receiveBearer} from './ops/receiveBearer'
+export type {ReceiveBearerOptions, ReceivedNote} from './ops/receiveBearer'
 export {payWithBearers} from './ops/pay'
 export type {PayOutcome, PayResult, PayOptions} from './ops/pay'
 export {recoverPendingTransferSource, transferBetweenMints} from './ops/transfer'

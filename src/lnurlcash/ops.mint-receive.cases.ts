@@ -10,6 +10,7 @@ import {
 
 import {claimMintedNote, prepareMint, receiveBearer} from './ops'
 import {requiredValue} from './test-utils'
+import type {NewBearer} from './types'
 import {
   makeBearer,
   mint,
@@ -40,6 +41,66 @@ describe('mint fee', () => {
 })
 
 describe('receiveBearer', () => {
+  it('stages the rotation output before the rotate can reach the mint', async () => {
+    const instance = await mint()
+    const senderK1 = secret('94')
+    instance.state.creditNote(senderK1, 21_000)
+    const rotationSecret = secret('95')
+    let staged: NewBearer | undefined
+    const observingFetch: typeof fetch = (input, init) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
+      if (url.includes('/w/cb')) expect(staged).toBeDefined()
+      return fetch(input, init)
+    }
+
+    const received = await receiveBearer(noteUrl(instance, senderK1, 21_000), [], {
+      fetch: observingFetch,
+      allocateOutputSecrets: () => Promise.resolve([rotationSecret]),
+      stageRotation: (note) => {
+        staged = note
+      },
+    })
+
+    expect(received.stage).toBe('finalize')
+    expect(received.rotated).toBe(true)
+    expect(noteK1(received.note.url)).toBe(rotationSecret)
+    expect(noteK1(requiredValue(staged).url)).toBe(rotationSecret)
+    expect(requiredValue(staged).verified).toBe(false)
+    expect(requiredValue(staged).pendingMint?.sourceRecoverySecret).toBe(senderK1)
+    expect(instance.state.noteState(senderK1)).toBe('burned')
+    expect(instance.state.noteState(rotationSecret)).toBe('outstanding')
+  })
+
+  it('reports discard when the rotate provably never landed', async () => {
+    const instance = await mint()
+    const senderK1 = secret('96')
+    instance.state.creditNote(senderK1, 21_000)
+    const rotationSecret = secret('97')
+    let staged: NewBearer | undefined
+    const failingFetch: typeof fetch = (input, init) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
+      if (url.includes('/w/cb')) return Promise.reject(new Error('connection reset'))
+      return fetch(input, init)
+    }
+
+    const received = await receiveBearer(noteUrl(instance, senderK1, 21_000), [], {
+      fetch: failingFetch,
+      allocateOutputSecrets: () => Promise.resolve([rotationSecret]),
+      stageRotation: (note) => {
+        staged = note
+      },
+    })
+
+    expect(received.stage).toBe('discard')
+    expect(received.rotated).toBe(false)
+    expect(received.note.verified).toBe(true)
+    expect(received.rotationError).toBeDefined()
+    // nothing landed: both the sender's copy and the would-be output live on
+    expect(instance.state.noteState(senderK1)).toBe('outstanding')
+    expect(instance.state.noteState(rotationSecret)).toBeNull()
+    expect(staged).toBeDefined()
+  })
+
   it("verifies an incoming note and rotates it, burning the sender's copy", async () => {
     const instance = await mint()
     const senderK1 = secret('20')

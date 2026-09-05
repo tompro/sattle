@@ -250,4 +250,57 @@ describe('ensureExactAmount', () => {
     ).rejects.toThrow(/commit failed/)
     expect(instance.state.noteState(secret('14'))).toBe('outstanding')
   })
+
+  it('draws the split outputs from the caller allocation path, exactly two', async () => {
+    const instance = await mint()
+    const bearer = await makeBearer(instance, secret('80'), 21_000)
+    const allocations: Array<{server: string; count: number}> = []
+    const allocated = [secret('81'), secret('82')]
+
+    const result = await ensureExactAmount([bearer], 5_000, {
+      onCarve: () => undefined,
+      allocateOutputSecrets: (server, count) => {
+        allocations.push({server, count})
+        return Promise.resolve(allocated.slice(0, count))
+      },
+    })
+
+    expect(allocations).toEqual([{server: `127.0.0.1:${instance.port}`, count: 2}])
+    expect(noteK1(result.note.url)).toBe(allocated[0])
+    expect(noteK1(requiredValue(result.change).url)).toBe(allocated[1])
+  })
+
+  it('draws the merge output from the caller allocation path, exactly one', async () => {
+    const instance = await mint()
+    const first = await makeBearer(instance, secret('83'), 3_000)
+    const second = await makeBearer(instance, secret('84'), 4_000)
+    const allocations: Array<{server: string; count: number}> = []
+    const allocated = [secret('85')]
+
+    const result = await ensureExactAmount([first, second], 7_000, {
+      onCarve: () => undefined,
+      allocateOutputSecrets: (server, count) => {
+        allocations.push({server, count})
+        return Promise.resolve(allocated.slice(0, count))
+      },
+    })
+
+    expect(allocations).toEqual([{server: `127.0.0.1:${instance.port}`, count: 1}])
+    expect(noteK1(result.note.url)).toBe(allocated[0])
+  })
+
+  it('allocates nothing when one note already holds the exact amount', async () => {
+    const instance = await mint()
+    const bearer = await makeBearer(instance, secret('86'), 21_000)
+    let allocations = 0
+
+    await ensureExactAmount([bearer], 21_000, {
+      allocateOutputSecrets: () => {
+        allocations += 1
+        return Promise.resolve([])
+      },
+    })
+
+    expect(allocations).toBe(0)
+  })
 })

@@ -26,6 +26,24 @@ export const secret = (seed: string): string =>
 
 export const persistOutput = async (): Promise<void> => undefined
 
+// deterministic stand-in for the wallet's BIP-32 allocation path: answers
+// every reservation with fresh unique secrets, never reusing one
+let allocatedSecretCounter = 0
+export const allocateOutputSecrets = (
+  _server: string,
+  count: number,
+): Promise<readonly string[]> => {
+  const secrets = Array.from({length: count}, () => {
+    allocatedSecretCounter += 1
+    return secret(`allocated-${allocatedSecretCounter.toString(16)}`)
+  })
+  return Promise.resolve(secrets)
+}
+
+// the receive-rotation staging checkpoint - engine tests keep no wallet,
+// so staging is a recorded no-op for them
+export const stageRotation = async (): Promise<void> => undefined
+
 // the trusted signing keys a production caller would serve from the
 // trusted-mint registry: the mock mint's current key plus any it retired
 export const signatureKeysFor =

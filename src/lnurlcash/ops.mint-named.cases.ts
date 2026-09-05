@@ -4,7 +4,7 @@ import {hashK1, noteK1} from 'lnurlcash-kit'
 import {claimMintedNote, prepareMint} from './ops'
 import {requiredValue} from './test-utils'
 import type {Mint} from './ops.testHarness'
-import {mint, persistOutput, settleLastInvoice} from './ops.testHarness'
+import {mint, persistOutput, secret, settleLastInvoice} from './ops.testHarness'
 
 const HEX32 = /^[0-9a-f]{64}$/
 
@@ -64,5 +64,23 @@ describe('mint -> claim, comment-bound output', () => {
     })
     expect(noteK1(claimed.note.url)).toBe(prepared.noteSecret)
     expect(requiredValue(noteK1(claimed.note.url))).toMatch(HEX32)
+  })
+
+  it('draws the staged note secret from the caller allocation path', async () => {
+    const instance = await mint({testHooks: true})
+    const allocations: Array<{server: string; count: number}> = []
+    const allocated = [secret('90')]
+
+    const prepared = await prepareMint(`mint@127.0.0.1:${instance.port}`, 21_000, {
+      persistOutput,
+      allocateOutputSecrets: (server, count) => {
+        allocations.push({server, count})
+        return Promise.resolve(allocated.slice(0, count))
+      },
+    })
+
+    expect(allocations).toEqual([{server: `127.0.0.1:${instance.port}`, count: 1}])
+    expect(prepared.noteSecret).toBe(allocated[0])
+    expect(boundInvoice(instance)?.boundTo).toBe(hashK1(requiredValue(allocated[0])))
   })
 })

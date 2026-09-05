@@ -29,12 +29,14 @@ import {
 } from 'lnurlcash-kit'
 import type {LnurlcashOptions} from 'lnurlcash-kit'
 import type {Bearer, NewBearer} from '../types'
+import type {OutputSecretAllocator} from './allocation'
+import {requireOutputSecrets} from './allocation'
 import type {CarveResult} from './carve'
 import {ensureExactAmount} from './carve'
 import type {ClaimedNote, PreparedMint, PrepareMintOptions} from './mint'
 import {MintedNoteSpentError, claimFromSecret, prepareMint} from './mint'
 import type {PollOptions} from './shared'
-import type {FundOperationOptions} from './shared'
+import type {FundOperationOptions, MintSignatureKeys} from './shared'
 import {assertFundOwner, withMutationSafety} from './shared'
 
 export type TransferOutcome =
@@ -116,11 +118,18 @@ export type TransferOptions = {
   kit?: LnurlcashOptions
   assertOwner?: () => void
   // carve checkpoint - committed before the melt and the target
-  // settlement wait, so an abort mid-wait never strands the carve (see
+  // settlement wait, so an abort mid-wait can never strand the carve (see
   // FundOperationOptions.onCarve)
   onCarve?: FundOperationOptions['onCarve']
   // persists the target note before its hash reaches the invoice callback
   persistOutput: PrepareMintOptions['persistOutput']
+  // the caller's durable allocation path: the staged target note's secret,
+  // the source carve's outputs, and the source recovery secret. When
+  // absent, secrets fall back to random generation (legacy callers only -
+  // production always allocates).
+  allocateOutputSecrets?: OutputSecretAllocator
+  // trusted signing keys the source carve's landed outputs verify against
+  mintSignatureKeys?: MintSignatureKeys
   // Last durable checkpoint before the source melt can become irreversible.
   onMeltReady?: (carve: CarveResult, sourceRecoverySecret: string) => void | Promise<void>
 }
@@ -219,12 +228,13 @@ export const transferBetweenMints = async (
   bearers: Bearer[],
   amountMsat: number,
   targetMint: string,
-  {poll = {}, kit = {}, assertOwner, onCarve, persistOutput, onMeltReady}: TransferOptions,
+  {poll = {}, kit = {}, assertOwner, onCarve, persistOutput, allocateOutputSecrets, mintSignatureKeys, onMeltReady}: TransferOptions,
 ): Promise<TransferResult> => {
   const options: FundOperationOptions = withMutationSafety({
     ...kit,
     ...(assertOwner ? {assertOwner} : {}),
     ...(onCarve ? {onCarve} : {}),
+    ...(mintSignatureKeys ? {mintSignatureKeys} : {}),
   })
   if (!Number.isInteger(amountMsat) || amountMsat <= 0) {
     throw new Error('Amount must be a positive whole number of msat.')
@@ -235,6 +245,7 @@ export const transferBetweenMints = async (
   const prepared = await prepareMint(targetMint, amountMsat, {
     ...options,
     persistOutput,
+    ...(allocateOutputSecrets ? {allocateOutputSecrets} : {}),
     beforePersist: ({grossMsat, server}) => {
       transferSources(bearers, server, grossMsat)
     },
@@ -253,7 +264,10 @@ export const transferBetweenMints = async (
   }
   // carving burns its inputs server-side, so it happens only once the
   // target is known good and the invoice exists
-  const carve = await ensureExactAmount(offTarget, prepared.grossMsat, options)
+  const carve = await ensureExactAmount(offTarget, prepared.grossMsat, {
+    ...options,
+    ...(allocateOutputSecrets ? {allocateOutputSecrets} : {}),
+  })
   const sourceServer = serverOf(carve.note.url)
   const invoice = prepared.invoice
   const claimMaterial: TransferClaimMaterial = {
@@ -267,7 +281,9 @@ export const transferBetweenMints = async (
   // flow never throws again; every outcome carries them
   const base = {carve, quote, invoice, verifyUrl, sourceServer, targetServer}
   const k1 = requireNoteK1(carve.note.url)
-  const sourceRecoverySecret = (kit.randomSecret ?? defaultRandomSecret)()
+  const [sourceRecoverySecret] = allocateOutputSecrets
+    ? await requireOutputSecrets(allocateOutputSecrets, serverOf(carve.note.url), 1)
+    : [(kit.randomSecret ?? defaultRandomSecret)()]
   if (carve.consumed.length === 0) assertFundOwner(options)
   await onMeltReady?.(carve, sourceRecoverySecret)
   assertFundOwner(options)

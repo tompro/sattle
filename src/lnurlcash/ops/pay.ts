@@ -17,14 +17,17 @@ import {
   resolveLnurlInput,
   rotateNote,
   sameInvoice,
+  serverOf,
   withNewK1,
 } from 'lnurlcash-kit'
 import type {LnurlcashOptions, MeltResult} from 'lnurlcash-kit'
 import type {Bearer, NewBearer} from '../types'
+import type {OutputSecretAllocator} from './allocation'
+import {requireOutputSecrets} from './allocation'
 import type {CarveResult} from './carve'
 import {ensureExactAmount} from './carve'
 import type {PollOptions} from './shared'
-import type {FundOperationOptions} from './shared'
+import type {FundOperationOptions, MintSignatureKeys} from './shared'
 import {assertFundOwner, pollVerifyUntilSettled, withMutationSafety} from './shared'
 
 export type PayOutcome =
@@ -59,6 +62,14 @@ export type PayOptions = {
   // so an abort mid-wait never strands the carve (see
   // FundOperationOptions.onCarve)
   onCarve?: FundOperationOptions['onCarve']
+  // the caller's durable allocation path: the carve's output secrets and -
+  // only when the return classification actually needs one - the recovery
+  // secret. When absent, secrets fall back to random generation (legacy
+  // callers only - production always allocates).
+  allocateOutputSecrets?: OutputSecretAllocator
+  // trusted signing keys the carve's landed outputs verify against (see
+  // FundOperationOptions.mintSignatureKeys)
+  mintSignatureKeys?: MintSignatureKeys
   // Called before the classification rotate puts its chosen output secret
   // on the wire. Production callers durably link it to the carved source.
   onReturnReady?: (carve: CarveResult, recoverySecret: string) => void | Promise<void>
@@ -77,7 +88,7 @@ export type PayOptions = {
 export const payWithBearers = async (
   bearers: Bearer[],
   input: string,
-  {amountMsat, poll = {}, kit = {}, assertOwner, onCarve, onReturnReady}: PayOptions = {},
+  {amountMsat, poll = {}, kit = {}, assertOwner, onCarve, allocateOutputSecrets, mintSignatureKeys, onReturnReady}: PayOptions = {},
 ): Promise<PayResult> => {
   // the forced mutation policy (see shared.ts) covers the carve, the melt,
   // and the classification rotate regardless of caller kit options
@@ -85,6 +96,7 @@ export const payWithBearers = async (
     ...kit,
     ...(assertOwner ? {assertOwner} : {}),
     ...(onCarve ? {onCarve} : {}),
+    ...(mintSignatureKeys ? {mintSignatureKeys} : {}),
   })
   let invoice: string
   let amount: number
@@ -118,7 +130,10 @@ export const payWithBearers = async (
     amount = amountMsat
   }
 
-  const carve = await ensureExactAmount(bearers, amount, options)
+  const carve = await ensureExactAmount(bearers, amount, {
+    ...options,
+    ...(allocateOutputSecrets ? {allocateOutputSecrets} : {}),
+  })
   const k1 = requireNoteK1(carve.note.url)
   if (carve.consumed.length === 0) assertFundOwner(options)
   let melt: MeltResult
@@ -159,7 +174,9 @@ export const payWithBearers = async (
     // The verify budget ran out. Journal the exact output secret before the
     // classification rotate reaches the mint, so a crash can recover either
     // the returned source or the rotated replacement.
-    const recoverySecret = kit.randomSecret?.() ?? defaultRandomSecret()
+    const [recoverySecret] = allocateOutputSecrets
+      ? await requireOutputSecrets(allocateOutputSecrets, serverOf(carve.note.url), 1)
+      : [(kit.randomSecret ?? defaultRandomSecret)()]
     await onReturnReady?.(carve, recoverySecret)
     try {
       const rotated = await rotateNote(carve.note.callback, k1, {

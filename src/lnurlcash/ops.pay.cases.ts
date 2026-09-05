@@ -134,4 +134,45 @@ describe('payWithBearers', () => {
     expect(instance.state.noteState(secret('36'))).toBe('outstanding')
     expect([...instance.state.notes.values()].every((note) => note.state !== 'pending')).toBe(true)
   })
+
+  it('draws the return recovery secret from the caller allocation path', async () => {
+    const instance = await mint({meltAlwaysFails: true})
+    const bearer = await makeBearer(instance, secret('8a'), 21_000)
+    const allocations: Array<{server: string; count: number}> = []
+    const allocated = [secret('8b')]
+    const stagedSecrets: string[] = []
+
+    const result = await payWithBearers([bearer], 'lnbc210n1pjqrstuvwxyz', {
+      poll: {intervalMs: 10, intervalCapMs: 20, maxWaitMs: 300},
+      allocateOutputSecrets: (server, count) => {
+        allocations.push({server, count})
+        return Promise.resolve(allocated.slice(0, count))
+      },
+      onReturnReady: (_carve, recoverySecret) => {
+        stagedSecrets.push(recoverySecret)
+      },
+    })
+
+    expect(result.outcome).toBe('failed-funds-returned')
+    expect(allocations).toEqual([{server: `127.0.0.1:${instance.port}`, count: 1}])
+    expect(stagedSecrets).toEqual(allocated)
+    expect(noteK1(requiredValue(result.rotatedNote).url)).toBe(allocated[0])
+  })
+
+  it('allocates nothing while the melt settles cleanly', async () => {
+    const instance = await mint()
+    const bearer = await makeBearer(instance, secret('8c'), 21_000)
+    let allocations = 0
+
+    const result = await payWithBearers([bearer], 'lnbc210n1pjqrstuvwxyz', {
+      poll: {intervalMs: 10, intervalCapMs: 50, maxWaitMs: 5_000},
+      allocateOutputSecrets: () => {
+        allocations += 1
+        return Promise.resolve([])
+      },
+    })
+
+    expect(result.outcome).toBe('settled')
+    expect(allocations).toBe(0)
+  })
 })

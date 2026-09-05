@@ -25,6 +25,40 @@ const transferBetweenMints = (
 describe('transferBetweenMints', () => {
   const fastPoll = {intervalMs: 10, intervalCapMs: 50, maxWaitMs: 5_000}
 
+  it('draws the target and source secrets from the caller allocation path', async () => {
+    const source = await mint()
+    const target = await mint({testHooks: true})
+    const bearer = await makeBearer(source, secret('91'), 21_000)
+    const targetSecret = secret('92')
+    const sourceRecoverySecret = secret('93')
+    const allocations: Array<{server: string; count: number}> = []
+    const meltReadiness: string[] = []
+
+    const pending = transferBetweenMints([bearer], 21_000, `mint@127.0.0.1:${target.port}`, {
+      poll: fastPoll,
+      allocateOutputSecrets: (server, count) => {
+        allocations.push({server, count})
+        const secrets = allocations.length === 1 ? [targetSecret] : [sourceRecoverySecret]
+        return Promise.resolve(secrets.slice(0, count))
+      },
+      onMeltReady: (_carve, recovery) => {
+        meltReadiness.push(recovery)
+      },
+    })
+    await settleWhenRequested(target)
+    const result = await pending
+
+    expect(result.outcome).toBe('settled')
+    // the staged target note first, then the source recovery secret - an
+    // exact source carve allocates nothing
+    expect(allocations).toEqual([
+      {server: `127.0.0.1:${target.port}`, count: 1},
+      {server: `127.0.0.1:${source.port}`, count: 1},
+    ])
+    expect(meltReadiness).toEqual([sourceRecoverySecret])
+    expect(noteK1(requiredValue(result.mintedAtTarget).note.url)).toBe(targetSecret)
+  })
+
   it('moves value to another mint at a wallet-chosen target secret', async () => {
     const source = await mint()
     const target = await mint({testHooks: true})

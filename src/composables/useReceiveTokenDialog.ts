@@ -8,7 +8,7 @@ import {
 } from 'lnurlcash-kit';
 
 import { receiveBearer } from '@/lnurlcash/ops';
-import type { NewBearer } from '@/lnurlcash/types';
+import type { Bearer } from '@/lnurlcash/types';
 import { floorMsatToSat, MSAT_PER_SAT } from '@/lnurlcash/units';
 import { TrustedMintPostCommitError, useWalletStore } from '@/stores/wallet';
 import { useMintsStore } from '@/stores/mints';
@@ -95,18 +95,42 @@ export const useReceiveTokenDialog = (props: ReceiveTokenProps, emit: ReceiveTok
     if (busy.value || value === '') return;
     busy.value = true;
     clearError();
+    let fundOperation: ReturnType<typeof wallet.beginFundOperation> | undefined;
+    let staged: Bearer | undefined;
     try {
-      const ownerFence = wallet.captureOwnerFence();
+      fundOperation = wallet.beginFundOperation();
+      const ownerFence = fundOperation.ownerFence;
+      // the rotate's fresh secret is reserved and its future note staged
+      // before the mutation can land - a crash mid-rotate never loses the
+      // money (wallet recovery reconciles the staged record)
       const claimed = await receiveBearer(value, wallet.bearers, {
         assertOwner: ownerFence,
+        allocateOutputSecrets: (server, count) =>
+          wallet.allocateOutputSecrets(server, count, ownerFence),
+        stageRotation: async (note) => {
+          [staged] = await wallet.addBearers([note], ownerFence);
+        },
       });
       const note = claimed.note;
       const server = new URL(note.url).host;
       const wasTrusted = mints.isTrusted(server);
-      const notes: NewBearer[] = claimed.possibleCopy ? [note, claimed.possibleCopy] : [note];
       let trustWarning = '';
       try {
-        await wallet.addBearers(notes, ownerFence);
+        if (claimed.stage === 'finalize') {
+          // the rotate landed: the staged record becomes the confirmed note
+          if (!staged) throw new Error('The rotated note was not staged.');
+          await wallet.finalizeStagedMintOutput(staged.id, note, ownerFence);
+        } else if (claimed.stage === 'discard') {
+          // the rotate provably never landed: drop the worthless stage and
+          // keep the original (exposed - see rotationWarning)
+          if (staged) await wallet.removeNote(staged.id, ownerFence);
+          await wallet.addBearers([note], ownerFence);
+        } else {
+          // 'keep': the staged record is the possible rotated copy; the
+          // original is tracked unverified alongside it. 'none': no rotate
+          // was attempted - the note goes in as received.
+          await wallet.addBearers([note], ownerFence);
+        }
       } catch (error) {
         if (!(error instanceof TrustedMintPostCommitError)) throw error;
         trustWarning = error.message;
@@ -132,8 +156,15 @@ export const useReceiveTokenDialog = (props: ReceiveTokenProps, emit: ReceiveTok
         trustPrompt.openTrust(server, note.mintPubkey);
       }
     } catch (error) {
+      // a definitive failure thrown after staging leaves the staged record
+      // behind - drop it best-effort (wallet recovery restores the original
+      // note from it if this discard itself is impossible right now)
+      if (staged && fundOperation) {
+        await wallet.removeNote(staged.id, fundOperation.ownerFence).catch(() => undefined);
+      }
       classifyError(error instanceof Error ? error : new Error(String(error)));
     } finally {
+      fundOperation?.complete();
       busy.value = false;
     }
   };
