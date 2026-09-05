@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.0.5](https://github.com/tompro/sattle/compare/sattle-v0.0.4...sattle-v0.0.5) (2026-09-05)
+
+
+### Features
+
+* adopt lnurlcash-kit 0.8 with BIP-32-derived note secrets ([d026533](https://github.com/tompro/sattle/commit/d02653345639539c9c9268c1b6f1fd2a0359bb30))
+* **backup:** preserve BIP-32 counters ([641608e](https://github.com/tompro/sattle/commit/641608eff07464613570818cf1463ca28702d7c7))
+* **biometrics:** unlock complete wallet material ([b7c0a33](https://github.com/tompro/sattle/commit/b7c0a33a6968756e372a8b99156d70b766c2691d))
+* **composables:** route fund dialogs through the durable seam ([8e9c9dc](https://github.com/tompro/sattle/commit/8e9c9dcbbc3cffa5db0ada5e7c486518ee9a1071))
+* **funds:** persist BIP-32 counters atomically ([0cec423](https://github.com/tompro/sattle/commit/0cec423d6fe6edafa1d4d3a6520d2bc659906a1c))
+* **funds:** recover staged mutations ([3876791](https://github.com/tompro/sattle/commit/3876791a0bc12851d74f7dd98424c4b30b788207))
+* **keys:** persist BIP-32 wallet material ([d48deeb](https://github.com/tompro/sattle/commit/d48deeb6e0b32ffd3f5abc5fbc2080198e4ecb5b))
+* **ops:** draw mint-touching output secrets from caller allocation ([22b1c55](https://github.com/tompro/sattle/commit/22b1c5595cea73c8e796e22b381d8c6a5d7fd564))
+* **passkeys:** wrap complete wallet material ([6099bb4](https://github.com/tompro/sattle/commit/6099bb4b6b994b682662a33ef18da388e675b07e))
+* **trust:** keep previous mint signing key verifiable ([a30c4bb](https://github.com/tompro/sattle/commit/a30c4bb2cc60250a22c3c3f2c044393bd4d2d778))
+* **wallet:** allocate operation secrets from the cash root ([e6d0712](https://github.com/tompro/sattle/commit/e6d0712258dd31d85690687824d25b48240ca16e))
+
+
+### Bug Fixes
+
+* **composables:** commit carve checkpoints by output secret ([04e6211](https://github.com/tompro/sattle/commit/04e62110b66c4be50f07a97aec48d3f68f6c9989))
+* **nwc:** await durable commits before responses ([29830dc](https://github.com/tompro/sattle/commit/29830dc9e3d34d2e626d0d6df52c86beca02d4b8))
+* **passkeys:** bind slots to wallet material ([9374a87](https://github.com/tompro/sattle/commit/9374a87d0d64cfd70f5bf938cdf4582331cea87a))
+* **unlock:** bind factors to wallet material ([7e4e67e](https://github.com/tompro/sattle/commit/7e4e67e1cddc836830add3baf787a0c5368102f7))
+* **wallet:** activate complete wallet material ([e94549a](https://github.com/tompro/sattle/commit/e94549a16e983875eaf445287108b62212255d61))
+
 ## [0.0.4](https://github.com/tompro/sattle/compare/sattle-v0.0.3...sattle-v0.0.4) (2026-08-31)
 
 ### Features
