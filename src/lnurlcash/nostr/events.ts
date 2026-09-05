@@ -20,25 +20,25 @@
 //   mints    - the trusted-mint registry
 //   settings - plaintext wallet settings
 
-import {sha256} from '@noble/hashes/sha2.js'
-import {utf8ToBytes} from '@noble/hashes/utils.js'
-import type {Event as NostrEvent} from 'nostr-tools/core'
-import {finalizeEvent, getPublicKey, verifyEvent} from 'nostr-tools/pure'
-import {v2 as nip44v2} from 'nostr-tools/nip44'
+import { sha256 } from '@noble/hashes/sha2.js';
+import { utf8ToBytes } from '@noble/hashes/utils.js';
+import type { Event as NostrEvent } from 'nostr-tools/core';
+import { finalizeEvent, getPublicKey, verifyEvent } from 'nostr-tools/pure';
+import { v2 as nip44v2 } from 'nostr-tools/nip44';
 
-import type {EncryptedBearerRecord} from '../storage/bearers'
-import type {TrustedMint} from '../trustedMints'
-import type {WalletSettings} from '../storage/settings'
+import type { EncryptedBearerRecord } from '../storage/bearers';
+import type { TrustedMint } from '../trustedMints';
+import type { WalletSettings } from '../storage/settings';
 
-export type {NostrEvent}
+export type { NostrEvent };
 
 // addressable (parametrized-replaceable) app-data event - relays keep only
 // the newest event per (pubkey, kind, d-tag)
-export const BACKUP_EVENT_KIND = 30078
+export const BACKUP_EVENT_KIND = 30078;
 
-export type BackupPart = 'notes' | 'mints' | 'settings'
+export type BackupPart = 'notes' | 'mints' | 'settings';
 
-export const BACKUP_PARTS: readonly BackupPart[] = ['notes', 'mints', 'settings']
+export const BACKUP_PARTS: readonly BackupPart[] = ['notes', 'mints', 'settings'];
 
 // the backup key is dedicated to this wallet (derived with a
 // sattle-specific context, see below), so its pubkey is ours alone and the
@@ -47,45 +47,46 @@ export const BACKUP_D_TAGS: Record<BackupPart, string> = {
   notes: 'notes',
   mints: 'mints',
   settings: 'settings',
-}
+};
 
 // the notes payload: bearers plus the counter map, from one consistent
 // funds-document read
 export type NotesBackupPayload = {
-  bearers: EncryptedBearerRecord[]
-  nextByHost: Record<string, number>
-}
+  bearers: EncryptedBearerRecord[];
+  nextByHost: Record<string, number>;
+};
 
 // the decrypted payload of each part, without its envelope
 export type BackupPartPayload = {
-  notes: NotesBackupPayload
-  mints: TrustedMint[]
-  settings: WalletSettings
-}
+  notes: NotesBackupPayload;
+  mints: TrustedMint[];
+  settings: WalletSettings;
+};
 
-const BACKUP_KEY_CONTEXT = 'sattle-nostr-backup-v1'
+const BACKUP_KEY_CONTEXT = 'sattle-nostr-backup-v1';
 
 // Deterministic: sha256(linking key || context), mirroring keys.ts's
 // deriveBearerAesKey. The result is a secp256k1 secret key used ONLY for
 // backup - it signs and decrypts backup events, nothing else.
 export const deriveBackupKey = (linkingPrivKey: Uint8Array): Uint8Array =>
-  sha256(new Uint8Array([...linkingPrivKey, ...utf8ToBytes(BACKUP_KEY_CONTEXT)]))
+  sha256(new Uint8Array([...linkingPrivKey, ...utf8ToBytes(BACKUP_KEY_CONTEXT)]));
 
 // the x-only nostr pubkey identifying this wallet's backup events
-export const backupPubkey = (secretKey: Uint8Array): string => getPublicKey(secretKey)
+export const backupPubkey = (secretKey: Uint8Array): string => getPublicKey(secretKey);
 
 // NIP-44 "self-DM": the conversation key between the backup key and its own
 // pubkey - decryptable by the seed holder and nobody else
 const selfConversationKey = (secretKey: Uint8Array): Uint8Array =>
-  nip44v2.utils.getConversationKey(secretKey, getPublicKey(secretKey))
+  nip44v2.utils.getConversationKey(secretKey, getPublicKey(secretKey));
 
 // a relay could serve a multi-megabyte content string; JSON.parse and
 // NIP-44 decrypt of that would hang the tab. A real backup is a handful of
 // kilobytes per part - this is far beyond generous (applyBackup's own
 // per-record bounds still apply on top after decrypt)
-const MAX_BACKUP_CONTENT_CHARS = 16 * 1024 * 1024
+const MAX_BACKUP_CONTENT_CHARS = 16 * 1024 * 1024;
 
-export const dTagOf = (event: NostrEvent): string => event.tags.find((t) => t[0] === 'd')?.[1] ?? ''
+export const dTagOf = (event: NostrEvent): string =>
+  event.tags.find((t) => t[0] === 'd')?.[1] ?? '';
 
 // per-part envelope versions: the notes part went v2 with the funds
 // document (counters joined the payload - a breaking change); mints and
@@ -94,20 +95,20 @@ const PART_ENVELOPE_VERSION: Record<BackupPart, number> = {
   notes: 2,
   mints: 1,
   settings: 1,
-}
+};
 
 const envelopeFor = (part: BackupPart, payload: BackupPartPayload[BackupPart]): string => {
   switch (part) {
     case 'notes': {
-      const notes = payload as NotesBackupPayload
-      return JSON.stringify({version: 2, bearers: notes.bearers, nextByHost: notes.nextByHost})
+      const notes = payload as NotesBackupPayload;
+      return JSON.stringify({ version: 2, bearers: notes.bearers, nextByHost: notes.nextByHost });
     }
     case 'mints':
-      return JSON.stringify({version: 1, trustedMints: payload})
+      return JSON.stringify({ version: 1, trustedMints: payload });
     case 'settings':
-      return JSON.stringify({version: 1, settings: payload})
+      return JSON.stringify({ version: 1, settings: payload });
   }
-}
+};
 
 // signs one addressable backup event for a single part
 export const buildBackupEvent = <P extends BackupPart>(
@@ -124,7 +125,7 @@ export const buildBackupEvent = <P extends BackupPart>(
       content: nip44v2.encrypt(envelopeFor(part, payload), selfConversationKey(secretKey)),
     },
     secretKey,
-  )
+  );
 
 // one event per part present in `parts`, all sharing one timestamp
 export const buildBackupEvents = (
@@ -132,33 +133,33 @@ export const buildBackupEvents = (
   parts: Partial<BackupPartPayload>,
   createdAt?: number,
 ): NostrEvent[] => {
-  const at = createdAt ?? Math.floor(Date.now() / 1000)
-  const events: NostrEvent[] = []
+  const at = createdAt ?? Math.floor(Date.now() / 1000);
+  const events: NostrEvent[] = [];
   for (const part of BACKUP_PARTS) {
-    const payload = parts[part]
-    if (payload === undefined) continue
-    events.push(buildBackupEvent(secretKey, part, payload, at))
+    const payload = parts[part];
+    if (payload === undefined) continue;
+    events.push(buildBackupEvent(secretKey, part, payload, at));
   }
-  return events
-}
+  return events;
+};
 
 export type ParsedBackupEvent =
-  | {part: 'notes'; bearers: EncryptedBearerRecord[]; nextByHost: Record<string, number>}
-  | {part: 'mints'; trustedMints: TrustedMint[]}
-  | {part: 'settings'; settings: WalletSettings}
+  | { part: 'notes'; bearers: EncryptedBearerRecord[]; nextByHost: Record<string, number> }
+  | { part: 'mints'; trustedMints: TrustedMint[] }
+  | { part: 'settings'; settings: WalletSettings };
 
 // Light shape checks so parse returns typed values; the strict bounds
 // (record counts, field lengths, counter ranges and caps) are enforced by
 // applyBackup / commitFundsRestore on the restore path, same as file
 // backups.
 const parsePayload = (dTag: BackupPart, data: unknown): ParsedBackupEvent | null => {
-  if (typeof data !== 'object' || data === null) return null
-  const envelope = data as Record<string, unknown>
-  if (envelope.version !== PART_ENVELOPE_VERSION[dTag]) return null
+  if (typeof data !== 'object' || data === null) return null;
+  const envelope = data as Record<string, unknown>;
+  if (envelope.version !== PART_ENVELOPE_VERSION[dTag]) return null;
   switch (dTag) {
     case 'notes': {
-      if (!Array.isArray(envelope.bearers)) return null
-      const bearers = envelope.bearers as unknown[]
+      if (!Array.isArray(envelope.bearers)) return null;
+      const bearers = envelope.bearers as unknown[];
       if (
         !bearers.every(
           (r) =>
@@ -167,20 +168,20 @@ const parsePayload = (dTag: BackupPart, data: unknown): ParsedBackupEvent | null
             typeof (r as EncryptedBearerRecord)?.ciphertext === 'string',
         )
       ) {
-        return null
+        return null;
       }
-      if (typeof envelope.nextByHost !== 'object' || envelope.nextByHost === null) return null
-      const counters = envelope.nextByHost as Record<string, unknown>
-      if (!Object.values(counters).every((v) => typeof v === 'number')) return null
+      if (typeof envelope.nextByHost !== 'object' || envelope.nextByHost === null) return null;
+      const counters = envelope.nextByHost as Record<string, unknown>;
+      if (!Object.values(counters).every((v) => typeof v === 'number')) return null;
       return {
         part: 'notes',
         bearers: bearers as EncryptedBearerRecord[],
         nextByHost: counters as Record<string, number>,
-      }
+      };
     }
     case 'mints': {
-      if (!Array.isArray(envelope.trustedMints)) return null
-      const mints = envelope.trustedMints as unknown[]
+      if (!Array.isArray(envelope.trustedMints)) return null;
+      const mints = envelope.trustedMints as unknown[];
       if (
         !mints.every(
           (m) =>
@@ -188,22 +189,22 @@ const parsePayload = (dTag: BackupPart, data: unknown): ParsedBackupEvent | null
             typeof (m as TrustedMint)?.mintPubkey === 'string',
         )
       ) {
-        return null
+        return null;
       }
-      return {part: 'mints', trustedMints: mints as TrustedMint[]}
+      return { part: 'mints', trustedMints: mints as TrustedMint[] };
     }
     case 'settings': {
       if (typeof envelope.settings !== 'object' || envelope.settings === null) {
-        return null
+        return null;
       }
-      const settings = envelope.settings as Record<string, unknown>
+      const settings = envelope.settings as Record<string, unknown>;
       if (settings.defaultMint !== undefined && typeof settings.defaultMint !== 'string') {
-        return null
+        return null;
       }
-      return {part: 'settings', settings: settings as WalletSettings}
+      return { part: 'settings', settings: settings as WalletSettings };
     }
   }
-}
+};
 
 // Validates and decrypts one backup event. Returns null for anything that
 // isn't a genuine, untampered backup of THIS key: wrong kind, wrong d-tag,
@@ -213,23 +214,23 @@ export const parseBackupEvent = (
   secretKey: Uint8Array,
   event: NostrEvent,
 ): ParsedBackupEvent | null => {
-  if (event.kind !== BACKUP_EVENT_KIND) return null
-  if (event.pubkey !== getPublicKey(secretKey)) return null
-  const dTag = dTagOf(event)
-  if (dTag !== 'notes' && dTag !== 'mints' && dTag !== 'settings') return null
-  if (!verifyEvent(event)) return null
-  if (event.content.length > MAX_BACKUP_CONTENT_CHARS) return null
-  let plaintext: string
+  if (event.kind !== BACKUP_EVENT_KIND) return null;
+  if (event.pubkey !== getPublicKey(secretKey)) return null;
+  const dTag = dTagOf(event);
+  if (dTag !== 'notes' && dTag !== 'mints' && dTag !== 'settings') return null;
+  if (!verifyEvent(event)) return null;
+  if (event.content.length > MAX_BACKUP_CONTENT_CHARS) return null;
+  let plaintext: string;
   try {
-    plaintext = nip44v2.decrypt(event.content, selfConversationKey(secretKey))
+    plaintext = nip44v2.decrypt(event.content, selfConversationKey(secretKey));
   } catch {
-    return null
+    return null;
   }
-  let data: unknown
+  let data: unknown;
   try {
-    data = JSON.parse(plaintext)
+    data = JSON.parse(plaintext);
   } catch {
-    return null
+    return null;
   }
-  return parsePayload(dTag, data)
-}
+  return parsePayload(dTag, data);
+};

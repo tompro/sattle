@@ -34,7 +34,12 @@ const onSent = () => emit('sent');
 </script>
 
 <template>
-  <q-dialog v-model="show" position="bottom" transition-show="slide-up" transition-hide="slide-down">
+  <q-dialog
+    v-model="show"
+    position="bottom"
+    transition-show="slide-up"
+    transition-hide="slide-down"
+  >
     <q-card class="sattle-card drawer-card full-width">
       <q-card-section class="row items-center q-pb-sm">
         <q-btn v-close-popup flat round dense icon="close" color="primary" aria-label="Close" />

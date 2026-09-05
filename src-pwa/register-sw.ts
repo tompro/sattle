@@ -1,4 +1,4 @@
-import { register } from "register-service-worker";
+import { register } from 'register-service-worker';
 
 // The ready(), registered(), cached(), updatefound() and updated()
 // events passes a ServiceWorkerRegistration instance in their arguments.
@@ -37,5 +37,5 @@ register(import.meta.env.QUASAR_SERVICE_WORKER_FILE, {
 
   error(/* err */) {
     // console.error('Error during service worker registration:', err)
-  }
+  },
 });

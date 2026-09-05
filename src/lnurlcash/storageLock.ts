@@ -6,13 +6,13 @@
 // old browsers). That fallback provides no cross-tab serialization
 // guarantee; the promise hop only normalizes synchronous callback errors.
 export const withStorageLock = <T>(name: string, fn: () => T | Promise<T>): Promise<T> => {
-  const locks = typeof navigator !== 'undefined' ? navigator.locks : undefined
-  if (locks) return locks.request(name, () => Promise.resolve().then(fn))
-  return Promise.resolve().then(fn)
-}
+  const locks = typeof navigator !== 'undefined' ? navigator.locks : undefined;
+  if (locks) return locks.request(name, () => Promise.resolve().then(fn));
+  return Promise.resolve().then(fn);
+};
 
 export const storageLocksAvailable = (): boolean =>
-  typeof navigator !== 'undefined' && navigator.locks !== undefined
+  typeof navigator !== 'undefined' && navigator.locks !== undefined;
 
 // fund-critical mutations have no fallback: without Web Locks a second tab
 // could interleave its own fresh-read…write between this tab's read and
@@ -21,15 +21,15 @@ export const storageLocksAvailable = (): boolean =>
 // be guaranteed - reads stay available, writes fail closed before any key
 // derivation, encryption, or network work has happened.
 export class StorageLocksUnavailableError extends Error {
-  override readonly name = 'StorageLocksUnavailableError'
+  override readonly name = 'StorageLocksUnavailableError';
 
   constructor() {
-    super('This browser cannot guarantee exclusive storage access (Web Locks unavailable).')
+    super('This browser cannot guarantee exclusive storage access (Web Locks unavailable).');
   }
 }
 
 export const withRequiredStorageLock = <T>(name: string, fn: () => T | Promise<T>): Promise<T> => {
-  const locks = typeof navigator !== 'undefined' ? navigator.locks : undefined
-  if (!locks) return Promise.reject(new StorageLocksUnavailableError())
-  return locks.request(name, () => Promise.resolve().then(fn))
-}
+  const locks = typeof navigator !== 'undefined' ? navigator.locks : undefined;
+  if (!locks) return Promise.reject(new StorageLocksUnavailableError());
+  return locks.request(name, () => Promise.resolve().then(fn));
+};

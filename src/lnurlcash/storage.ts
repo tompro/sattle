@@ -12,7 +12,7 @@
 //   storage/settings.ts    - plaintext wallet settings
 //   storage/backup.ts      - buildBackup / applyBackup
 
-export type {Bearer, NewBearer} from './types'
+export type { Bearer, NewBearer } from './types';
 
 export {
   compareBearerOrder,
@@ -31,7 +31,7 @@ export {
   clearAllBearers,
   mergeBearers,
   FUNDS_STORAGE_KEY,
-} from './storage/bearers'
+} from './storage/bearers';
 export type {
   BearerChangeset,
   EncryptedBearerRecord,
@@ -41,7 +41,7 @@ export type {
   PendingStaging,
   ReservedCashRange,
   StoredFundsV2,
-} from './storage/bearers'
+} from './storage/bearers';
 
 export {
   newActivityId,
@@ -50,11 +50,11 @@ export {
   persistActivityEvent,
   clearAllActivity,
   MAX_ACTIVITY_ENTRIES,
-} from './storage/activityLog'
-export type {ActivityKind, ActivityEvent, EncryptedActivityRecord} from './storage/activityLog'
+} from './storage/activityLog';
+export type { ActivityKind, ActivityEvent, EncryptedActivityRecord } from './storage/activityLog';
 
-export {loadSettings, persistSettings, clearSettings} from './storage/settings'
-export type {WalletSettings} from './storage/settings'
+export { loadSettings, persistSettings, clearSettings } from './storage/settings';
+export type { WalletSettings } from './storage/settings';
 
-export {buildBackup, applyBackup, parseBackupFile, MAX_BACKUP_FILE_BYTES} from './storage/backup'
-export type {BackupFile, RestoreResult} from './storage/backup'
+export { buildBackup, applyBackup, parseBackupFile, MAX_BACKUP_FILE_BYTES } from './storage/backup';
+export type { BackupFile, RestoreResult } from './storage/backup';

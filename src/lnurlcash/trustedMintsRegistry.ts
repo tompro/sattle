@@ -1,34 +1,34 @@
 // Strict trusted-mint envelope parsing is shared by localStorage and the
 // durable cross-context commit mirror. Either source fails closed as a whole.
 
-import {isWalletOwnerId} from './storage/walletOwner'
-import type {TrustedMint} from './trustedMints'
-import {isValidMintPubkey} from './trustedMintTransitions'
+import { isWalletOwnerId } from './storage/walletOwner';
+import type { TrustedMint } from './trustedMints';
+import { isValidMintPubkey } from './trustedMintTransitions';
 
-export const TRUSTED_MINTS_REGISTRY_VERSION = 1
+export const TRUSTED_MINTS_REGISTRY_VERSION = 1;
 
 export type TrustedMintsRegistryEnvelope = {
-  readonly version: typeof TRUSTED_MINTS_REGISTRY_VERSION
-  readonly ownerId: string
-  readonly mints: TrustedMint[]
-}
+  readonly version: typeof TRUSTED_MINTS_REGISTRY_VERSION;
+  readonly ownerId: string;
+  readonly mints: TrustedMint[];
+};
 
 export type StoredTrustedMintsRegistry =
-  | {readonly kind: 'absent'}
-  | {readonly kind: 'malformed'}
-  | {readonly kind: 'valid'; readonly envelope: TrustedMintsRegistryEnvelope}
+  | { readonly kind: 'absent' }
+  | { readonly kind: 'malformed' }
+  | { readonly kind: 'valid'; readonly envelope: TrustedMintsRegistryEnvelope };
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null
+  typeof value === 'object' && value !== null;
 
 const isOptionalString = (value: unknown): boolean =>
-  value === undefined || typeof value === 'string'
+  value === undefined || typeof value === 'string';
 
 const isOptionalNumber = (value: unknown): boolean =>
-  value === undefined || typeof value === 'number'
+  value === undefined || typeof value === 'number';
 
 const isTrustedMint = (value: unknown): value is TrustedMint => {
-  if (!isRecord(value)) return false
+  if (!isRecord(value)) return false;
   return (
     typeof value.server === 'string' &&
     typeof value.mintPubkey === 'string' &&
@@ -48,13 +48,13 @@ const isTrustedMint = (value: unknown): value is TrustedMint => {
     isOptionalNumber(value.nodeNumChannels) &&
     isOptionalNumber(value.nodeNumPeers) &&
     isOptionalString(value.username)
-  )
-}
+  );
+};
 
 export const parseStoredTrustedMintsRegistry = (raw: string | null): StoredTrustedMintsRegistry => {
-  if (raw === null) return {kind: 'absent'}
+  if (raw === null) return { kind: 'absent' };
   try {
-    const parsed: unknown = JSON.parse(raw)
+    const parsed: unknown = JSON.parse(raw);
     if (
       !isRecord(parsed) ||
       parsed.version !== TRUSTED_MINTS_REGISTRY_VERSION ||
@@ -62,7 +62,7 @@ export const parseStoredTrustedMintsRegistry = (raw: string | null): StoredTrust
       !Array.isArray(parsed.mints) ||
       !parsed.mints.every(isTrustedMint)
     ) {
-      return {kind: 'malformed'}
+      return { kind: 'malformed' };
     }
     return {
       kind: 'valid',
@@ -71,21 +71,21 @@ export const parseStoredTrustedMintsRegistry = (raw: string | null): StoredTrust
         ownerId: parsed.ownerId,
         mints: parsed.mints,
       },
-    }
+    };
   } catch {
-    return {kind: 'malformed'}
+    return { kind: 'malformed' };
   }
-}
+};
 
 export const parseLegacyTrustedMintsRegistry = (raw: string | null): TrustedMint[] | null => {
-  if (raw === null) return null
+  if (raw === null) return null;
   try {
-    const parsed: unknown = JSON.parse(raw)
-    return Array.isArray(parsed) && parsed.every(isTrustedMint) ? parsed : null
+    const parsed: unknown = JSON.parse(raw);
+    return Array.isArray(parsed) && parsed.every(isTrustedMint) ? parsed : null;
   } catch {
-    return null
+    return null;
   }
-}
+};
 
 export const serializeTrustedMintsRegistry = (ownerId: string, mints: TrustedMint[]): string =>
-  JSON.stringify({version: TRUSTED_MINTS_REGISTRY_VERSION, ownerId, mints})
+  JSON.stringify({ version: TRUSTED_MINTS_REGISTRY_VERSION, ownerId, mints });

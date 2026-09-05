@@ -17,46 +17,46 @@ import {
   serverOf,
   splitNote,
   withNewK1,
-} from 'lnurlcash-kit'
-import type {Bearer, NewBearer} from '../types'
-import type {OutputSecretAllocator} from './allocation'
-import {requireOutputSecrets} from './allocation'
-import {mergeAmbiguitySafe} from './carveRecovery'
-import type {FundOperationOptions} from './shared'
+} from 'lnurlcash-kit';
+import type { Bearer, NewBearer } from '../types';
+import type { OutputSecretAllocator } from './allocation';
+import { requireOutputSecrets } from './allocation';
+import { mergeAmbiguitySafe } from './carveRecovery';
+import type { FundOperationOptions } from './shared';
 import {
   assertFundOwner,
   landedNoteVerifies,
   probeMutationOutput,
   UncertainOutcomeError,
   withMutationSafety,
-} from './shared'
+} from './shared';
 
 // The same shape serves both checkpoint phases: the pre-wire phase carries
 // note/change with an empty consumed list, and the landed phase carries the
 // already-staged note plus the inputs the caller can now retire.
 export type CarveResult = {
   // the exact-amount note, ready to hand over or melt
-  note: NewBearer
+  note: NewBearer;
   // the remainder note, when the carve split a larger input
-  change?: NewBearer
+  change?: NewBearer;
   // the input notes burned server-side by the carve (empty when a single
   // note already held exactly the target amount)
-  consumed: Bearer[]
-}
+  consumed: Bearer[];
+};
 
 export class UnsupportedMultiBatchMergeError extends Error {
-  override readonly name = 'UnsupportedMultiBatchMergeError'
+  override readonly name = 'UnsupportedMultiBatchMergeError';
 
   constructor() {
-    super('This carve would require multiple merge requests and cannot be performed safely.')
+    super('This carve would require multiple merge requests and cannot be performed safely.');
   }
 }
 
 export class CarveCheckpointRequiredError extends Error {
-  override readonly name = 'CarveCheckpointRequiredError'
+  override readonly name = 'CarveCheckpointRequiredError';
 
   constructor() {
-    super('A mutating carve requires a durable onCarve checkpoint.')
+    super('A mutating carve requires a durable onCarve checkpoint.');
   }
 }
 
@@ -65,8 +65,8 @@ export type CarveOptions = FundOperationOptions & {
   // (split: target + change; merge: the combined note). Required for any
   // mutating carve: the secrets come from the wallet's reserved BIP-32
   // indices so a restart can never reuse or lose them.
-  readonly allocateOutputSecrets?: OutputSecretAllocator
-}
+  readonly allocateOutputSecrets?: OutputSecretAllocator;
+};
 
 // Selection: only notes that can actually take part - verified (callback
 // known), not locally spent, holding a real k1 (device-backed mirrors are
@@ -89,48 +89,47 @@ export const ensureExactAmount = async (
   options: CarveOptions = {},
 ): Promise<CarveResult> => {
   if (!Number.isInteger(amountMsat) || amountMsat <= 0) {
-    throw new Error('Amount must be a positive whole number of msat.')
+    throw new Error('Amount must be a positive whole number of msat.');
   }
   // the forced mutation policy (signatures required, one byte-identical
   // replay) applies to every mint call below regardless of caller options
-  const mutationOptions = withMutationSafety(options)
+  const mutationOptions = withMutationSafety(options);
   const eligible = bearers.filter(
     (b) => b.verified && !b.spent && b.callback !== '' && !b.deviceId && noteK1(b.url),
-  )
+  );
   // per-server greedy pick: smallest notes first until the target is
   // covered (an exact single-note match short-circuits - no mutation at
   // all is always better than carving)
-  const byServer = new Map<string, Bearer[]>()
+  const byServer = new Map<string, Bearer[]>();
   for (const b of eligible) {
-    const server = serverOf(b.url)
-    byServer.set(server, [...(byServer.get(server) ?? []), b])
+    const server = serverOf(b.url);
+    byServer.set(server, [...(byServer.get(server) ?? []), b]);
   }
-  let pick: Bearer[] | null = null
+  let pick: Bearer[] | null = null;
   for (const group of byServer.values()) {
-    const sorted = [...group].sort((a, b) => a.amount - b.amount)
-    const exact = sorted.find((b) => b.amount === amountMsat)
-    const candidate = exact ? [exact] : accumulate(sorted, amountMsat)
-    if (!candidate) continue
-    if (!pick || better(candidate, pick, amountMsat)) pick = candidate
+    const sorted = [...group].sort((a, b) => a.amount - b.amount);
+    const exact = sorted.find((b) => b.amount === amountMsat);
+    const candidate = exact ? [exact] : accumulate(sorted, amountMsat);
+    if (!candidate) continue;
+    if (!pick || better(candidate, pick, amountMsat)) pick = candidate;
   }
   if (!pick) {
-    throw new Error('No mint holds enough verified, unspent balance to cover that amount.')
+    throw new Error('No mint holds enough verified, unspent balance to cover that amount.');
   }
-  const base = pick[0]
-  const total = pick.reduce((sum, b) => sum + b.amount, 0)
-  const k1s = pick.map((b) => requireNoteK1(b.url))
+  const base = pick[0];
+  const total = pick.reduce((sum, b) => sum + b.amount, 0);
+  const k1s = pick.map((b) => requireNoteK1(b.url));
 
   const checkpoint = async (result: CarveResult): Promise<void> => {
     if (!options.onCarve) {
-      throw new CarveCheckpointRequiredError()
+      throw new CarveCheckpointRequiredError();
     }
-    assertFundOwner(options)
-    await options.onCarve(result)
-    assertFundOwner(options)
-  }
-  const stage = (result: CarveResult): Promise<void> =>
-    checkpoint({...result, consumed: []})
-  const retire = (note: NewBearer): Promise<void> => checkpoint({note, consumed: pick})
+    assertFundOwner(options);
+    await options.onCarve(result);
+    assertFundOwner(options);
+  };
+  const stage = (result: CarveResult): Promise<void> => checkpoint({ ...result, consumed: [] });
+  const retire = (note: NewBearer): Promise<void> => checkpoint({ note, consumed: pick });
 
   if (pick.length === 1 && total === amountMsat) {
     // already exact - hand over the note itself, untouched
@@ -143,41 +142,41 @@ export const ensureExactAmount = async (
         mintPubkey: base.mintPubkey,
       },
       consumed: [],
-    }
+    };
   }
 
   if (total === amountMsat) {
     if (mergeBatches(base.callback, k1s).length !== 1) {
-      throw new UnsupportedMultiBatchMergeError()
+      throw new UnsupportedMultiBatchMergeError();
     }
     if (!options.onCarve) {
-      throw new CarveCheckpointRequiredError()
+      throw new CarveCheckpointRequiredError();
     }
     const [mergeSecret] = await requireOutputSecrets(
       options.allocateOutputSecrets,
       serverOf(base.url),
       1,
-    )
+    );
     const staged: NewBearer = {
       url: withNewK1(base.url, mergeSecret, total),
       callback: base.callback,
       amount: total,
       verified: false,
       mintPubkey: base.mintPubkey,
-    }
-    await stage({note: staged, consumed: pick})
-    assertFundOwner(options)
+    };
+    await stage({ note: staged, consumed: pick });
+    assertFundOwner(options);
     const merged = await mergeAmbiguitySafe(base, k1s, {
       ...mutationOptions,
       randomSecret: () => mergeSecret,
-    })
+    });
     // a landed merge reports its signature (carried in the URL's sig param)
     // and earns verified only when that signature checks against a trusted
     // current or previous key; a rescued merge saw no answer, so its note
     // stays exactly as staged - unverified, same URL
-    const landedUrl = withNewK1(base.url, mergeSecret, total, merged.signature)
+    const landedUrl = withNewK1(base.url, mergeSecret, total, merged.signature);
     const result: CarveResult = merged.rescued
-      ? {note: staged, consumed: pick}
+      ? { note: staged, consumed: pick }
       : {
           note: {
             ...staged,
@@ -185,66 +184,66 @@ export const ensureExactAmount = async (
             verified: landedNoteVerifies(landedUrl, options.mintSignatureKeys),
           },
           consumed: pick,
-        }
-    await retire(result.note)
-    return result
+        };
+    await retire(result.note);
+    return result;
   }
 
   // split path: total above target - one split request across all picked
   // k1s, carving the target off and leaving the change as a fresh note
   if (!options.onCarve) {
-    throw new CarveCheckpointRequiredError()
+    throw new CarveCheckpointRequiredError();
   }
   const [partK1, changeK1] = await requireOutputSecrets(
     options.allocateOutputSecrets,
     serverOf(base.url),
     2,
-  )
-  let partSignature: string | undefined
-  let changeSignature: string | undefined
+  );
+  let partSignature: string | undefined;
+  let changeSignature: string | undefined;
   const stagedNote: NewBearer = {
     url: withNewK1(base.url, partK1, amountMsat),
     callback: base.callback,
     amount: amountMsat,
     verified: false,
     mintPubkey: base.mintPubkey,
-  }
+  };
   const stagedChange: NewBearer = {
     url: withNewK1(base.url, changeK1, total - amountMsat),
     callback: base.callback,
     amount: total - amountMsat,
     verified: false,
     mintPubkey: base.mintPubkey,
-  }
-  await stage({note: stagedNote, change: stagedChange, consumed: pick})
-  let secretIndex = 0
+  };
+  await stage({ note: stagedNote, change: stagedChange, consumed: pick });
+  let secretIndex = 0;
   const preparedSecret = (): string => {
-    secretIndex += 1
-    if (secretIndex === 1) return partK1
-    if (secretIndex === 2) return changeK1
-    throw new Error('The split requested more output secrets than were staged.')
-  }
-  assertFundOwner(options)
+    secretIndex += 1;
+    if (secretIndex === 1) return partK1;
+    if (secretIndex === 2) return changeK1;
+    throw new Error('The split requested more output secrets than were staged.');
+  };
+  assertFundOwner(options);
   try {
     const parts = await splitNote(base.callback, k1s, amountMsat, {
       ...mutationOptions,
       randomSecret: preparedSecret,
-    })
-    partSignature = parts.signature
-    changeSignature = parts.changeSignature
+    });
+    partSignature = parts.signature;
+    changeSignature = parts.changeSignature;
   } catch (err) {
     if (err instanceof AmbiguousMutationError) {
       // the split request may have landed despite the failure - probe one
       // input before deciding what the carried secrets are worth
-      const outcome = await probeBurnedNote(base.url, mutationOptions)
-      if (outcome === 'live') throw err // nothing burned - a plain failure
+      const outcome = await probeBurnedNote(base.url, mutationOptions);
+      if (outcome === 'live') throw err; // nothing burned - a plain failure
       if (outcome === 'unknown') {
         // can't tell: surface both possible outputs unverified WITHOUT
         // consuming the inputs, and stop here rather than spend from limbo
         throw new UncertainOutcomeError(
           'The split may have gone through but could not be confirmed - its possible outputs were already staged unverified alongside the originals.',
           [],
-        )
+        );
       }
       // 'gone': the burn landed - the carried secrets are the only money
     } else {
@@ -253,10 +252,10 @@ export const ensureExactAmount = async (
       // the first attempt and refused this one as an already-spent input.
       // The kit attaches the fresh output secrets to every refusal - probe
       // one output before deciding they are worthless.
-      const carried = newSecretsOf(err)
-      if (carried.length !== 2) throw err
-      const outcome = await probeMutationOutput(base.url, carried[0], mutationOptions)
-      if (outcome === 'absent') throw err // never landed - a plain refusal
+      const carried = newSecretsOf(err);
+      if (carried.length !== 2) throw err;
+      const outcome = await probeMutationOutput(base.url, carried[0], mutationOptions);
+      if (outcome === 'absent') throw err; // never landed - a plain refusal
       if (outcome === 'unknown') {
         // can't tell whether the refusal named a retry - same limbo as
         // the ambiguous case above: track the possible outputs, consume
@@ -264,7 +263,7 @@ export const ensureExactAmount = async (
         throw new UncertainOutcomeError(
           'The split was refused, but the refusal may have named a retry that already landed - its possible outputs were already staged unverified alongside the originals.',
           [],
-        )
+        );
       }
       // 'live': the split landed and this answer was its retried twin -
       // the carried secrets are the only money left
@@ -277,51 +276,51 @@ export const ensureExactAmount = async (
   const noteUrl =
     partSignature === undefined
       ? stagedNote.url
-      : withNewK1(base.url, partK1, amountMsat, partSignature)
+      : withNewK1(base.url, partK1, amountMsat, partSignature);
   const note: NewBearer = {
     url: noteUrl,
     callback: base.callback,
     amount: amountMsat,
     verified: landedNoteVerifies(noteUrl, options.mintSignatureKeys),
     mintPubkey: base.mintPubkey,
-  }
+  };
   // The change may be worth less than total - amount when the mint charges
   // split fees. It remains unverified at that upper bound until refresh;
   // settling it here would rotate to an unstaged secret in a second request.
   const changeUrl =
     changeSignature === undefined
       ? stagedChange.url
-      : withNewK1(base.url, changeK1, total - amountMsat, changeSignature)
+      : withNewK1(base.url, changeK1, total - amountMsat, changeSignature);
   const change: NewBearer = {
     url: changeUrl,
     callback: base.callback,
     amount: total - amountMsat,
     verified: false,
     mintPubkey: base.mintPubkey,
-  }
-  const result = {note, change, consumed: pick}
-  await retire(note)
-  return result
-}
+  };
+  const result = { note, change, consumed: pick };
+  await retire(note);
+  return result;
+};
 
 // smallest-first accumulation until the target is covered; null when the
 // whole group can't reach it
 const accumulate = (sorted: Bearer[], amountMsat: number): Bearer[] | null => {
-  const picked: Bearer[] = []
-  let total = 0
+  const picked: Bearer[] = [];
+  let total = 0;
   for (const b of sorted) {
-    picked.push(b)
-    total += b.amount
-    if (total >= amountMsat) return picked
+    picked.push(b);
+    total += b.amount;
+    if (total >= amountMsat) return picked;
   }
-  return null
-}
+  return null;
+};
 
 // the better carve plan: less waste first, then fewer notes burned
 const better = (a: Bearer[], b: Bearer[], target: number): boolean => {
-  const sum = (notes: Bearer[]) => notes.reduce((s, n) => s + n.amount, 0)
-  const wasteA = sum(a) - target
-  const wasteB = sum(b) - target
-  if (wasteA !== wasteB) return wasteA < wasteB
-  return a.length < b.length
-}
+  const sum = (notes: Bearer[]) => notes.reduce((s, n) => s + n.amount, 0);
+  const wasteA = sum(a) - target;
+  const wasteB = sum(b) - target;
+  if (wasteA !== wasteB) return wasteA < wasteB;
+  return a.length < b.length;
+};

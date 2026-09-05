@@ -1,49 +1,49 @@
 // Pure trusted-mint registry transitions. Persistence serializes these
 // operations, while this module keeps pinning and backup policy auditable.
 
-import type {TrustedMint, TrustedMintNodeInfo, TrustKeyResult} from './trustedMints'
+import type { TrustedMint, TrustedMintNodeInfo, TrustKeyResult } from './trustedMints';
 
-const PUBKEY_PATTERN = /^[0-9a-f]{66}$/
+const PUBKEY_PATTERN = /^[0-9a-f]{66}$/;
 
 export const isValidMintPubkey = (value: string): boolean =>
-  PUBKEY_PATTERN.test(value.toLowerCase())
+  PUBKEY_PATTERN.test(value.toLowerCase());
 
 export type MintTransition<T> = {
-  readonly mints: TrustedMint[]
-  readonly result: T
-  readonly changed: boolean
-}
+  readonly mints: TrustedMint[];
+  readonly result: T;
+  readonly changed: boolean;
+};
 
 type MintKeyInput = {
-  readonly server: string
-  readonly mintPubkey: string
-}
+  readonly server: string;
+  readonly mintPubkey: string;
+};
 
 type AddMintInput = MintKeyInput & {
-  readonly nodeInfo?: TrustedMintNodeInfo
-}
+  readonly nodeInfo?: TrustedMintNodeInfo;
+};
 
 const unchanged = <T>(mints: TrustedMint[], result: T): MintTransition<T> => ({
   mints,
   result,
   changed: false,
-})
+});
 
 const changed = <T>(mints: TrustedMint[], result: T): MintTransition<T> => ({
   mints,
   result,
   changed: true,
-})
+});
 
 export const lockMint = (
   mints: TrustedMint[],
   input: MintKeyInput,
 ): MintTransition<TrustKeyResult> => {
-  const key = input.mintPubkey.trim().toLowerCase()
+  const key = input.mintPubkey.trim().toLowerCase();
   if (!input.server || !isValidMintPubkey(key)) {
-    return unchanged(mints, 'unchanged')
+    return unchanged(mints, 'unchanged');
   }
-  const existing = mints.find((mint) => mint.server === input.server)
+  const existing = mints.find((mint) => mint.server === input.server);
   if (!existing) {
     return changed(
       [
@@ -56,37 +56,39 @@ export const lockMint = (
         },
       ],
       'added',
-    )
+    );
   }
   if (existing.mintPubkey === key) {
     if (existing.locked && !existing.unconfirmed) {
-      return unchanged(mints, 'unchanged')
+      return unchanged(mints, 'unchanged');
     }
     return changed(
       mints.map((mint) =>
-        mint.server === input.server ? {...mint, locked: true, unconfirmed: undefined} : mint,
+        mint.server === input.server ? { ...mint, locked: true, unconfirmed: undefined } : mint,
       ),
       'unchanged',
-    )
+    );
   }
   if (existing.pendingMintPubkey === key) {
-    return unchanged(mints, 'rekey-pending')
+    return unchanged(mints, 'rekey-pending');
   }
   return changed(
-    mints.map((mint) => (mint.server === input.server ? {...mint, pendingMintPubkey: key} : mint)),
+    mints.map((mint) =>
+      mint.server === input.server ? { ...mint, pendingMintPubkey: key } : mint,
+    ),
     'rekey-pending',
-  )
-}
+  );
+};
 
 export const grandfatherMint = (
   mints: TrustedMint[],
   input: MintKeyInput,
 ): MintTransition<TrustKeyResult> => {
-  const key = input.mintPubkey.trim().toLowerCase()
+  const key = input.mintPubkey.trim().toLowerCase();
   if (!input.server || !isValidMintPubkey(key)) {
-    return unchanged(mints, 'unchanged')
+    return unchanged(mints, 'unchanged');
   }
-  const existing = mints.find((mint) => mint.server === input.server)
+  const existing = mints.find((mint) => mint.server === input.server);
   if (!existing) {
     return changed(
       [
@@ -100,29 +102,31 @@ export const grandfatherMint = (
         },
       ],
       'added',
-    )
+    );
   }
-  if (existing.mintPubkey === key) return unchanged(mints, 'unchanged')
+  if (existing.mintPubkey === key) return unchanged(mints, 'unchanged');
   if (existing.pendingMintPubkey === key) {
-    return unchanged(mints, 'rekey-pending')
+    return unchanged(mints, 'rekey-pending');
   }
   return changed(
-    mints.map((mint) => (mint.server === input.server ? {...mint, pendingMintPubkey: key} : mint)),
+    mints.map((mint) =>
+      mint.server === input.server ? { ...mint, pendingMintPubkey: key } : mint,
+    ),
     'rekey-pending',
-  )
-}
+  );
+};
 
 export const addMint = (
   mints: TrustedMint[],
   input: AddMintInput,
 ): MintTransition<TrustKeyResult> => {
-  const server = input.server.trim()
-  const key = input.mintPubkey.trim().toLowerCase()
-  if (!server) throw new Error('Enter a server.')
+  const server = input.server.trim();
+  const key = input.mintPubkey.trim().toLowerCase();
+  if (!server) throw new Error('Enter a server.');
   if (!isValidMintPubkey(key)) {
-    throw new Error('Signing key must be a 33-byte compressed pubkey (66 hex characters).')
+    throw new Error('Signing key must be a 33-byte compressed pubkey (66 hex characters).');
   }
-  const existing = mints.find((mint) => mint.server === server)
+  const existing = mints.find((mint) => mint.server === server);
   if (!existing) {
     return changed(
       [
@@ -136,27 +140,27 @@ export const addMint = (
         },
       ],
       'added',
-    )
+    );
   }
   if (existing.mintPubkey === key) {
     return changed(
       mints.map((mint) =>
-        mint.server === server ? {...mint, ...input.nodeInfo, unconfirmed: undefined} : mint,
+        mint.server === server ? { ...mint, ...input.nodeInfo, unconfirmed: undefined } : mint,
       ),
       'unchanged',
-    )
+    );
   }
   return changed(
     mints.map((mint) =>
-      mint.server === server ? {...mint, pendingMintPubkey: key, ...input.nodeInfo} : mint,
+      mint.server === server ? { ...mint, pendingMintPubkey: key, ...input.nodeInfo } : mint,
     ),
     'rekey-pending',
-  )
-}
+  );
+};
 
 export const confirmMintRekey = (mints: TrustedMint[], server: string): MintTransition<void> => {
-  const pending = mints.find((mint) => mint.server === server)?.pendingMintPubkey
-  if (!pending) return unchanged(mints, undefined)
+  const pending = mints.find((mint) => mint.server === server)?.pendingMintPubkey;
+  if (!pending) return unchanged(mints, undefined);
   return changed(
     mints.map((mint) =>
       mint.server === server
@@ -173,18 +177,20 @@ export const confirmMintRekey = (mints: TrustedMint[], server: string): MintTran
         : mint,
     ),
     undefined,
-  )
-}
+  );
+};
 
 export const dismissMintRekey = (mints: TrustedMint[], server: string): MintTransition<void> => {
   if (!mints.some((mint) => mint.server === server)) {
-    return unchanged(mints, undefined)
+    return unchanged(mints, undefined);
   }
   return changed(
-    mints.map((mint) => (mint.server === server ? {...mint, pendingMintPubkey: undefined} : mint)),
+    mints.map((mint) =>
+      mint.server === server ? { ...mint, pendingMintPubkey: undefined } : mint,
+    ),
     undefined,
-  )
-}
+  );
+};
 
 export const cacheMintNodeInfo = (
   mints: TrustedMint[],
@@ -192,24 +198,24 @@ export const cacheMintNodeInfo = (
   nodeInfo: TrustedMintNodeInfo,
 ): MintTransition<void> => {
   if (!mints.some((mint) => mint.server === server)) {
-    return unchanged(mints, undefined)
+    return unchanged(mints, undefined);
   }
   return changed(
-    mints.map((mint) => (mint.server === server ? {...mint, ...nodeInfo} : mint)),
+    mints.map((mint) => (mint.server === server ? { ...mint, ...nodeInfo } : mint)),
     undefined,
-  )
-}
+  );
+};
 
 export const removeMint = (mints: TrustedMint[], server: string): MintTransition<void> => {
-  const existing = mints.find((mint) => mint.server === server)
-  if (!existing) return unchanged(mints, undefined)
+  const existing = mints.find((mint) => mint.server === server);
+  if (!existing) return unchanged(mints, undefined);
   if (existing.locked) {
-    throw new Error("Can't remove - you hold a bearer note from this mint.")
+    throw new Error("Can't remove - you hold a bearer note from this mint.");
   }
   return changed(
     mints.filter((mint) => mint.server !== server),
     undefined,
-  )
-}
+  );
+};
 
-export const clearMints = (): MintTransition<void> => changed([], undefined)
+export const clearMints = (): MintTransition<void> => changed([], undefined);

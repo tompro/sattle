@@ -170,9 +170,7 @@ export const createWalletFunds = (options: WalletFundsOptions) => {
       const sameOutput = (bearer: Bearer, note: NewBearer): boolean => {
         const k1 = noteK1(note.url);
         return (
-          k1 !== null &&
-          serverOf(bearer.url) === serverOf(note.url) &&
-          noteK1(bearer.url) === k1
+          k1 !== null && serverOf(bearer.url) === serverOf(note.url) && noteK1(bearer.url) === k1
         );
       };
       const staged = bearers.value.find((bearer) => sameOutput(bearer, carve.note));
@@ -295,9 +293,7 @@ export const createWalletFunds = (options: WalletFundsOptions) => {
         { beforeCommit: ownerFence },
       );
       bearers.value = next;
-      const committed = existing
-        ? next.find((bearer) => bearer.id === existing.id)
-        : next[0];
+      const committed = existing ? next.find((bearer) => bearer.id === existing.id) : next[0];
       if (!committed) throw new BearerNotFoundError();
       await lockCommittedBearers([committed]);
     });
@@ -411,10 +407,7 @@ export const createWalletFunds = (options: WalletFundsOptions) => {
                 await removeNote(staged.id, ownerFence);
                 break;
               }
-              if (
-                !staged.pendingMint.sourceBearerId &&
-                staged.pendingMint.sourceRecoverySecret
-              ) {
+              if (!staged.pendingMint.sourceBearerId && staged.pendingMint.sourceRecoverySecret) {
                 // a receive rotation that never landed: nothing exists at
                 // the staged secret, so the note is restored at the
                 // original k1 it was received on (journal GC below retires

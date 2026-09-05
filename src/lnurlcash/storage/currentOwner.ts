@@ -9,20 +9,20 @@
 // reset, backup-restore, and teardown time, so in the shipped app only the
 // v2 branch can ever match.
 
-import {savedKeyOwnerId} from '../keys'
-import {savedWalletMaterialOwnerId} from '../walletMaterialStorage'
+import { savedKeyOwnerId } from '../keys';
+import { savedWalletMaterialOwnerId } from '../walletMaterialStorage';
 
 export class WalletOwnerMismatchError extends Error {
-  override readonly name = 'WalletOwnerMismatchError'
+  override readonly name = 'WalletOwnerMismatchError';
   constructor() {
-    super('The active wallet owner no longer matches the saved wallet.')
+    super('The active wallet owner no longer matches the saved wallet.');
   }
 }
 
 export const savedKeyOwnerAllows = (ownerId: string): boolean => {
-  return savedWalletMaterialOwnerId() === ownerId || savedKeyOwnerId() === ownerId
-}
+  return savedWalletMaterialOwnerId() === ownerId || savedKeyOwnerId() === ownerId;
+};
 
 export const assertSavedKeyOwner = (ownerId: string): void => {
-  if (!savedKeyOwnerAllows(ownerId)) throw new WalletOwnerMismatchError()
-}
+  if (!savedKeyOwnerAllows(ownerId)) throw new WalletOwnerMismatchError();
+};

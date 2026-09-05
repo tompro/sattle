@@ -205,11 +205,7 @@ describe('biometric wallet material', () => {
   ])('returns no material for an authenticated %s and preserves state', async (_label, payload) => {
     // Given an authenticated non-canonical payload bound to the saved owner
     await saveWalletMaterial(MATERIAL);
-    await storePayload(
-      payload,
-      walletMaterialOwnerId(MATERIAL),
-      walletMaterialHash(MATERIAL),
-    );
+    await storePayload(payload, walletMaterialOwnerId(MATERIAL), walletMaterialHash(MATERIAL));
     const before = persistedState();
 
     // When biometric unlock decrypts the payload

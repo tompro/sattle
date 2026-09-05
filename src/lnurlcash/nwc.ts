@@ -37,7 +37,7 @@
 //                        per-connection request queues
 // Budget/connection persistence lives in storage/nwcConnections.ts.
 
-export type {NwcBudget, NwcBudgetSpend, NwcConnectionRecord} from './storage/nwcConnections'
+export type { NwcBudget, NwcBudgetSpend, NwcConnectionRecord } from './storage/nwcConnections';
 export {
   clearNwcStorageForOwner,
   clearUnownedNwcStorage,
@@ -46,9 +46,9 @@ export {
   readNwcConnections,
   removeNwcConnection,
   writeNwcConnections,
-} from './storage/nwcConnections'
-export {readNwcEnabled, writeNwcEnabled} from './storage/nwcEnabled'
-export type {NwcLegacyMigrationResult} from './storage/nwcConnections'
+} from './storage/nwcConnections';
+export { readNwcEnabled, writeNwcEnabled } from './storage/nwcEnabled';
+export type { NwcLegacyMigrationResult } from './storage/nwcConnections';
 
 export {
   buildConnectionString,
@@ -57,13 +57,13 @@ export {
   deriveNwcWalletKey,
   nwcWalletPubkey,
   parseConnectionString,
-} from './nwc/connection'
+} from './nwc/connection';
 export type {
   CreateConnectionOptions,
   CreatedConnection,
   NwcConnectionInfo,
   ParsedConnectionString,
-} from './nwc/connection'
+} from './nwc/connection';
 
 export {
   NWC_INFO_KIND,
@@ -75,7 +75,7 @@ export {
   decryptRequest,
   errResult,
   okResult,
-} from './nwc/protocol'
+} from './nwc/protocol';
 export type {
   DecryptedNwcRequest,
   NostrEvent,
@@ -84,15 +84,15 @@ export type {
   NwcMethod,
   NwcRequest,
   NwcResponse,
-} from './nwc/protocol'
+} from './nwc/protocol';
 
-export {defaultNwcTransport} from './nwc/transport'
-export type {NostrFilter, NwcSubscription, NwcTransport} from './nwc/transport'
+export { defaultNwcTransport } from './nwc/transport';
+export type { NostrFilter, NwcSubscription, NwcTransport } from './nwc/transport';
 
-export {budgetRemainingMsat, recordSpend} from './nwc/budget'
-export type {PendingInvoice, RequestContext} from './nwc/context'
-export {invoiceResult, resolvePaymentHash} from './nwc/invoices'
-export {payChangeset} from './nwc/pay'
+export { budgetRemainingMsat, recordSpend } from './nwc/budget';
+export type { PendingInvoice, RequestContext } from './nwc/context';
+export { invoiceResult, resolvePaymentHash } from './nwc/invoices';
+export { payChangeset } from './nwc/pay';
 
-export {startService} from './nwc/service'
-export type {NwcChangeset, NwcService, NwcServiceDeps} from './nwc/service'
+export { startService } from './nwc/service';
+export type { NwcChangeset, NwcService, NwcServiceDeps } from './nwc/service';

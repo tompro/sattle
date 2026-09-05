@@ -10,51 +10,51 @@
 // atomic unit, so the backup projects both from the same single read -
 // they can never disagree about which generation they came from.
 
-import type {StoredSecret} from '../keys'
+import type { StoredSecret } from '../keys';
 import {
   getSavedLinkingKeyStored,
   savedKeyExists,
   savedKeyIsEncrypted,
   restoreLinkingKeyStored,
   isValidStoredSecret,
-} from '../keys'
-import type {TrustedMint} from '../trustedMints'
-import {readTrustedMints, mergeTrustedMints} from '../trustedMints'
-import {isWalletOwnerId} from './walletOwner'
-import type {EncryptedBearerRecord} from './bearers'
-import {commitFundsRestore, readFundsDocument} from './bearers'
-import type {WalletSettings} from './settings'
-import {loadSettings, persistSettings} from './settings'
-import {isJsonObject} from '../jsonParsing'
+} from '../keys';
+import type { TrustedMint } from '../trustedMints';
+import { readTrustedMints, mergeTrustedMints } from '../trustedMints';
+import { isWalletOwnerId } from './walletOwner';
+import type { EncryptedBearerRecord } from './bearers';
+import { commitFundsRestore, readFundsDocument } from './bearers';
+import type { WalletSettings } from './settings';
+import { loadSettings, persistSettings } from './settings';
+import { isJsonObject } from '../jsonParsing';
 
 export type BackupFile = {
-  type: 'sattle-backup'
-  version: 2
-  createdAt: number
-  ownerId?: unknown
-  linkingKey?: StoredSecret
-  bearers: EncryptedBearerRecord[]
-  nextByHost: Record<string, number>
-  trustedMints?: TrustedMint[]
-  settings?: WalletSettings
-}
+  type: 'sattle-backup';
+  version: 2;
+  createdAt: number;
+  ownerId?: unknown;
+  linkingKey?: StoredSecret;
+  bearers: EncryptedBearerRecord[];
+  nextByHost: Record<string, number>;
+  trustedMints?: TrustedMint[];
+  settings?: WalletSettings;
+};
 
 type ParsedBackupFile = {
-  type: 'sattle-backup'
-  version: 2
-  createdAt?: unknown
-  ownerId?: unknown
-  linkingKey?: unknown
-  bearers: unknown[]
-  nextByHost: Record<string, unknown>
-  trustedMints?: unknown
-  settings?: unknown
-}
+  type: 'sattle-backup';
+  version: 2;
+  createdAt?: unknown;
+  ownerId?: unknown;
+  linkingKey?: unknown;
+  bearers: unknown[];
+  nextByHost: Record<string, unknown>;
+  trustedMints?: unknown;
+  settings?: unknown;
+};
 
 export const buildBackup = (ownerId?: string): BackupFile => {
   // one document, one getItem: bearers and counters are snapshot-consistent
   // by construction; pending journal records are never read here
-  const funds = readFundsDocument()
+  const funds = readFundsDocument();
   const backup: BackupFile = {
     type: 'sattle-backup',
     version: 2,
@@ -63,19 +63,19 @@ export const buildBackup = (ownerId?: string): BackupFile => {
     nextByHost: funds.nextByHost,
     trustedMints: readTrustedMints(ownerId),
     settings: loadSettings(),
-  }
-  if (isWalletOwnerId(ownerId)) backup.ownerId = ownerId
-  const storedKey = getSavedLinkingKeyStored()
+  };
+  if (isWalletOwnerId(ownerId)) backup.ownerId = ownerId;
+  const storedKey = getSavedLinkingKeyStored();
   if (savedKeyIsEncrypted() && storedKey) {
-    backup.linkingKey = storedKey
+    backup.linkingKey = storedKey;
   }
-  return backup
-}
+  return backup;
+};
 
 export type RestoreResult = {
-  added: number
-  skipped: number
-  linkingKeyRestored: boolean
+  added: number;
+  skipped: number;
+  linkingKeyRestored: boolean;
   // true when the backup carried a linking key but this device already had
   // one, so it was deliberately NOT installed (see below) - distinct from
   // "no key in this backup at all". The bearer records above still merged
@@ -83,36 +83,36 @@ export type RestoreResult = {
   // whatever wallet is active on this device - unless that's the exact same
   // seed, they won't decrypt here, and the caller should say so rather than
   // let that read as a silent no-op.
-  linkingKeySkipped: boolean
-  trustedMintsAdded: number
+  linkingKeySkipped: boolean;
+  trustedMintsAdded: number;
   // true when the backup's settings filled in a field this device had never
   // set - never when it would overwrite one, same merge direction as the
   // trusted mints (the device's own current state always wins)
-  settingsRestored: boolean
-}
+  settingsRestored: boolean;
+};
 
 // restore-time bounds - a crafted or corrupt file must not be able to fill
 // localStorage with junk records that never decrypt (quota exhaustion turns
 // every later write into a failure, which can strand a just-rotated note),
 // nor hang the tab in JSON.parse. A real backup holds a handful of notes,
 // each well under a kilobyte encrypted, so these are generous
-export const MAX_BACKUP_FILE_BYTES = 10 * 1024 * 1024
-const MAX_BACKUP_RECORDS = 10_000
-const MAX_BACKUP_FIELD_LENGTH = 64 * 1024
+export const MAX_BACKUP_FILE_BYTES = 10 * 1024 * 1024;
+const MAX_BACKUP_RECORDS = 10_000;
+const MAX_BACKUP_FIELD_LENGTH = 64 * 1024;
 
 const isBackupFile = (data: unknown): data is ParsedBackupFile =>
   isJsonObject(data) &&
   data.type === 'sattle-backup' &&
   data.version === 2 &&
   Array.isArray(data.bearers) &&
-  isJsonObject(data.nextByHost)
+  isJsonObject(data.nextByHost);
 
 export const parseBackupFile = (data: unknown): ParsedBackupFile => {
   if (!isBackupFile(data)) {
-    throw new Error('Not a valid sattle backup file.')
+    throw new Error('Not a valid sattle backup file.');
   }
-  return data
-}
+  return data;
+};
 
 // merges a backup into localStorage: bearer records are added by id
 // (already present ids are left as-is - union, never overwrite) and counter
@@ -129,14 +129,14 @@ export const parseBackupFile = (data: unknown): ParsedBackupFile => {
 // note arriving under a different record id, spent-wins) happens after
 // decrypt, in bearers.ts's mergeBearers.
 export const applyBackup = async (data: unknown, ownerId?: string): Promise<RestoreResult> => {
-  const backup = parseBackupFile(data)
+  const backup = parseBackupFile(data);
   if (backup.bearers.length > MAX_BACKUP_RECORDS) {
     throw new Error(
       `Backup holds ${backup.bearers.length} records - more than the ${MAX_BACKUP_RECORDS} a real wallet could produce.`,
-    )
+    );
   }
-  const incomingBearers: EncryptedBearerRecord[] = []
-  let skipped = 0
+  const incomingBearers: EncryptedBearerRecord[] = [];
+  let skipped = 0;
   for (const record of backup.bearers) {
     if (
       !isJsonObject(record) ||
@@ -147,44 +147,44 @@ export const applyBackup = async (data: unknown, ownerId?: string): Promise<Rest
       record.iv.length > MAX_BACKUP_FIELD_LENGTH ||
       record.ciphertext.length > MAX_BACKUP_FIELD_LENGTH
     ) {
-      skipped++
-      continue
+      skipped++;
+      continue;
     }
-    incomingBearers.push({id: record.id, iv: record.iv, ciphertext: record.ciphertext})
+    incomingBearers.push({ id: record.id, iv: record.iv, ciphertext: record.ciphertext });
   }
   // candidate counters: validity (host length, safe range, host cap) is
   // enforced by commitFundsRestore; here we only keep the raw shape honest
-  const incomingCounters: Record<string, number> = {}
+  const incomingCounters: Record<string, number> = {};
   for (const [host, next] of Object.entries(backup.nextByHost)) {
-    if (typeof next === 'number') incomingCounters[host] = next
+    if (typeof next === 'number') incomingCounters[host] = next;
   }
 
-  let added: number
+  let added: number;
   try {
-    const merged = await commitFundsRestore(incomingBearers, incomingCounters)
-    added = merged.added
-    skipped += merged.skipped
+    const merged = await commitFundsRestore(incomingBearers, incomingCounters);
+    added = merged.added;
+    skipped += merged.skipped;
   } catch (error) {
-    const name = error instanceof Error ? error.name : ''
-    const message = error instanceof Error ? error.message : ''
+    const name = error instanceof Error ? error.name : '';
+    const message = error instanceof Error ? error.message : '';
     if (name === 'QuotaExceededError' || /quota|full/i.test(message)) {
       throw new Error(
         'Local storage is full - the backup could not be written. Free up space (or forget unused wallets) and try again.',
-        {cause: error},
-      )
+        { cause: error },
+      );
     }
-    throw error
+    throw error;
   }
 
-  let linkingKeyRestored = false
-  let linkingKeySkipped = false
+  let linkingKeyRestored = false;
+  let linkingKeySkipped = false;
   // an invalid key record reads as "no key in this backup", never as skipped
   if (isValidStoredSecret(backup.linkingKey)) {
     if (savedKeyExists()) {
-      linkingKeySkipped = true
+      linkingKeySkipped = true;
     } else {
-      restoreLinkingKeyStored(backup.linkingKey)
-      linkingKeyRestored = true
+      restoreLinkingKeyStored(backup.linkingKey);
+      linkingKeyRestored = true;
     }
   }
 
@@ -194,22 +194,22 @@ export const applyBackup = async (data: unknown, ownerId?: string): Promise<Rest
   const trustedMintsAdded =
     ownerId && Array.isArray(backup.trustedMints)
       ? await mergeTrustedMints(backup.trustedMints, ownerId)
-      : 0
+      : 0;
 
   // settings merge: fill only fields this device has never set. Flat
   // optional fields (see settings.ts), so the merge is field by field -
   // today that is just defaultMint
-  let settingsRestored = false
+  let settingsRestored = false;
   if (isJsonObject(backup.settings)) {
-    const incoming = backup.settings.defaultMint
-    const local = loadSettings()
+    const incoming = backup.settings.defaultMint;
+    const local = loadSettings();
     if (
       local.defaultMint === undefined &&
       typeof incoming === 'string' &&
       incoming.length <= MAX_BACKUP_FIELD_LENGTH
     ) {
-      persistSettings({...local, defaultMint: incoming})
-      settingsRestored = true
+      persistSettings({ ...local, defaultMint: incoming });
+      settingsRestored = true;
     }
   }
 
@@ -220,5 +220,5 @@ export const applyBackup = async (data: unknown, ownerId?: string): Promise<Rest
     linkingKeySkipped,
     trustedMintsAdded,
     settingsRestored,
-  }
-}
+  };
+};

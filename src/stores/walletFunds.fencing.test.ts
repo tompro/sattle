@@ -2,11 +2,7 @@ import { createPinia, setActivePinia } from 'pinia';
 import { buildNoteUrl } from 'lnurlcash-kit';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import {
-  deriveBearerAesKey,
-  deriveWalletMaterial,
-  saveWalletMaterial,
-} from '@/lnurlcash/keys';
+import { deriveBearerAesKey, deriveWalletMaterial, saveWalletMaterial } from '@/lnurlcash/keys';
 import { loadBearers, readEncryptedBearers, readFundsDocument } from '@/lnurlcash/storage';
 import { FUNDS_STORAGE_KEY } from '@/lnurlcash/storage/bearers';
 import { WalletOwnerMismatchError } from '@/lnurlcash/storage/currentOwner';

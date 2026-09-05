@@ -207,11 +207,7 @@ export const useMoveFundsPage = () => {
         toast('positive', `Moved ${sats.toLocaleString()} sats.`);
       } else if (transfer.outcome === 'failed-funds-returned') {
         if (transfer.rotatedNote) {
-          await wallet.restoreStagedMintSource(
-            stagedOutput.id,
-            transfer.rotatedNote,
-            ownerFence,
-          );
+          await wallet.restoreStagedMintSource(stagedOutput.id, transfer.rotatedNote, ownerFence);
         }
         await activity.log(
           'transfer',

@@ -30,65 +30,65 @@
 // - any failure (crypto, quota, fence, overflow) rejects with the document
 //   bytes untouched and zero network I/O performed.
 
-import type {EncryptedRecordParts} from '../keys'
-import {encryptRecord, decryptRecord} from '../keys'
-import type {Bearer, NewBearer} from '../types'
-import {isJsonObject} from '../jsonParsing'
-import {noteK1, serverOf} from 'lnurlcash-kit'
+import type { EncryptedRecordParts } from '../keys';
+import { encryptRecord, decryptRecord } from '../keys';
+import type { Bearer, NewBearer } from '../types';
+import { isJsonObject } from '../jsonParsing';
+import { noteK1, serverOf } from 'lnurlcash-kit';
 import {
   StorageLocksUnavailableError,
   storageLocksAvailable,
   withRequiredStorageLock,
-} from '../storageLock'
+} from '../storageLock';
 
 // the wallet's default note order (newest first) with manually dragged
 // notes taking priority once they have an explicit rank
 export const compareBearerOrder = (a: Bearer, b: Bearer): number =>
-  (a.sortIndex ?? -a.createdAt) - (b.sortIndex ?? -b.createdAt)
+  (a.sortIndex ?? -a.createdAt) - (b.sortIndex ?? -b.createdAt);
 
-export type EncryptedBearerRecord = {id: string} & EncryptedRecordParts
+export type EncryptedBearerRecord = { id: string } & EncryptedRecordParts;
 
 // the forward-compatible pending-mutation journal slot: an opaque encrypted
 // payload behind a kind/phase pair. The per-flow variants (rotate, split,
 // merge, mint, melt-return, transfer) are defined by the recovery seam; this
 // layer only guarantees they persist atomically with everything else.
 export type EncryptedJournalRecord = {
-  id: string
-  kind: string
-  phase: string
-} & EncryptedRecordParts
+  id: string;
+  kind: string;
+  phase: string;
+} & EncryptedRecordParts;
 
-export const FUNDS_STORAGE_KEY = 'sattle_funds_v2'
-export const FUNDS_DOCUMENT_VERSION = 2 as const
+export const FUNDS_STORAGE_KEY = 'sattle_funds_v2';
+export const FUNDS_DOCUMENT_VERSION = 2 as const;
 
 // counter bounds: BIP-32 indices stay below the hardened offset; the host
 // map stays small enough that a corrupt or hostile restore cannot exhaust
 // quota or smuggle unbounded state (253 = DNS name ceiling)
-export const MAX_CASH_INDEX = 2 ** 31
-export const MAX_COUNTER_HOSTS = 10
-export const MAX_COUNTER_HOST_LENGTH = 253
+export const MAX_CASH_INDEX = 2 ** 31;
+export const MAX_COUNTER_HOSTS = 10;
+export const MAX_COUNTER_HOST_LENGTH = 253;
 
 export type StoredFundsV2 = {
-  version: typeof FUNDS_DOCUMENT_VERSION
-  bearers: EncryptedBearerRecord[]
-  pending: EncryptedJournalRecord[]
-  nextByHost: Record<string, number>
-  revision: number
-}
+  version: typeof FUNDS_DOCUMENT_VERSION;
+  bearers: EncryptedBearerRecord[];
+  pending: EncryptedJournalRecord[];
+  nextByHost: Record<string, number>;
+  revision: number;
+};
 
 const isEncryptedBearerRecord = (value: unknown): value is EncryptedBearerRecord =>
   isJsonObject(value) &&
   typeof value.id === 'string' &&
   typeof value.iv === 'string' &&
-  typeof value.ciphertext === 'string'
+  typeof value.ciphertext === 'string';
 
 const isEncryptedJournalRecord = (value: unknown): value is EncryptedJournalRecord =>
   isEncryptedBearerRecord(value) &&
   typeof (value as EncryptedJournalRecord).kind === 'string' &&
-  typeof (value as EncryptedJournalRecord).phase === 'string'
+  typeof (value as EncryptedJournalRecord).phase === 'string';
 
 const isValidCounter = (value: unknown): value is number =>
-  typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 && value < MAX_CASH_INDEX
+  typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 && value < MAX_CASH_INDEX;
 
 const isStoredBearer = (value: unknown): value is Omit<Bearer, 'id'> =>
   isJsonObject(value) &&
@@ -114,12 +114,12 @@ const isStoredBearer = (value: unknown): value is Omit<Bearer, 'id'> =>
       (value.pendingMint.retireAfter === undefined ||
         (typeof value.pendingMint.retireAfter === 'number' &&
           Number.isSafeInteger(value.pendingMint.retireAfter) &&
-          value.pendingMint.retireAfter > 0))))
+          value.pendingMint.retireAfter > 0))));
 
 export const newBearerId = (): string =>
   Array.from(crypto.getRandomValues(new Uint8Array(8)))
     .map((b) => b.toString(16).padStart(2, '0'))
-    .join('')
+    .join('');
 
 const emptyFundsDocument = (): StoredFundsV2 => ({
   version: FUNDS_DOCUMENT_VERSION,
@@ -127,29 +127,29 @@ const emptyFundsDocument = (): StoredFundsV2 => ({
   pending: [],
   nextByHost: {},
   revision: 0,
-})
+});
 
 // strict shape, tolerant read: anything that is not a well-formed v2
 // document reads as the empty document (the long-standing "never throw on
 // read" contract - a corrupt blob must not wedge the wallet), and malformed
 // entries inside a valid document are dropped, never thrown on
 const parseFundsDocument = (value: unknown): StoredFundsV2 | null => {
-  if (!isJsonObject(value) || value.version !== FUNDS_DOCUMENT_VERSION) return null
-  if (!Array.isArray(value.bearers) || !Array.isArray(value.pending)) return null
-  if (!isJsonObject(value.nextByHost)) return null
+  if (!isJsonObject(value) || value.version !== FUNDS_DOCUMENT_VERSION) return null;
+  if (!Array.isArray(value.bearers) || !Array.isArray(value.pending)) return null;
+  if (!isJsonObject(value.nextByHost)) return null;
   if (
     typeof value.revision !== 'number' ||
     !Number.isSafeInteger(value.revision) ||
     value.revision < 0
   ) {
-    return null
+    return null;
   }
-  const nextByHost: Record<string, number> = {}
+  const nextByHost: Record<string, number> = {};
   for (const [host, next] of Object.entries(value.nextByHost)) {
     if (host.length === 0 || host.length > MAX_COUNTER_HOST_LENGTH || !isValidCounter(next)) {
-      continue
+      continue;
     }
-    nextByHost[host] = next
+    nextByHost[host] = next;
   }
   return {
     version: FUNDS_DOCUMENT_VERSION,
@@ -157,88 +157,88 @@ const parseFundsDocument = (value: unknown): StoredFundsV2 | null => {
     pending: value.pending.filter(isEncryptedJournalRecord),
     nextByHost,
     revision: value.revision,
-  }
-}
+  };
+};
 
 export const readFundsDocument = (): StoredFundsV2 => {
-  const raw = localStorage.getItem(FUNDS_STORAGE_KEY)
-  if (!raw) return emptyFundsDocument()
+  const raw = localStorage.getItem(FUNDS_STORAGE_KEY);
+  if (!raw) return emptyFundsDocument();
   try {
-    return parseFundsDocument(JSON.parse(raw)) ?? emptyFundsDocument()
+    return parseFundsDocument(JSON.parse(raw)) ?? emptyFundsDocument();
   } catch {
-    return emptyFundsDocument()
+    return emptyFundsDocument();
   }
-}
+};
 
 export const writeFundsDocument = (doc: StoredFundsV2): void => {
-  localStorage.setItem(FUNDS_STORAGE_KEY, JSON.stringify(doc))
-}
+  localStorage.setItem(FUNDS_STORAGE_KEY, JSON.stringify(doc));
+};
 
-export const readEncryptedBearers = (): EncryptedBearerRecord[] => readFundsDocument().bearers
+export const readEncryptedBearers = (): EncryptedBearerRecord[] => readFundsDocument().bearers;
 
-export const readPendingJournal = (): EncryptedJournalRecord[] => readFundsDocument().pending
+export const readPendingJournal = (): EncryptedJournalRecord[] => readFundsDocument().pending;
 
-export const readNextByHost = (): Record<string, number> => ({...readFundsDocument().nextByHost})
+export const readNextByHost = (): Record<string, number> => ({ ...readFundsDocument().nextByHost });
 
-export const readFundsRevision = (): number => readFundsDocument().revision
+export const readFundsRevision = (): number => readFundsDocument().revision;
 
-type BearerCommitOptions = {beforeCommit?: () => void}
+type BearerCommitOptions = { beforeCommit?: () => void };
 
 // mutations have no unlocked fallback: reject BEFORE any derivation or
 // encryption when cross-tab serialization cannot be guaranteed
 const requireMutationLocks = (): void => {
-  if (!storageLocksAvailable()) throw new StorageLocksUnavailableError()
-}
+  if (!storageLocksAvailable()) throw new StorageLocksUnavailableError();
+};
 
 // decrypts everything currently stored - a record that fails to decrypt
 // (e.g. written by a different seed's key) is skipped, not destroyed: it
 // stays in localStorage untouched and simply doesn't show up
 export const loadBearers = async (aesKey: CryptoKey): Promise<Bearer[]> => {
-  const bearers: Bearer[] = []
+  const bearers: Bearer[] = [];
   for (const record of readEncryptedBearers()) {
     try {
-      const bearer = await decryptRecord(aesKey, record)
-      if (!isStoredBearer(bearer)) throw new Error('Malformed encrypted bearer record.')
-      bearers.push({...bearer, id: record.id})
+      const bearer = await decryptRecord(aesKey, record);
+      if (!isStoredBearer(bearer)) throw new Error('Malformed encrypted bearer record.');
+      bearers.push({ ...bearer, id: record.id });
     } catch (error) {
       // undecryptable with this key - leave it in place
-      if (!(error instanceof Error)) throw error
+      if (!(error instanceof Error)) throw error;
     }
   }
-  return bearers.sort((a, b) => b.createdAt - a.createdAt)
-}
+  return bearers.sort((a, b) => b.createdAt - a.createdAt);
+};
 
 export const persistBearer = async (
   aesKey: CryptoKey,
   bearer: Bearer,
   options: BearerCommitOptions = {},
 ): Promise<void> => {
-  requireMutationLocks()
-  const {id, ...plain} = bearer
+  requireMutationLocks();
+  const { id, ...plain } = bearer;
   await withRequiredStorageLock(FUNDS_STORAGE_KEY, async () => {
-    const doc = readFundsDocument()
-    options.beforeCommit?.()
-    const parts = await encryptRecord(aesKey, plain)
-    doc.bearers = doc.bearers.filter((r) => r.id !== id)
-    doc.bearers.push({id, ...parts})
-    doc.revision += 1
-    writeFundsDocument(doc)
-  })
-}
+    const doc = readFundsDocument();
+    options.beforeCommit?.();
+    const parts = await encryptRecord(aesKey, plain);
+    doc.bearers = doc.bearers.filter((r) => r.id !== id);
+    doc.bearers.push({ id, ...parts });
+    doc.revision += 1;
+    writeFundsDocument(doc);
+  });
+};
 
 export const deleteBearerRecord = async (
   id: string,
   options: BearerCommitOptions = {},
 ): Promise<void> => {
-  requireMutationLocks()
+  requireMutationLocks();
   await withRequiredStorageLock(FUNDS_STORAGE_KEY, () => {
-    const doc = readFundsDocument()
-    options.beforeCommit?.()
-    doc.bearers = doc.bearers.filter((r) => r.id !== id)
-    doc.revision += 1
-    writeFundsDocument(doc)
-  })
-}
+    const doc = readFundsDocument();
+    options.beforeCommit?.();
+    doc.bearers = doc.bearers.filter((r) => r.id !== id);
+    doc.revision += 1;
+    writeFundsDocument(doc);
+  });
+};
 
 // The atomic unit of bearer persistence: fresh notes to start tracking plus
 // ids of snapshot notes to lock as spent. Born-spent notes (carved and
@@ -248,12 +248,12 @@ export const deleteBearerRecord = async (
 // finalized staged mutation retires its journal entry atomically with the
 // bearer changes that settle it.
 export type BearerChangeset = {
-  add: NewBearer[]
-  markSpent: string[]
-  upsert?: Bearer[]
-  remove?: string[]
-  clearPending?: string[]
-}
+  add: NewBearer[];
+  markSpent: string[];
+  upsert?: Bearer[];
+  remove?: string[];
+  clearPending?: string[];
+};
 
 // Commits a whole changeset as ONE funds-document write - the fund-critical
 // boundary a caller (NWC service, wallet store) awaits before reporting
@@ -283,76 +283,78 @@ export const applyBearerChangeset = async (
   changeset: BearerChangeset,
   options: BearerCommitOptions = {},
 ): Promise<Bearer[]> => {
-  const now = Date.now()
+  const now = Date.now();
   const added: Bearer[] = changeset.add.map((note) => ({
     id: newBearerId(),
     ...note,
     createdAt: now,
     updatedAt: now,
-  }))
-  const spentIds = new Set(changeset.markSpent)
-  const spent = new Map<string, Bearer>()
+  }));
+  const spentIds = new Set(changeset.markSpent);
+  const spent = new Map<string, Bearer>();
   for (const bearer of snapshot) {
     if (spentIds.has(bearer.id)) {
-      spent.set(bearer.id, {...bearer, spent: true, updatedAt: now})
+      spent.set(bearer.id, { ...bearer, spent: true, updatedAt: now });
     }
   }
-  const upserted = changeset.upsert ?? []
-  const removedIds = new Set(changeset.remove ?? [])
-  const clearPendingIds = new Set(changeset.clearPending ?? [])
-  const changedById = new Map<string, Bearer>()
-  for (const bearer of spent.values()) changedById.set(bearer.id, bearer)
-  for (const bearer of upserted) changedById.set(bearer.id, bearer)
-  for (const bearer of added) changedById.set(bearer.id, bearer)
-  const changed = [...changedById.values()]
-  if (changed.length === 0 && removedIds.size === 0 && clearPendingIds.size === 0) return snapshot
-  requireMutationLocks()
+  const upserted = changeset.upsert ?? [];
+  const removedIds = new Set(changeset.remove ?? []);
+  const clearPendingIds = new Set(changeset.clearPending ?? []);
+  const changedById = new Map<string, Bearer>();
+  for (const bearer of spent.values()) changedById.set(bearer.id, bearer);
+  for (const bearer of upserted) changedById.set(bearer.id, bearer);
+  for (const bearer of added) changedById.set(bearer.id, bearer);
+  const changed = [...changedById.values()];
+  if (changed.length === 0 && removedIds.size === 0 && clearPendingIds.size === 0) return snapshot;
+  requireMutationLocks();
   await withRequiredStorageLock(FUNDS_STORAGE_KEY, async () => {
-    const doc = readFundsDocument()
-    options.beforeCommit?.()
-    const encrypted: EncryptedBearerRecord[] = []
+    const doc = readFundsDocument();
+    options.beforeCommit?.();
+    const encrypted: EncryptedBearerRecord[] = [];
     for (const bearer of changed) {
-      const {id, ...plain} = bearer
-      const parts = await encryptRecord(aesKey, plain)
-      encrypted.push({id, ...parts})
+      const { id, ...plain } = bearer;
+      const parts = await encryptRecord(aesKey, plain);
+      encrypted.push({ id, ...parts });
     }
-    const changedIds = new Set(encrypted.map((r) => r.id))
+    const changedIds = new Set(encrypted.map((r) => r.id));
     doc.bearers = doc.bearers.filter(
       (record) => !changedIds.has(record.id) && !removedIds.has(record.id),
-    )
-    doc.bearers.push(...encrypted)
+    );
+    doc.bearers.push(...encrypted);
     if (clearPendingIds.size > 0) {
-      doc.pending = doc.pending.filter((record) => !clearPendingIds.has(record.id))
+      doc.pending = doc.pending.filter((record) => !clearPendingIds.has(record.id));
     }
-    doc.revision += 1
-    writeFundsDocument(doc)
-  })
-  const snapshotIds = new Set(snapshot.map((bearer) => bearer.id))
-  const inserted = upserted.filter((bearer) => !snapshotIds.has(bearer.id))
+    doc.revision += 1;
+    writeFundsDocument(doc);
+  });
+  const snapshotIds = new Set(snapshot.map((bearer) => bearer.id));
+  const inserted = upserted.filter((bearer) => !snapshotIds.has(bearer.id));
   const retained = snapshot
     .filter((bearer) => !removedIds.has(bearer.id))
-    .map((bearer) => changedById.get(bearer.id) ?? bearer)
-  return [...added, ...inserted, ...retained]
-}
+    .map((bearer) => changedById.get(bearer.id) ?? bearer);
+  return [...added, ...inserted, ...retained];
+};
 
 // ---- counter reservation ----
 
-export type FundsReservation = {host: string; count: number}
-export type ReservedCashRange = {host: string; start: number; count: number}
+export type FundsReservation = { host: string; count: number };
+export type ReservedCashRange = { host: string; start: number; count: number };
 
 // what the caller wants staged for the reserved range - the payload is
 // opaque to this layer (encrypted as-is); kind/phase let the recovery seam
 // route it later
-export type PendingStaging = {kind: string; phase: string; payload: object}
+export type PendingStaging = { kind: string; phase: string; payload: object };
 
-const assertValidReservation = ({host, count}: FundsReservation): void => {
+const assertValidReservation = ({ host, count }: FundsReservation): void => {
   if (typeof host !== 'string' || host.length === 0 || host.length > MAX_COUNTER_HOST_LENGTH) {
-    throw new Error(`A counter host is a canonical server name of at most ${MAX_COUNTER_HOST_LENGTH} characters.`)
+    throw new Error(
+      `A counter host is a canonical server name of at most ${MAX_COUNTER_HOST_LENGTH} characters.`,
+    );
   }
   if (!Number.isSafeInteger(count) || count < 1 || count >= MAX_CASH_INDEX) {
-    throw new Error('A reservation count is a positive safe integer below 2^31.')
+    throw new Error('A reservation count is a positive safe integer below 2^31.');
   }
-}
+};
 
 // Reserves `count` fresh BIP-32 indices for a canonical host and stages one
 // encrypted pending-journal record for them - allocation plus staging in ONE
@@ -371,39 +373,39 @@ export const reserveCashIndices = async (
   reservation: FundsReservation,
   stage: (reserved: ReservedCashRange) => PendingStaging,
   options: BearerCommitOptions = {},
-): Promise<ReservedCashRange & {pendingId: string}> => {
-  assertValidReservation(reservation)
-  requireMutationLocks()
-  const {host, count} = reservation
+): Promise<ReservedCashRange & { pendingId: string }> => {
+  assertValidReservation(reservation);
+  requireMutationLocks();
+  const { host, count } = reservation;
   return withRequiredStorageLock(FUNDS_STORAGE_KEY, async () => {
-    const doc = readFundsDocument()
-    options.beforeCommit?.()
-    const start = doc.nextByHost[host] ?? 0
+    const doc = readFundsDocument();
+    options.beforeCommit?.();
+    const start = doc.nextByHost[host] ?? 0;
     if (doc.nextByHost[host] === undefined) {
       if (Object.keys(doc.nextByHost).length >= MAX_COUNTER_HOSTS) {
         throw new Error(
           `The wallet already tracks counters for ${MAX_COUNTER_HOSTS} mint hosts; no room for another.`,
-        )
+        );
       }
     }
     if (start + count >= MAX_CASH_INDEX) {
-      throw new Error('The cash index space for this mint host is exhausted.')
+      throw new Error('The cash index space for this mint host is exhausted.');
     }
-    const staged = stage({host, start, count})
+    const staged = stage({ host, start, count });
     if (typeof staged.kind !== 'string' || typeof staged.phase !== 'string') {
-      throw new Error('A staged pending record needs string kind and phase.')
+      throw new Error('A staged pending record needs string kind and phase.');
     }
-    const parts = await encryptRecord(aesKey, staged.payload)
-    const pendingId = newBearerId()
-    doc.pending.push({id: pendingId, kind: staged.kind, phase: staged.phase, ...parts})
-    doc.nextByHost[host] = start + count
-    doc.revision += 1
-    writeFundsDocument(doc)
-    return {host, start, count, pendingId}
-  })
-}
+    const parts = await encryptRecord(aesKey, staged.payload);
+    const pendingId = newBearerId();
+    doc.pending.push({ id: pendingId, kind: staged.kind, phase: staged.phase, ...parts });
+    doc.nextByHost[host] = start + count;
+    doc.revision += 1;
+    writeFundsDocument(doc);
+    return { host, start, count, pendingId };
+  });
+};
 
-export type FundsRestoreMerge = {added: number; skipped: number}
+export type FundsRestoreMerge = { added: number; skipped: number };
 
 // The funds half of a backup restore, as one locked write: bearer records
 // union by id (already-present ids are left as-is, never overwritten) and
@@ -420,47 +422,47 @@ export const commitFundsRestore = async (
   const counters = Object.entries(countersToMerge).filter(
     ([host, next]) =>
       host.length > 0 && host.length <= MAX_COUNTER_HOST_LENGTH && isValidCounter(next),
-  )
+  );
   if (bearersToMerge.length === 0 && counters.length === 0) {
-    return {added: 0, skipped: 0}
+    return { added: 0, skipped: 0 };
   }
-  requireMutationLocks()
+  requireMutationLocks();
   return withRequiredStorageLock(FUNDS_STORAGE_KEY, () => {
-    const doc = readFundsDocument()
-    const existingIds = new Set(doc.bearers.map((r) => r.id))
-    let added = 0
-    let skipped = 0
+    const doc = readFundsDocument();
+    const existingIds = new Set(doc.bearers.map((r) => r.id));
+    let added = 0;
+    let skipped = 0;
     for (const record of bearersToMerge) {
       if (!isEncryptedBearerRecord(record) || existingIds.has(record.id)) {
-        skipped++
-        continue
+        skipped++;
+        continue;
       }
-      doc.bearers.push({id: record.id, iv: record.iv, ciphertext: record.ciphertext})
-      existingIds.add(record.id)
-      added++
+      doc.bearers.push({ id: record.id, iv: record.iv, ciphertext: record.ciphertext });
+      existingIds.add(record.id);
+      added++;
     }
     for (const [host, next] of counters) {
-      const local = doc.nextByHost[host]
+      const local = doc.nextByHost[host];
       if (local === undefined) {
-        if (Object.keys(doc.nextByHost).length >= MAX_COUNTER_HOSTS) continue
-        doc.nextByHost[host] = next
+        if (Object.keys(doc.nextByHost).length >= MAX_COUNTER_HOSTS) continue;
+        doc.nextByHost[host] = next;
       } else if (next > local) {
-        doc.nextByHost[host] = next
+        doc.nextByHost[host] = next;
       }
     }
-    doc.revision += 1
-    writeFundsDocument(doc)
-    return {added, skipped}
-  })
-}
+    doc.revision += 1;
+    writeFundsDocument(doc);
+    return { added, skipped };
+  });
+};
 
 // wipes every bearer record from this device outright - unlike forgetting
 // just the linking key, this is not recoverable by restoring the same seed:
 // the ciphertexts themselves are gone, so only a previously downloaded
 // backup file can bring them back
 export const clearAllBearers = (): void => {
-  localStorage.removeItem(FUNDS_STORAGE_KEY)
-}
+  localStorage.removeItem(FUNDS_STORAGE_KEY);
+};
 
 // Merge two decrypted bearer lists into one, keyed by note identity
 // (issuing server + k1 secret), falling back to record id for notes whose
@@ -473,22 +475,22 @@ export const clearAllBearers = (): void => {
 // is what makes multi-device restores converge instead of duplicate.
 export const mergeBearers = (current: Bearer[], incoming: Bearer[]): Bearer[] => {
   const keyOf = (b: Bearer): string => {
-    const k1 = noteK1(b.url)
-    return k1 ? `${serverOf(b.url)}#${k1}` : `id#${b.id}`
-  }
-  const merged = new Map<string, Bearer>()
+    const k1 = noteK1(b.url);
+    return k1 ? `${serverOf(b.url)}#${k1}` : `id#${b.id}`;
+  };
+  const merged = new Map<string, Bearer>();
   for (const bearer of [...current, ...incoming]) {
-    const key = keyOf(bearer)
-    const existing = merged.get(key)
+    const key = keyOf(bearer);
+    const existing = merged.get(key);
     if (!existing) {
-      merged.set(key, bearer)
-      continue
+      merged.set(key, bearer);
+      continue;
     }
     if (bearer.spent !== existing.spent) {
-      merged.set(key, bearer.spent ? bearer : existing)
-      continue
+      merged.set(key, bearer.spent ? bearer : existing);
+      continue;
     }
-    merged.set(key, bearer.updatedAt >= existing.updatedAt ? bearer : existing)
+    merged.set(key, bearer.updatedAt >= existing.updatedAt ? bearer : existing);
   }
-  return [...merged.values()].sort((a, b) => b.createdAt - a.createdAt)
-}
+  return [...merged.values()].sort((a, b) => b.createdAt - a.createdAt);
+};

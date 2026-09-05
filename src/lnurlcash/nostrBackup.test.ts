@@ -1,5 +1,5 @@
-import './nostrBackup.keys.cases'
-import './nostrBackup.codec.cases'
-import './nostrBackup.transport.cases'
-import './nostrBackup.restore.cases'
-import './nostrBackup.publisher.cases'
+import './nostrBackup.keys.cases';
+import './nostrBackup.codec.cases';
+import './nostrBackup.transport.cases';
+import './nostrBackup.restore.cases';
+import './nostrBackup.publisher.cases';

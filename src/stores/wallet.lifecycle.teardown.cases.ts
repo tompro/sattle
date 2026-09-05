@@ -1,4 +1,10 @@
-import { MINT_KEY, PASSWORD, WALLET_MATERIAL_KEY, deferred, mocks } from './wallet.lifecycle.testHarness';
+import {
+  MINT_KEY,
+  PASSWORD,
+  WALLET_MATERIAL_KEY,
+  deferred,
+  mocks,
+} from './wallet.lifecycle.testHarness';
 import { describe, expect, it, vi } from 'vitest';
 
 import { savedWalletMaterialExists, walletMaterialHash } from '@/lnurlcash/keys';

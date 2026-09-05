@@ -165,9 +165,7 @@ describe('commitCarve', () => {
     expect(wallet.bearers).toHaveLength(3);
     expect(committed.verified).toBe(true);
     expect(wallet.bearers.find((bearer) => bearer.id === input.id)?.spent).toBe(true);
-    expect(
-      wallet.bearers.filter((bearer) => bearer.url.includes('bb'.repeat(32))),
-    ).toHaveLength(1);
+    expect(wallet.bearers.filter((bearer) => bearer.url.includes('bb'.repeat(32)))).toHaveLength(1);
     const key = await deriveBearerAesKey(wallet.requireLinkingKey());
     expect(await loadBearers(key)).toHaveLength(3);
   });

@@ -9,9 +9,9 @@ import {
   NoteSpentError,
   NoteUnknownError,
   PendingNoteError,
-} from 'lnurlcash-kit'
-import type {LnurlcashOptions} from 'lnurlcash-kit'
-import type {Bearer, NewBearer} from './types'
+} from 'lnurlcash-kit';
+import type { LnurlcashOptions } from 'lnurlcash-kit';
+import type { Bearer, NewBearer } from './types';
 
 // shared by Scan and Paste: resolve whatever came in to a note URL, ask the
 // issuing service what it is worth (an informational GET - per spec this
@@ -19,23 +19,23 @@ import type {Bearer, NewBearer} from './types'
 // after, see secureReceivedNote). Returns the note even when the info fetch
 // fails - a bearer is better stored unverified than dropped.
 export const receiveNote = async (input: string, existing: Bearer[]): Promise<NewBearer> => {
-  const url = resolveNoteInput(input)
+  const url = resolveNoteInput(input);
   if (!url) {
-    throw new Error('Not an LNURLcash bearer note (needs a k1).')
+    throw new Error('Not an LNURLcash bearer note (needs a k1).');
   }
-  const k1 = noteK1(url)
+  const k1 = noteK1(url);
   if (existing.some((b) => noteK1(b.url) === k1 && serverOf(b.url) === serverOf(url))) {
-    throw new Error('This note is already in your wallet.')
+    throw new Error('This note is already in your wallet.');
   }
   try {
-    const info = await fetchNoteInfo(url)
+    const info = await fetchNoteInfo(url);
     return {
       url,
       callback: info.callback,
       amount: info.maxWithdrawable,
       verified: true,
       mintPubkey: info.mintPubkey,
-    }
+    };
   } catch (err) {
     // the service positively told us this k1 is dead, unknown, or locked
     // mid-melt (pending) - all definitive states the caller must surface
@@ -47,7 +47,7 @@ export const receiveNote = async (input: string, existing: Bearer[]): Promise<Ne
       err instanceof NoteUnknownError ||
       err instanceof PendingNoteError
     ) {
-      throw err
+      throw err;
     }
     // service unreachable (or some other non-definitive failure) - fall
     // back to the sender's own (unverified) declared amount so the note
@@ -57,9 +57,9 @@ export const receiveNote = async (input: string, existing: Bearer[]): Promise<Ne
       callback: '',
       amount: noteDeclaredAmount(url) ?? 0,
       verified: false,
-    }
+    };
   }
-}
+};
 
 // After receiving a note, rotate it: the previous holder (and anything that
 // logged the URL in transit, since the informational GET above already put
@@ -71,16 +71,16 @@ export const receiveNote = async (input: string, existing: Bearer[]): Promise<Ne
 // rescue a rotate that landed despite its refusal.
 export const secureReceivedNote = async (
   note: {
-    url: string
-    callback: string
-    amount: number
+    url: string;
+    callback: string;
+    amount: number;
   },
   options: LnurlcashOptions = {},
 ): Promise<string> => {
-  const k1 = noteK1(note.url)
+  const k1 = noteK1(note.url);
   if (!k1 || !note.callback) {
-    throw new Error('Note has no callback to rotate against yet.')
+    throw new Error('Note has no callback to rotate against yet.');
   }
-  const result = await rotateNote(note.callback, k1, options)
-  return withNewK1(note.url, result.k1, note.amount, result.signature)
-}
+  const result = await rotateNote(note.callback, k1, options);
+  return withNewK1(note.url, result.k1, note.amount, result.signature);
+};

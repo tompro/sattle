@@ -4,15 +4,15 @@
 // The proven marker lives on the v2 wallet-material record; adoption itself
 // additionally requires the slot to commit to the exact saved material.
 
-import {linkingPubKeyHex} from './keys'
-import {adoptLegacyPasskeySlots, PASSKEY_SLOTS_STORAGE_KEY} from './storage/passkeySlots'
-import {withStorageLock} from './storageLock'
-import {savedWalletMaterialOwnerId} from './walletMaterialStorage'
+import { linkingPubKeyHex } from './keys';
+import { adoptLegacyPasskeySlots, PASSKEY_SLOTS_STORAGE_KEY } from './storage/passkeySlots';
+import { withStorageLock } from './storageLock';
+import { savedWalletMaterialOwnerId } from './walletMaterialStorage';
 
 export const migrateLegacyPasskeySlots = async (linkingKey: Uint8Array): Promise<number> => {
-  const ownerId = savedWalletMaterialOwnerId()
+  const ownerId = savedWalletMaterialOwnerId();
   if (ownerId === null || linkingPubKeyHex(linkingKey) !== ownerId) {
-    throw new Error('Legacy passkey migration requires a proven owner.')
+    throw new Error('Legacy passkey migration requires a proven owner.');
   }
-  return withStorageLock(PASSKEY_SLOTS_STORAGE_KEY, () => adoptLegacyPasskeySlots(ownerId))
-}
+  return withStorageLock(PASSKEY_SLOTS_STORAGE_KEY, () => adoptLegacyPasskeySlots(ownerId));
+};

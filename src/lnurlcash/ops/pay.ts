@@ -18,16 +18,16 @@ import {
   sameInvoice,
   serverOf,
   withNewK1,
-} from 'lnurlcash-kit'
-import type {LnurlcashOptions, MeltResult} from 'lnurlcash-kit'
-import type {Bearer, NewBearer} from '../types'
-import type {OutputSecretAllocator} from './allocation'
-import {requireOutputSecrets} from './allocation'
-import type {CarveResult} from './carve'
-import {ensureExactAmount} from './carve'
-import type {PollOptions} from './shared'
-import type {FundOperationOptions, MintSignatureKeys} from './shared'
-import {assertFundOwner, pollVerifyUntilSettled, withMutationSafety} from './shared'
+} from 'lnurlcash-kit';
+import type { LnurlcashOptions, MeltResult } from 'lnurlcash-kit';
+import type { Bearer, NewBearer } from '../types';
+import type { OutputSecretAllocator } from './allocation';
+import { requireOutputSecrets } from './allocation';
+import type { CarveResult } from './carve';
+import { ensureExactAmount } from './carve';
+import type { PollOptions } from './shared';
+import type { FundOperationOptions, MintSignatureKeys } from './shared';
+import { assertFundOwner, pollVerifyUntilSettled, withMutationSafety } from './shared';
 
 export type PayOutcome =
   | 'settled'
@@ -35,51 +35,51 @@ export type PayOutcome =
   | 'unknown-still-pending'
   // the service reports the carved note as already spent before the melt
   // even started - nothing was paid, and the note is definitively gone
-  | 'note-already-spent'
+  | 'note-already-spent';
 
 export type PayResult = {
-  outcome: PayOutcome
-  carve: CarveResult
+  outcome: PayOutcome;
+  carve: CarveResult;
   // the invoice that was (attempted to be) paid
-  invoice: string
-  amountMsat: number
-  verifyUrl: string | null
-  rotatedNote?: NewBearer
-  rescuedNote?: NewBearer
-}
+  invoice: string;
+  amountMsat: number;
+  verifyUrl: string | null;
+  rotatedNote?: NewBearer;
+  rescuedNote?: NewBearer;
+};
 
 export class PayReturnCheckpointRequiredError extends Error {
-  override readonly name = 'PayReturnCheckpointRequiredError'
+  override readonly name = 'PayReturnCheckpointRequiredError';
 
   constructor() {
-    super('A pay-return classification requires a durable onReturnReady checkpoint.')
+    super('A pay-return classification requires a durable onReturnReady checkpoint.');
   }
 }
 
 export type PayOptions = {
   // required when `input` is a Lightning Address / LNURL-pay (a bolt11
   // carries its own amount)
-  amountMsat?: number
+  amountMsat?: number;
   // verify-poll budget - tests shrink this
-  poll?: PollOptions
+  poll?: PollOptions;
   // kit transport overrides (fetch injection, timeouts)
-  kit?: LnurlcashOptions
-  assertOwner?: () => void
+  kit?: LnurlcashOptions;
+  assertOwner?: () => void;
   // carve checkpoint - committed before the melt and the settlement wait,
   // so an abort mid-wait never strands the carve (see
   // FundOperationOptions.onCarve)
-  onCarve?: FundOperationOptions['onCarve']
+  onCarve?: FundOperationOptions['onCarve'];
   // the caller's durable allocation path: the carve's output secrets and -
   // only when the return classification actually needs one - the recovery
   // secret. Required for any mutating carve or return classification.
-  allocateOutputSecrets?: OutputSecretAllocator
+  allocateOutputSecrets?: OutputSecretAllocator;
   // trusted signing keys the carve's landed outputs verify against (see
   // FundOperationOptions.mintSignatureKeys)
-  mintSignatureKeys?: MintSignatureKeys
+  mintSignatureKeys?: MintSignatureKeys;
   // Called before the classification rotate puts its chosen output secret
   // on the wire. Production callers durably link it to the carved source.
-  onReturnReady?: (carve: CarveResult, recoverySecret: string) => void | Promise<void>
-}
+  onReturnReady?: (carve: CarveResult, recoverySecret: string) => void | Promise<void>;
+};
 
 // A melt's resolved promise only means the payment is in flight; the
 // outcome is classified by polling the melt's LUD-25 verify URL, then - if
@@ -94,75 +94,90 @@ export type PayOptions = {
 export const payWithBearers = async (
   bearers: Bearer[],
   input: string,
-  {amountMsat, poll = {}, kit = {}, assertOwner, onCarve, allocateOutputSecrets, mintSignatureKeys, onReturnReady}: PayOptions = {},
+  {
+    amountMsat,
+    poll = {},
+    kit = {},
+    assertOwner,
+    onCarve,
+    allocateOutputSecrets,
+    mintSignatureKeys,
+    onReturnReady,
+  }: PayOptions = {},
 ): Promise<PayResult> => {
   // the forced mutation policy (see shared.ts) covers the carve, the melt,
   // and the classification rotate regardless of caller kit options
   const options: FundOperationOptions = withMutationSafety({
     ...kit,
-    ...(assertOwner ? {assertOwner} : {}),
-    ...(onCarve ? {onCarve} : {}),
-    ...(mintSignatureKeys ? {mintSignatureKeys} : {}),
-  })
-  let invoice: string
-  let amount: number
-  const trimmed = input.trim()
+    ...(assertOwner ? { assertOwner } : {}),
+    ...(onCarve ? { onCarve } : {}),
+    ...(mintSignatureKeys ? { mintSignatureKeys } : {}),
+  });
+  let invoice: string;
+  let amount: number;
+  const trimmed = input.trim();
   if (isBolt11Invoice(trimmed)) {
-    const decoded = decodeBolt11AmountMsat(trimmed)
+    const decoded = decodeBolt11AmountMsat(trimmed);
     if (decoded === null || decoded <= 0) {
       throw new Error(
         "Could not read this invoice's amount - amount-less invoices are not supported.",
-      )
+      );
     }
-    invoice = trimmed
-    amount = decoded
+    invoice = trimmed;
+    amount = decoded;
   } else {
     // a Lightning Address (or LNURL-pay) has no invoice of its own yet -
     // resolving it gets a payRequest, and an amount is needed before an
     // actual invoice exists
-    const url = resolveLnurlInput(trimmed)
+    const url = resolveLnurlInput(trimmed);
     if (!url) {
-      throw new Error('Not a valid bolt11 invoice or Lightning Address.')
+      throw new Error('Not a valid bolt11 invoice or Lightning Address.');
     }
     if (amountMsat === undefined || !Number.isInteger(amountMsat) || amountMsat <= 0) {
-      throw new Error('Enter an amount to pay to this address.')
+      throw new Error('Enter an amount to pay to this address.');
     }
-    const info = await fetchPayRequest(url, options)
+    const info = await fetchPayRequest(url, options);
     if (amountMsat < info.minSendable || amountMsat > info.maxSendable) {
-      throw new Error("Amount is outside the payee's sendable range.")
+      throw new Error("Amount is outside the payee's sendable range.");
     }
-    const result = await requestInvoice(info.callback, amountMsat, options)
-    invoice = result.pr
-    amount = amountMsat
+    const result = await requestInvoice(info.callback, amountMsat, options);
+    invoice = result.pr;
+    amount = amountMsat;
   }
 
   const carve = await ensureExactAmount(bearers, amount, {
     ...options,
-    ...(allocateOutputSecrets ? {allocateOutputSecrets} : {}),
-  })
-  const k1 = requireNoteK1(carve.note.url)
-  if (carve.consumed.length === 0) assertFundOwner(options)
-  let melt: MeltResult
+    ...(allocateOutputSecrets ? { allocateOutputSecrets } : {}),
+  });
+  const k1 = requireNoteK1(carve.note.url);
+  if (carve.consumed.length === 0) assertFundOwner(options);
+  let melt: MeltResult;
   try {
-    melt = await meltNote(carve.note.callback, k1, invoice, options)
+    melt = await meltNote(carve.note.callback, k1, invoice, options);
   } catch (err) {
     // this melt names a single note, so a NoteSpentError here is
     // unambiguous - it's already gone, and gets locked spent the same way
     // a successful melt would have locked it
     if (err instanceof NoteSpentError) {
-      return {outcome: 'note-already-spent', carve, invoice, amountMsat: amount, verifyUrl: null}
+      return { outcome: 'note-already-spent', carve, invoice, amountMsat: amount, verifyUrl: null };
     }
-    throw err
+    throw err;
   }
 
   if (!melt.verify) {
     // no melt proof to poll - the note locking as spent locally is all the
     // confirmation there is
-    return {outcome: 'unknown-still-pending', carve, invoice, amountMsat: amount, verifyUrl: null}
+    return {
+      outcome: 'unknown-still-pending',
+      carve,
+      invoice,
+      amountMsat: amount,
+      verifyUrl: null,
+    };
   }
-  const verifyUrl = melt.verify
+  const verifyUrl = melt.verify;
   try {
-    const proof = await pollVerifyUntilSettled(verifyUrl, poll, options)
+    const proof = await pollVerifyUntilSettled(verifyUrl, poll, options);
     // a settled report is only this payment's proof when it's for the
     // invoice this melt actually paid - a mint that mixes up proofs must
     // not confirm the wrong payment. The verify URL is already scoped to
@@ -171,27 +186,27 @@ export const payWithBearers = async (
     // belongs to another payment, while an undecodable one says nothing
     // either way (a service regenerating synthetic prs in proofs) and is
     // tolerated.
-    const proofAmount = decodeBolt11AmountMsat(proof.pr)
+    const proofAmount = decodeBolt11AmountMsat(proof.pr);
     if (!sameInvoice(proof.pr, invoice) && proofAmount !== null && proofAmount !== amount) {
-      return {outcome: 'unknown-still-pending', carve, invoice, amountMsat: amount, verifyUrl}
+      return { outcome: 'unknown-still-pending', carve, invoice, amountMsat: amount, verifyUrl };
     }
-    return {outcome: 'settled', carve, invoice, amountMsat: amount, verifyUrl}
+    return { outcome: 'settled', carve, invoice, amountMsat: amount, verifyUrl };
   } catch {
     // The verify budget ran out. Journal the exact output secret before the
     // classification rotate reaches the mint, so a crash can recover either
     // the returned source or the rotated replacement.
-    if (!onReturnReady) throw new PayReturnCheckpointRequiredError()
+    if (!onReturnReady) throw new PayReturnCheckpointRequiredError();
     const [recoverySecret] = await requireOutputSecrets(
       allocateOutputSecrets,
       serverOf(carve.note.url),
       1,
-    )
-    await onReturnReady(carve, recoverySecret)
+    );
+    await onReturnReady(carve, recoverySecret);
     try {
       const rotated = await rotateNote(carve.note.callback, k1, {
         ...options,
         randomSecret: () => recoverySecret,
-      })
+      });
       return {
         outcome: 'failed-funds-returned',
         carve,
@@ -200,18 +215,18 @@ export const payWithBearers = async (
           callback: carve.note.callback,
           amount,
           verified: true,
-          ...(carve.note.mintPubkey ? {mintPubkey: carve.note.mintPubkey} : {}),
+          ...(carve.note.mintPubkey ? { mintPubkey: carve.note.mintPubkey } : {}),
         },
         invoice,
         amountMsat: amount,
         verifyUrl,
-      }
+      };
     } catch (err) {
       if (err instanceof PendingNoteError) {
-        return {outcome: 'unknown-still-pending', carve, invoice, amountMsat: amount, verifyUrl}
+        return { outcome: 'unknown-still-pending', carve, invoice, amountMsat: amount, verifyUrl };
       }
       if (err instanceof NoteSpentError) {
-        return {outcome: 'settled', carve, invoice, amountMsat: amount, verifyUrl}
+        return { outcome: 'settled', carve, invoice, amountMsat: amount, verifyUrl };
       }
       if (err instanceof AmbiguousMutationError) {
         const rescuedNote: NewBearer = {
@@ -219,8 +234,8 @@ export const payWithBearers = async (
           callback: carve.note.callback,
           amount,
           verified: false,
-        }
-        if (carve.note.mintPubkey) rescuedNote.mintPubkey = carve.note.mintPubkey
+        };
+        if (carve.note.mintPubkey) rescuedNote.mintPubkey = carve.note.mintPubkey;
         return {
           outcome: 'failed-funds-returned',
           carve,
@@ -228,9 +243,9 @@ export const payWithBearers = async (
           amountMsat: amount,
           verifyUrl,
           rescuedNote,
-        }
+        };
       }
-      return {outcome: 'unknown-still-pending', carve, invoice, amountMsat: amount, verifyUrl}
+      return { outcome: 'unknown-still-pending', carve, invoice, amountMsat: amount, verifyUrl };
     }
   }
-}
+};

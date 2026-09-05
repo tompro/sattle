@@ -186,9 +186,7 @@ const authenticateOrThrow = async (reason: string): Promise<void> => {
   }
 };
 
-export const enableBiometricUnlock = async (
-  material: WalletMaterialV2,
-): Promise<void> => {
+export const enableBiometricUnlock = async (material: WalletMaterialV2): Promise<void> => {
   if (!isNative()) throw new Error('Biometric unlock is only available in the native app.');
   const serialized = serializeWalletMaterial(material);
   const canonicalMaterial = parseWalletMaterial(serialized);

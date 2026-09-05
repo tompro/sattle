@@ -166,8 +166,7 @@ export const usePayInvoiceDialog = (props: PayInvoiceProps, emit: PayInvoiceEmit
       };
       const allocateOutputSecrets = (server: string, count: number) =>
         wallet.allocateOutputSecrets(server, count, fence);
-      const mintSignatureKeys = (server: string) =>
-        getTrustedMintVerificationKeys(server, ownerId);
+      const mintSignatureKeys = (server: string) => getTrustedMintVerificationKeys(server, ownerId);
       // the pay-return recovery output: staged durably (allocated secret,
       // zero value, pendingMint) and linked to the carved source BEFORE the
       // classification rotate can burn it

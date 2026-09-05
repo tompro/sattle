@@ -25,41 +25,36 @@
 //                          source, mint + claim at target)
 //   ops/shared.ts        - bounded polling, UncertainOutcomeError
 
-export {UncertainOutcomeError} from './ops/shared'
-export type {FundOperationOptions, PollOptions} from './ops/shared'
-export {OutputSecretAllocationRequiredError} from './ops/allocation'
-export type {OutputSecretAllocator} from './ops/allocation'
+export { UncertainOutcomeError } from './ops/shared';
+export type { FundOperationOptions, PollOptions } from './ops/shared';
+export { OutputSecretAllocationRequiredError } from './ops/allocation';
+export type { OutputSecretAllocator } from './ops/allocation';
 export {
   CarveCheckpointRequiredError,
   ensureExactAmount,
   UnsupportedMultiBatchMergeError,
-} from './ops/carve'
-export type {CarveOptions, CarveResult} from './ops/carve'
+} from './ops/carve';
+export type { CarveOptions, CarveResult } from './ops/carve';
 export {
   MintedNoteSpentError,
   prepareMint,
   claimMintedNote,
   recoverStagedMintOutput,
-} from './ops/mint'
-export type {
-  PreparedMint,
-  PrepareMintOptions,
-  ClaimedNote,
-  StagedMintRecovery,
-} from './ops/mint'
-export {receiveBearer, ReceiveRotationStagingRequiredError} from './ops/receiveBearer'
-export type {ReceiveBearerOptions, ReceivedNote} from './ops/receiveBearer'
-export {payWithBearers, PayReturnCheckpointRequiredError} from './ops/pay'
-export type {PayOutcome, PayResult, PayOptions} from './ops/pay'
+} from './ops/mint';
+export type { PreparedMint, PrepareMintOptions, ClaimedNote, StagedMintRecovery } from './ops/mint';
+export { receiveBearer, ReceiveRotationStagingRequiredError } from './ops/receiveBearer';
+export type { ReceiveBearerOptions, ReceivedNote } from './ops/receiveBearer';
+export { payWithBearers, PayReturnCheckpointRequiredError } from './ops/pay';
+export type { PayOutcome, PayResult, PayOptions } from './ops/pay';
 export {
   recoverPendingTransferSource,
   transferBetweenMints,
   TransferMeltCheckpointRequiredError,
-} from './ops/transfer'
+} from './ops/transfer';
 export type {
   TransferClaimMaterial,
   TransferOptions,
   TransferOutcome,
   TransferQuote,
   TransferResult,
-} from './ops/transfer'
+} from './ops/transfer';

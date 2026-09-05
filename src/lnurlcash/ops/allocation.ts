@@ -12,13 +12,13 @@
 // point-of-use requirement. Tests inject deterministic allocators;
 // production callers serve reserveCashIndices-backed secrets.
 
-export type OutputSecretAllocator = (server: string, count: number) => Promise<readonly string[]>
+export type OutputSecretAllocator = (server: string, count: number) => Promise<readonly string[]>;
 
 export class OutputSecretAllocationRequiredError extends Error {
-  override readonly name = 'OutputSecretAllocationRequiredError'
+  override readonly name = 'OutputSecretAllocationRequiredError';
 
   constructor() {
-    super('This operation requires durably allocated output secrets.')
+    super('This operation requires durably allocated output secrets.');
   }
 }
 
@@ -31,13 +31,13 @@ export const requireOutputSecrets = async (
   server: string,
   count: number,
 ): Promise<readonly string[]> => {
-  if (!allocate) throw new OutputSecretAllocationRequiredError()
-  const secrets = await allocate(server, count)
+  if (!allocate) throw new OutputSecretAllocationRequiredError();
+  const secrets = await allocate(server, count);
   if (
     secrets.length !== count ||
     secrets.some((secret) => typeof secret !== 'string' || !/^[0-9a-f]{64}$/.test(secret))
   ) {
-    throw new Error('The output secret allocation did not match the request.')
+    throw new Error('The output secret allocation did not match the request.');
   }
-  return secrets
-}
+  return secrets;
+};

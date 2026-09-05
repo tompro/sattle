@@ -20,17 +20,17 @@
 // The connection string follows NIP-47 exactly:
 //   nostr+walletconnect://<wallet-service-pubkey>?relay=wss://...&secret=<client-secret-hex>
 
-import {sha256} from '@noble/hashes/sha2.js'
-import {bytesToHex, hexToBytes, utf8ToBytes} from '@noble/hashes/utils.js'
-import {getPublicKey} from 'nostr-tools/pure'
+import { sha256 } from '@noble/hashes/sha2.js';
+import { bytesToHex, hexToBytes, utf8ToBytes } from '@noble/hashes/utils.js';
+import { getPublicKey } from 'nostr-tools/pure';
 
-import {linkingPubKeyHex} from '../keys'
-import type {NwcBudget, NwcConnectionRecord} from '../storage/nwcConnections'
-import {persistNwcConnection} from '../storage/nwcConnections'
+import { linkingPubKeyHex } from '../keys';
+import type { NwcBudget, NwcConnectionRecord } from '../storage/nwcConnections';
+import { persistNwcConnection } from '../storage/nwcConnections';
 
-const NWC_WALLET_KEY_CONTEXT = 'sattle-nwc-wallet-v1'
+const NWC_WALLET_KEY_CONTEXT = 'sattle-nwc-wallet-v1';
 
-const HEX_64 = /^[0-9a-f]{64}$/i
+const HEX_64 = /^[0-9a-f]{64}$/i;
 
 // Deterministic: sha256(linking key || context || client pubkey). The
 // result is a secp256k1 secret key used ONLY as this connection's
@@ -43,16 +43,16 @@ export const deriveNwcWalletKey = (linkingPrivKey: Uint8Array, clientPubkey: str
       ...utf8ToBytes(NWC_WALLET_KEY_CONTEXT),
       ...hexToBytes(clientPubkey),
     ]),
-  )
+  );
 
 // the x-only nostr pubkey the client addresses its requests to
 export const nwcWalletPubkey = (walletSecretKey: Uint8Array): string =>
-  getPublicKey(walletSecretKey)
+  getPublicKey(walletSecretKey);
 
 export type NwcConnectionInfo = {
-  record: NwcConnectionRecord
-  walletServicePubkey: string
-}
+  record: NwcConnectionRecord;
+  walletServicePubkey: string;
+};
 
 // the runtime view of a persisted record: the record plus its re-derived
 // wallet-service identity
@@ -62,21 +62,21 @@ export const connectionInfoOf = (
 ): NwcConnectionInfo => ({
   record,
   walletServicePubkey: nwcWalletPubkey(deriveNwcWalletKey(linkingPrivKey, record.clientPubkey)),
-})
+});
 
 export type CreatedConnection = NwcConnectionInfo & {
   // shown to the holder exactly once - it carries the client secret,
   // which the wallet deliberately does NOT store
-  connectionString: string
-}
+  connectionString: string;
+};
 
 export type CreateConnectionOptions = {
-  relays: string[]
-  budget: NwcBudget
+  relays: string[];
+  budget: NwcBudget;
   // test hook: a fixed client secret (32 bytes) instead of a random one
-  clientSecret?: Uint8Array
-  now?: number
-}
+  clientSecret?: Uint8Array;
+  now?: number;
+};
 
 // Creates and persists a connection. The client secret is random by
 // default; the wallet-service key falls out of the derivation above.
@@ -85,21 +85,21 @@ export const createConnection = (
   options: CreateConnectionOptions,
 ): CreatedConnection => {
   if (options.relays.length === 0) {
-    throw new Error('A connection needs at least one relay.')
+    throw new Error('A connection needs at least one relay.');
   }
-  const clientSecret = options.clientSecret ?? crypto.getRandomValues(new Uint8Array(32))
-  const clientPubkey = getPublicKey(clientSecret)
-  const ownerId = linkingPubKeyHex(linkingPrivKey)
+  const clientSecret = options.clientSecret ?? crypto.getRandomValues(new Uint8Array(32));
+  const clientPubkey = getPublicKey(clientSecret);
+  const ownerId = linkingPubKeyHex(linkingPrivKey);
   const record = persistNwcConnection(ownerId, {
     version: 1,
     ownerId,
     clientPubkey,
     relays: options.relays,
     budget: options.budget,
-    spent: {periodStart: options.now ?? Date.now(), msat: 0},
+    spent: { periodStart: options.now ?? Date.now(), msat: 0 },
     createdAt: options.now ?? Date.now(),
-  })
-  const info = connectionInfoOf(linkingPrivKey, record)
+  });
+  const info = connectionInfoOf(linkingPrivKey, record);
   return {
     ...info,
     connectionString: buildConnectionString(
@@ -107,43 +107,43 @@ export const createConnection = (
       bytesToHex(clientSecret),
       record.relays,
     ),
-  }
-}
+  };
+};
 
 export const buildConnectionString = (
   walletServicePubkey: string,
   clientSecretHex: string,
   relays: string[],
 ): string => {
-  const query = relays.map((relay) => `relay=${encodeURIComponent(relay)}`).join('&')
-  return `nostr+walletconnect://${walletServicePubkey}?${query}&secret=${clientSecretHex}`
-}
+  const query = relays.map((relay) => `relay=${encodeURIComponent(relay)}`).join('&');
+  return `nostr+walletconnect://${walletServicePubkey}?${query}&secret=${clientSecretHex}`;
+};
 
 export type ParsedConnectionString = {
-  walletServicePubkey: string
-  clientSecret: string
-  relays: string[]
-}
+  walletServicePubkey: string;
+  clientSecret: string;
+  relays: string[];
+};
 
 // parses a NIP-47 connection string; returns null for anything that isn't
 // exactly one (a client-side counterpart of buildConnectionString, here so
 // the format has a tested inverse)
 export const parseConnectionString = (uri: string): ParsedConnectionString | null => {
-  let url: URL
+  let url: URL;
   try {
-    url = new URL(uri.trim())
+    url = new URL(uri.trim());
   } catch {
-    return null
+    return null;
   }
-  if (url.protocol !== 'nostr+walletconnect:') return null
+  if (url.protocol !== 'nostr+walletconnect:') return null;
   // the host is the wallet-service pubkey; normalize case so a
   // hand-typed uppercase string still parses (nostr pubkeys are
   // conventionally lowercase hex)
-  const walletServicePubkey = url.host.toLowerCase()
-  if (!HEX_64.test(walletServicePubkey)) return null
-  const secret = url.searchParams.get('secret')
-  if (!secret || !HEX_64.test(secret)) return null
-  const relays = url.searchParams.getAll('relay').filter((relay) => /^wss?:\/\//.test(relay))
-  if (relays.length === 0) return null
-  return {walletServicePubkey, clientSecret: secret.toLowerCase(), relays}
-}
+  const walletServicePubkey = url.host.toLowerCase();
+  if (!HEX_64.test(walletServicePubkey)) return null;
+  const secret = url.searchParams.get('secret');
+  if (!secret || !HEX_64.test(secret)) return null;
+  const relays = url.searchParams.getAll('relay').filter((relay) => /^wss?:\/\//.test(relay));
+  if (relays.length === 0) return null;
+  return { walletServicePubkey, clientSecret: secret.toLowerCase(), relays };
+};

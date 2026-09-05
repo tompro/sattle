@@ -4,13 +4,13 @@
  * quasar.config file > pwa > workboxMode is set to "InjectManifest"
  */
 
-import { clientsClaim } from "workbox-core";
-import { NavigationRoute, registerRoute } from "workbox-routing";
+import { clientsClaim } from 'workbox-core';
+import { NavigationRoute, registerRoute } from 'workbox-routing';
 import {
   cleanupOutdatedCaches,
   createHandlerBoundToURL,
-  precacheAndRoute
-} from "workbox-precaching";
+  precacheAndRoute,
+} from 'workbox-precaching';
 
 declare const self: ServiceWorkerGlobalScope & typeof globalThis;
 
@@ -26,14 +26,8 @@ if (import.meta.env.QUASAR_PROD) {
   // Non-SSR/SSG fallbacks to index.html
   // Production SSR/SSG fallbacks to offline.html (except for dev)
   registerRoute(
-    new NavigationRoute(
-      createHandlerBoundToURL(import.meta.env.QUASAR_PWA_FALLBACK_HTML),
-      {
-        denylist: [
-          new RegExp(import.meta.env.QUASAR_PWA_SERVICE_WORKER_REGEX),
-          /workbox-(.)*\.js$/
-        ]
-      }
-    )
+    new NavigationRoute(createHandlerBoundToURL(import.meta.env.QUASAR_PWA_FALLBACK_HTML), {
+      denylist: [new RegExp(import.meta.env.QUASAR_PWA_SERVICE_WORKER_REGEX), /workbox-(.)*\.js$/],
+    }),
   );
 }

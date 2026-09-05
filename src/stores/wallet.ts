@@ -107,10 +107,7 @@ export const useWalletStore = defineStore('wallet', () => {
   };
 
   const drainAcceptedOwnerWork = async (): Promise<void> => {
-    const results = await Promise.allSettled([
-      stopWalletNwcSession(),
-      ...foregroundFundOperations,
-    ]);
+    const results = await Promise.allSettled([stopWalletNwcSession(), ...foregroundFundOperations]);
     for (const result of results) {
       if (result.status === 'rejected') throw result.reason;
     }

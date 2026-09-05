@@ -92,10 +92,7 @@ export const installEncryptedWalletMaterial = async (): Promise<void> => {
 // a v2 install whose owner marker was stripped on restore - usable but not
 // yet proven, the state a backup/relay restore leaves behind
 export const installOwnerlessEncryptedWalletMaterial = async (): Promise<void> => {
-  localStorage.setItem(
-    WALLET_MATERIAL_KEY,
-    JSON.stringify(await encryptedWalletMaterialRecord()),
-  );
+  localStorage.setItem(WALLET_MATERIAL_KEY, JSON.stringify(await encryptedWalletMaterialRecord()));
 };
 
 // the pre-v2 record shape a backup file can still carry - the lifecycle must
