@@ -7,7 +7,6 @@
 import {
   buildNoteUrl,
   claimMintedNote as fetchMintClaim,
-  defaultRandomSecret,
   fetchMintAddress,
   fetchPayRequest,
   grossUpForMintFee,
@@ -56,10 +55,9 @@ export type PrepareMintOptions = FundOperationOptions & {
     readonly grossMsat: number
     readonly server: string
   }) => void | Promise<void>
-  // the caller's durable allocation path for the staged note's secret.
-  // When present the secret comes from the wallet's reserved BIP-32
-  // indices; when absent a random secret is generated (legacy callers
-  // only - production always allocates).
+  // the caller's durable allocation path for the staged note's secret -
+  // required: the wallet's reserved BIP-32 indices are the only source a
+  // restart can never reuse or lose
   readonly allocateOutputSecrets?: OutputSecretAllocator
 }
 
@@ -108,9 +106,7 @@ export const prepareMint = async (
   }
   const server = serverOf(payUrl)
   await beforePersist?.({grossMsat, server})
-  const [noteSecret] = options.allocateOutputSecrets
-    ? await requireOutputSecrets(options.allocateOutputSecrets, server, 1)
-    : [(kitOptions.randomSecret ?? defaultRandomSecret)()]
+  const [noteSecret] = await requireOutputSecrets(options.allocateOutputSecrets, server, 1)
   const mintPubkey = nodeInfo ? nodeInfo.mintPubkey : info.mintPubkey
   const staged: NewBearer = {
     url: buildNoteUrl(info.withdrawLink, noteSecret, amountMsat),

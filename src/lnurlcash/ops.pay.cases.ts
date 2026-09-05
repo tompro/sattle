@@ -1,9 +1,13 @@
 import {describe, expect, it} from 'vitest'
 import {noteK1} from 'lnurlcash-kit'
 
-import {payWithBearers} from './ops'
+import {
+  OutputSecretAllocationRequiredError,
+  PayReturnCheckpointRequiredError,
+  payWithBearers,
+} from './ops'
 import {requiredValue} from './test-utils'
-import {makeBearer, mint, secret} from './ops.testHarness'
+import {allocateOutputSecrets, makeBearer, mint, secret} from './ops.testHarness'
 
 describe('payWithBearers', () => {
   it('pays a bolt11 invoice by melting an exact note (settled)', async () => {
@@ -52,6 +56,7 @@ describe('payWithBearers', () => {
     const bearer = await makeBearer(instance, secret('32'), 50_000)
     const result = await payWithBearers([bearer], 'lnbc210n1pjqrstuvwxyz', {
       poll: {intervalMs: 10, intervalCapMs: 50, maxWaitMs: 5_000},
+      allocateOutputSecrets,
       onCarve: () => undefined,
     })
     expect(result.outcome).toBe('settled')
@@ -67,6 +72,8 @@ describe('payWithBearers', () => {
     const bearer = await makeBearer(instance, secret('33'), 21_000)
     const result = await payWithBearers([bearer], 'lnbc210n1pjqrstuvwxyz', {
       poll: {intervalMs: 10, intervalCapMs: 20, maxWaitMs: 300},
+      allocateOutputSecrets,
+      onReturnReady: () => undefined,
     })
     expect(result.outcome).toBe('failed-funds-returned')
     expect(instance.state.noteState(secret('33'))).toBe('burned')
@@ -88,6 +95,7 @@ describe('payWithBearers', () => {
     })
     const payment = payWithBearers([bearer], 'lnbc210n1pjqrstuvwxyz', {
       poll: {intervalMs: 10, intervalCapMs: 20, maxWaitMs: 300},
+      allocateOutputSecrets,
       onReturnReady: async () => {
         stageStarted?.()
         await stageGate
@@ -106,6 +114,8 @@ describe('payWithBearers', () => {
     const bearer = await makeBearer(instance, secret('34'), 21_000)
     const result = await payWithBearers([bearer], 'lnbc210n1pjqrstuvwxyz', {
       poll: {intervalMs: 10, intervalCapMs: 20, maxWaitMs: 300},
+      allocateOutputSecrets,
+      onReturnReady: () => undefined,
     })
     expect(result.outcome).toBe('unknown-still-pending')
     expect(instance.state.noteState(secret('34'))).toBe('pending')
@@ -125,6 +135,7 @@ describe('payWithBearers', () => {
     // through the hook before the melt may start
     await expect(
       payWithBearers([bearer], 'lnbc105n1pjqrstuvwxyz', {
+        allocateOutputSecrets,
         onCarve: () => {
           throw new Error('commit failed')
         },
@@ -174,5 +185,33 @@ describe('payWithBearers', () => {
 
     expect(result.outcome).toBe('settled')
     expect(allocations).toBe(0)
+  })
+
+  it('refuses the return classification without its durable checkpoint', async () => {
+    const instance = await mint({meltAlwaysFails: true})
+    const bearer = await makeBearer(instance, secret('8d'), 21_000)
+
+    await expect(
+      payWithBearers([bearer], 'lnbc210n1pjqrstuvwxyz', {
+        poll: {intervalMs: 10, intervalCapMs: 20, maxWaitMs: 300},
+        allocateOutputSecrets,
+      }),
+    ).rejects.toBeInstanceOf(PayReturnCheckpointRequiredError)
+    // the payment failed and the mint restored the note; the refusal came
+    // before the classification rotate, so nothing else moved
+    expect(instance.state.noteState(secret('8d'))).toBe('outstanding')
+  })
+
+  it('refuses the return classification without an allocation path', async () => {
+    const instance = await mint({meltAlwaysFails: true})
+    const bearer = await makeBearer(instance, secret('8e'), 21_000)
+
+    await expect(
+      payWithBearers([bearer], 'lnbc210n1pjqrstuvwxyz', {
+        poll: {intervalMs: 10, intervalCapMs: 20, maxWaitMs: 300},
+        onReturnReady: () => undefined,
+      }),
+    ).rejects.toBeInstanceOf(OutputSecretAllocationRequiredError)
+    expect(instance.state.noteState(secret('8e'))).toBe('outstanding')
   })
 })

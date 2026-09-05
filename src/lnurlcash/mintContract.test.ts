@@ -49,6 +49,16 @@ const settleLastInvoice = async (m: Mint): Promise<string> => {
 const MINT_PUBKEY = `02${'ab'.repeat(32)}`
 const persistOutput = async (): Promise<void> => undefined
 
+// deterministic stand-in for the wallet's BIP-32 allocation path
+let allocatedCounter = 0
+const allocateOutputSecrets = (_server: string, count: number): Promise<readonly string[]> => {
+  const secrets = Array.from({length: count}, () => {
+    allocatedCounter += 1
+    return `03${allocatedCounter.toString(16).padStart(62, '0')}`
+  })
+  return Promise.resolve(secrets)
+}
+
 // a mint-address (LUD-25) wire response exactly as lnurl-mint serves it:
 // node stats under their WIRE names - `nodeCapacity` is msat like every
 // other amount, named without the suffix on the wire
@@ -124,7 +134,7 @@ describe('mint-address wire contract', () => {
 
   it("surfaces the mock mint's mint-address node stats through prepareMint", async () => {
     const m = await mint()
-    const prepared = await prepareMint(`mint@127.0.0.1:${m.port}`, 21_000, {persistOutput})
+    const prepared = await prepareMint(`mint@127.0.0.1:${m.port}`, 21_000, {persistOutput, allocateOutputSecrets})
     // the metadata is advertised at the mint-address endpoint itself -
     // the payRequest never carried it
     expect(prepared.nodeInfo?.nodePubkey).toBe(m.state.pubkey)
@@ -141,7 +151,7 @@ describe('withdraw-link forms', () => {
     // conformance 0.7.0 defaults to plain https links; lnurlw:// is an
     // explicit LUD-17 transport form
     const m = await mint({testHooks: true, withdrawLinkForm: 'lnurlw'})
-    const prepared = await prepareMint(`mint@127.0.0.1:${m.port}`, 21_000, {persistOutput})
+    const prepared = await prepareMint(`mint@127.0.0.1:${m.port}`, 21_000, {persistOutput, allocateOutputSecrets})
     expect(prepared.withdrawLink).toMatch(/^lnurlw:\/\//)
 
     // and the link is fully usable: settle the invoice, claim the note
@@ -174,7 +184,7 @@ describe('withdraw-link forms', () => {
       // amount-less invoice: the kit skips its amount cross-check
       ['https://mint.example/pay', {pr: 'lnmock1fixture', verify: null}],
     ])
-    const prepared = await prepareMint('mint@mint.example', 21_000, {fetch, persistOutput})
+    const prepared = await prepareMint('mint@mint.example', 21_000, {fetch, persistOutput, allocateOutputSecrets})
     expect(prepared.withdrawLink).toBe('https://mint.example/note')
     // the mint-address payLink is authoritative - the payRequest came from it
     expect(prepared.mintUrl).toBe('https://mint.example/.well-known/lnurlp/mint')
@@ -218,6 +228,7 @@ describe('quote output-naming wire contract', () => {
       prepareMint('mint@mint.example', 21_000, {
         fetch: capturingFetch(routesFor(payRequestFixture({})), seen),
         persistOutput,
+        allocateOutputSecrets,
       }),
     ).rejects.toThrow(/64-character output commitment/i)
     expect(seen.some((url) => url.startsWith('https://mint.example/pay?'))).toBe(false)
@@ -227,6 +238,7 @@ describe('quote output-naming wire contract', () => {
     const seen: string[] = []
     const events: string[] = []
     const prepared = await prepareMint('mint@mint.example', 21_000, {
+      allocateOutputSecrets,
       fetch: (input, init) => {
         const url =
           typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
@@ -264,6 +276,7 @@ describe('quote output-naming wire contract', () => {
       prepareMint('mint@mint.example', 21_000, {
         fetch: capturingFetch(routesFor(payRequestFixture({commentAllowed: 64})), seen),
         persistOutput: () => Promise.reject(new Error('storage full')),
+        allocateOutputSecrets,
       }),
     ).rejects.toThrow(/storage full/)
     expect(seen.some((url) => url.startsWith('https://mint.example/pay?'))).toBe(false)
@@ -275,6 +288,7 @@ describe('quote output-naming wire contract', () => {
       prepareMint('mint@mint.example', 21_000, {
         fetch: capturingFetch(routesFor(payRequestFixture({mintToHash: true})), seen),
         persistOutput,
+        allocateOutputSecrets,
       }),
     ).rejects.toThrow(/64-character output commitment/i)
     expect(seen.some((url) => url.startsWith('https://mint.example/pay?'))).toBe(false)

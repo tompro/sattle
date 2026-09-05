@@ -9,7 +9,6 @@
 
 import {
   AmbiguousMutationError,
-  defaultRandomSecret,
   mergeBatches,
   newSecretsOf,
   noteK1,
@@ -63,10 +62,9 @@ export class CarveCheckpointRequiredError extends Error {
 
 export type CarveOptions = FundOperationOptions & {
   // the caller's durable allocation path for the carve's output secrets
-  // (split: target + change; merge: the combined note). When present the
-  // secrets come from the wallet's reserved BIP-32 indices; when absent the
-  // carve falls back to random secrets (legacy callers only - production
-  // always allocates).
+  // (split: target + change; merge: the combined note). Required for any
+  // mutating carve: the secrets come from the wallet's reserved BIP-32
+  // indices so a restart can never reuse or lose them.
   readonly allocateOutputSecrets?: OutputSecretAllocator
 }
 
@@ -152,9 +150,14 @@ export const ensureExactAmount = async (
     if (mergeBatches(base.callback, k1s).length !== 1) {
       throw new UnsupportedMultiBatchMergeError()
     }
-    const [mergeSecret] = options.allocateOutputSecrets
-      ? await requireOutputSecrets(options.allocateOutputSecrets, serverOf(base.url), 1)
-      : [(options.randomSecret ?? defaultRandomSecret)()]
+    if (!options.onCarve) {
+      throw new CarveCheckpointRequiredError()
+    }
+    const [mergeSecret] = await requireOutputSecrets(
+      options.allocateOutputSecrets,
+      serverOf(base.url),
+      1,
+    )
     const staged: NewBearer = {
       url: withNewK1(base.url, mergeSecret, total),
       callback: base.callback,
@@ -189,10 +192,14 @@ export const ensureExactAmount = async (
 
   // split path: total above target - one split request across all picked
   // k1s, carving the target off and leaving the change as a fresh note
-  const randomSecret = options.randomSecret ?? defaultRandomSecret
-  const [partK1, changeK1] = options.allocateOutputSecrets
-    ? await requireOutputSecrets(options.allocateOutputSecrets, serverOf(base.url), 2)
-    : [randomSecret(), randomSecret()]
+  if (!options.onCarve) {
+    throw new CarveCheckpointRequiredError()
+  }
+  const [partK1, changeK1] = await requireOutputSecrets(
+    options.allocateOutputSecrets,
+    serverOf(base.url),
+    2,
+  )
   let partSignature: string | undefined
   let changeSignature: string | undefined
   const stagedNote: NewBearer = {

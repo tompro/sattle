@@ -496,7 +496,7 @@ export const createWalletFunds = (options: WalletFundsOptions) => {
             ownerFence,
           );
         }
-      } catch (error) {
+      } catch {
         ownerFence();
         options.setAuxiliaryError(
           'Pending allocation records could not be cleared. They will be retired later.',

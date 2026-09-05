@@ -17,7 +17,6 @@ import {
   NoteUnknownError,
   PendingNoteError,
   buildNoteUrl,
-  defaultRandomSecret,
   fetchNoteInfo,
   meltNote,
   newSecretsOf,
@@ -111,6 +110,14 @@ export type TransferResult = {
   rescuedNote?: NewBearer
 }
 
+export class TransferMeltCheckpointRequiredError extends Error {
+  override readonly name = 'TransferMeltCheckpointRequiredError'
+
+  constructor() {
+    super('A source melt requires a durable onMeltReady checkpoint.')
+  }
+}
+
 export type TransferOptions = {
   // verify-poll budget - tests shrink this
   poll?: PollOptions
@@ -124,9 +131,9 @@ export type TransferOptions = {
   // persists the target note before its hash reaches the invoice callback
   persistOutput: PrepareMintOptions['persistOutput']
   // the caller's durable allocation path: the staged target note's secret,
-  // the source carve's outputs, and the source recovery secret. When
-  // absent, secrets fall back to random generation (legacy callers only -
-  // production always allocates).
+  // the source carve's outputs, and the source recovery secret. Required:
+  // the wallet's reserved BIP-32 indices are the only source a restart can
+  // never reuse or lose.
   allocateOutputSecrets?: OutputSecretAllocator
   // trusted signing keys the source carve's landed outputs verify against
   mintSignatureKeys?: MintSignatureKeys
@@ -281,11 +288,14 @@ export const transferBetweenMints = async (
   // flow never throws again; every outcome carries them
   const base = {carve, quote, invoice, verifyUrl, sourceServer, targetServer}
   const k1 = requireNoteK1(carve.note.url)
-  const [sourceRecoverySecret] = allocateOutputSecrets
-    ? await requireOutputSecrets(allocateOutputSecrets, serverOf(carve.note.url), 1)
-    : [(kit.randomSecret ?? defaultRandomSecret)()]
+  if (!onMeltReady) throw new TransferMeltCheckpointRequiredError()
+  const [sourceRecoverySecret] = await requireOutputSecrets(
+    allocateOutputSecrets,
+    serverOf(carve.note.url),
+    1,
+  )
   if (carve.consumed.length === 0) assertFundOwner(options)
-  await onMeltReady?.(carve, sourceRecoverySecret)
+  await onMeltReady(carve, sourceRecoverySecret)
   assertFundOwner(options)
   try {
     await meltNote(carve.note.callback, k1, invoice, options)

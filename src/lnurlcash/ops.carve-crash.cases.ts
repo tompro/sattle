@@ -6,13 +6,12 @@ import {ensureExactAmount, UnsupportedMultiBatchMergeError} from './ops'
 import {requiredValue} from './test-utils'
 import {makeBearer, mint, secret} from './ops.testHarness'
 
-const secretSource = (...secrets: string[]): (() => string) => {
-  let index = 0
-  return () => {
-    const next = secrets[index]
-    if (!next) throw new Error('The test exhausted its prepared secrets.')
-    index += 1
-    return next
+const allocatedSecrets = (...secrets: string[]): ((server: string, count: number) => Promise<readonly string[]>) => {
+  let served = false
+  return (_server, count) => {
+    if (served) throw new Error('The test expected a single allocation.')
+    served = true
+    return Promise.resolve(secrets.slice(0, count))
   }
 }
 
@@ -37,7 +36,7 @@ describe('ensureExactAmount crash safety', () => {
 
     const result = await ensureExactAmount([bearer], 5_000, {
       fetch: observingFetch,
-      randomSecret: secretSource(targetSecret, changeSecret),
+      allocateOutputSecrets: allocatedSecrets(targetSecret, changeSecret),
       onCarve: (prepared) => {
         staged = prepared
       },
@@ -67,7 +66,7 @@ describe('ensureExactAmount crash safety', () => {
 
     await ensureExactAmount([first, second], 7_000, {
       fetch: observingFetch,
-      randomSecret: secretSource(mergedSecret),
+      allocateOutputSecrets: allocatedSecrets(mergedSecret),
       onCarve: (prepared) => {
         staged = prepared
       },
@@ -95,7 +94,7 @@ describe('ensureExactAmount crash safety', () => {
     const result = await ensureExactAmount([bearer], 5_000, {
       fetch: dropSecondMutation,
       mutationRetries: 0,
-      randomSecret: secretSource(secret('77'), secret('78')),
+      allocateOutputSecrets: allocatedSecrets(secret('77'), secret('78')),
       onCarve: () => undefined,
     })
 
@@ -150,6 +149,7 @@ describe('ensureExactAmount crash safety', () => {
     await expect(
       ensureExactAmount([first, second], 7_000, {
         fetch: countingFetch,
+        allocateOutputSecrets: allocatedSecrets(secret('7b')),
         assertOwner: () => {
           ownerChecks += 1
           if (ownerChecks === 3) throw new Error('wallet owner changed')

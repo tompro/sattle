@@ -8,7 +8,6 @@ import {
   NoteSpentError,
   PendingNoteError,
   decodeBolt11AmountMsat,
-  defaultRandomSecret,
   fetchPayRequest,
   isBolt11Invoice,
   meltNote,
@@ -49,6 +48,14 @@ export type PayResult = {
   rescuedNote?: NewBearer
 }
 
+export class PayReturnCheckpointRequiredError extends Error {
+  override readonly name = 'PayReturnCheckpointRequiredError'
+
+  constructor() {
+    super('A pay-return classification requires a durable onReturnReady checkpoint.')
+  }
+}
+
 export type PayOptions = {
   // required when `input` is a Lightning Address / LNURL-pay (a bolt11
   // carries its own amount)
@@ -64,8 +71,7 @@ export type PayOptions = {
   onCarve?: FundOperationOptions['onCarve']
   // the caller's durable allocation path: the carve's output secrets and -
   // only when the return classification actually needs one - the recovery
-  // secret. When absent, secrets fall back to random generation (legacy
-  // callers only - production always allocates).
+  // secret. Required for any mutating carve or return classification.
   allocateOutputSecrets?: OutputSecretAllocator
   // trusted signing keys the carve's landed outputs verify against (see
   // FundOperationOptions.mintSignatureKeys)
@@ -174,10 +180,13 @@ export const payWithBearers = async (
     // The verify budget ran out. Journal the exact output secret before the
     // classification rotate reaches the mint, so a crash can recover either
     // the returned source or the rotated replacement.
-    const [recoverySecret] = allocateOutputSecrets
-      ? await requireOutputSecrets(allocateOutputSecrets, serverOf(carve.note.url), 1)
-      : [(kit.randomSecret ?? defaultRandomSecret)()]
-    await onReturnReady?.(carve, recoverySecret)
+    if (!onReturnReady) throw new PayReturnCheckpointRequiredError()
+    const [recoverySecret] = await requireOutputSecrets(
+      allocateOutputSecrets,
+      serverOf(carve.note.url),
+      1,
+    )
+    await onReturnReady(carve, recoverySecret)
     try {
       const rotated = await rotateNote(carve.note.callback, k1, {
         ...options,

@@ -3,7 +3,14 @@ import {noteK1, noteSignature} from 'lnurlcash-kit'
 
 import {ensureExactAmount} from './ops'
 import {requiredValue} from './test-utils'
-import {makeBearer, mint, noteUrl, secret, signatureKeysFor} from './ops.testHarness'
+import {
+  allocateOutputSecrets,
+  makeBearer,
+  mint,
+  noteUrl,
+  secret,
+  signatureKeysFor,
+} from './ops.testHarness'
 import {fetchNoteInfo} from 'lnurlcash-kit'
 
 // Landed split/merge outputs carry the mint's signature in their URL (sig
@@ -19,6 +26,7 @@ describe('landed mutation signature verification', () => {
 
     const result = await ensureExactAmount([bearer], 5_000, {
       onCarve: () => undefined,
+      allocateOutputSecrets,
       mintSignatureKeys: signatureKeysFor(instance),
     })
 
@@ -38,6 +46,7 @@ describe('landed mutation signature verification', () => {
 
     const result = await ensureExactAmount([first, second], 7_000, {
       onCarve: () => undefined,
+      allocateOutputSecrets,
       mintSignatureKeys: signatureKeysFor(instance),
     })
 
@@ -56,6 +65,7 @@ describe('landed mutation signature verification', () => {
 
     const result = await ensureExactAmount([bearer], 5_000, {
       onCarve: () => undefined,
+      allocateOutputSecrets,
       mintSignatureKeys: signatureKeysFor(instance),
     })
 
@@ -73,6 +83,7 @@ describe('landed mutation signature verification', () => {
 
     const result = await ensureExactAmount([bearer], 5_000, {
       onCarve: () => undefined,
+      allocateOutputSecrets,
       // only the current key is trusted - the signature under the retired
       // key must not verify
       mintSignatureKeys: () => [instance.state.pubkey],
@@ -93,6 +104,7 @@ describe('landed mutation signature verification', () => {
 
     const result = await ensureExactAmount([bearer], 5_000, {
       onCarve: () => undefined,
+      allocateOutputSecrets,
       // the only trusted key on file belongs to a DIFFERENT mint
       mintSignatureKeys: () => [stranger.state.pubkey],
     })
@@ -112,6 +124,7 @@ describe('landed mutation signature verification', () => {
 
     const result = await ensureExactAmount([bearer], 5_000, {
       onCarve: () => undefined,
+      allocateOutputSecrets,
       mintSignatureKeys: signatureKeysFor(instance),
     })
 
@@ -133,6 +146,7 @@ describe('landed mutation signature verification', () => {
 
     const result = await ensureExactAmount([bearer], 5_000, {
       onCarve: () => undefined,
+      allocateOutputSecrets,
       // no key source at all: nothing may be trusted blindly
     })
 

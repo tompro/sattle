@@ -4,7 +4,15 @@ import {noteK1} from 'lnurlcash-kit'
 import type {CarveResult} from './ops'
 import {ensureExactAmount, receiveBearer} from './ops'
 import {requiredValue} from './test-utils'
-import {makeBearer, mint, noteUrl, retryingCbFetch, secret} from './ops.testHarness'
+import {
+  allocateOutputSecrets,
+  makeBearer,
+  mint,
+  noteUrl,
+  retryingCbFetch,
+  secret,
+  stageRotation,
+} from './ops.testHarness'
 
 // The redeem callback is a GET, and HTTP stacks retry GETs - so a mint
 // can execute the first attempt of a mutation and refuse the byte-identical
@@ -19,6 +27,7 @@ describe('mutation retry refusals', () => {
     const bearer = await makeBearer(instance, k1, 50_000)
     const result = await ensureExactAmount([bearer], 25_000, {
       fetch: retryingCbFetch(),
+      allocateOutputSecrets,
       onCarve: () => undefined,
     })
     // the split landed on the first (unseen) attempt: the input is burned
@@ -39,6 +48,7 @@ describe('mutation retry refusals', () => {
     const b = await makeBearer(instance, secret('62'), 5_000)
     const result = await ensureExactAmount([a, b], 25_000, {
       fetch: retryingCbFetch(),
+      allocateOutputSecrets,
       onCarve: () => undefined,
     })
     expect(result.consumed).toHaveLength(2)
@@ -55,6 +65,8 @@ describe('mutation retry refusals', () => {
     instance.state.creditNote(senderK1, 21_000)
     const received = await receiveBearer(noteUrl(instance, senderK1, 21_000), [], {
       fetch: retryingCbFetch(),
+      allocateOutputSecrets,
+      stageRotation,
     })
     expect(received.rotated).toBe(true)
     expect(received.note.amount).toBe(21_000)
@@ -73,6 +85,7 @@ describe('mutation retry refusals', () => {
     await expect(
       ensureExactAmount([bearer], 25_000, {
         fetch: retryingCbFetch(),
+        allocateOutputSecrets,
         onCarve: (carve) => {
           checkpoints.push(carve)
         },

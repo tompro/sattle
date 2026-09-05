@@ -1,6 +1,6 @@
 import {afterEach, expect} from 'vitest'
 import {createMockMint} from 'lnurlcash-conformance/mock-mint'
-import {bytesToHex, hexToBytes} from '@noble/hashes/utils.js'
+import {bytesToHex, hexToBytes, utf8ToBytes} from '@noble/hashes/utils.js'
 import {sha256} from '@noble/hashes/sha2.js'
 import {buildNoteUrl, fetchNoteInfo} from 'lnurlcash-kit'
 
@@ -35,7 +35,7 @@ export const allocateOutputSecrets = (
 ): Promise<readonly string[]> => {
   const secrets = Array.from({length: count}, () => {
     allocatedSecretCounter += 1
-    return secret(`allocated-${allocatedSecretCounter.toString(16)}`)
+    return bytesToHex(sha256(utf8ToBytes(`allocated-${allocatedSecretCounter}`)))
   })
   return Promise.resolve(secrets)
 }

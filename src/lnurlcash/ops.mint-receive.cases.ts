@@ -8,16 +8,24 @@ import {
   rotateNote,
 } from 'lnurlcash-kit'
 
-import {claimMintedNote, prepareMint, receiveBearer} from './ops'
+import {
+  claimMintedNote,
+  OutputSecretAllocationRequiredError,
+  prepareMint,
+  receiveBearer,
+  ReceiveRotationStagingRequiredError,
+} from './ops'
 import {requiredValue} from './test-utils'
 import type {NewBearer} from './types'
 import {
+  allocateOutputSecrets,
   makeBearer,
   mint,
   noteUrl,
   persistOutput,
   secret,
   settleLastInvoice,
+  stageRotation,
 } from './ops.testHarness'
 
 describe('mint fee', () => {
@@ -25,6 +33,7 @@ describe('mint fee', () => {
     const instance = await mint({testHooks: true, baseFeeMsat: 1_000, feePpm: 2_000})
     const prepared = await prepareMint(`mint@127.0.0.1:${instance.port}`, 100_000, {
       persistOutput,
+      allocateOutputSecrets,
     })
     expect(prepared.grossMsat).toBeGreaterThan(100_000)
     await settleLastInvoice(instance)
@@ -105,8 +114,12 @@ describe('receiveBearer', () => {
     const instance = await mint()
     const senderK1 = secret('20')
     instance.state.creditNote(senderK1, 21_000)
-    const received = await receiveBearer(noteUrl(instance, senderK1, 21_000), [])
+    const received = await receiveBearer(noteUrl(instance, senderK1, 21_000), [], {
+      allocateOutputSecrets,
+      stageRotation,
+    })
     expect(received.rotated).toBe(true)
+    expect(received.stage).toBe('finalize')
     expect(received.note.amount).toBe(21_000)
     expect(received.note.verified).toBe(true)
     const newK1 = requiredValue(noteK1(received.note.url))
@@ -140,8 +153,34 @@ describe('receiveBearer', () => {
     const k1 = secret('23')
     const bearer = await makeBearer(instance, k1, 21_000)
     await meltNote(bearer.callback, k1, 'lnbc21n1pjqrstuvwxyz')
-    await expect(receiveBearer(noteUrl(instance, k1, 21_000), [])).rejects.toBeInstanceOf(
-      PendingNoteError,
-    )
+    await expect(
+      receiveBearer(noteUrl(instance, k1, 21_000), [], {
+        allocateOutputSecrets,
+        stageRotation,
+      }),
+    ).rejects.toBeInstanceOf(PendingNoteError)
+  })
+
+  it('refuses to rotate without a durable staging checkpoint', async () => {
+    const instance = await mint()
+    const senderK1 = secret('9a')
+    instance.state.creditNote(senderK1, 21_000)
+
+    await expect(
+      receiveBearer(noteUrl(instance, senderK1, 21_000), [], {allocateOutputSecrets}),
+    ).rejects.toBeInstanceOf(ReceiveRotationStagingRequiredError)
+    // the sender's copy is untouched - no rotation was attempted
+    expect(instance.state.noteState(senderK1)).toBe('outstanding')
+  })
+
+  it('refuses to rotate without an allocation path', async () => {
+    const instance = await mint()
+    const senderK1 = secret('9b')
+    instance.state.creditNote(senderK1, 21_000)
+
+    await expect(
+      receiveBearer(noteUrl(instance, senderK1, 21_000), [], {stageRotation}),
+    ).rejects.toBeInstanceOf(OutputSecretAllocationRequiredError)
+    expect(instance.state.noteState(senderK1)).toBe('outstanding')
   })
 })

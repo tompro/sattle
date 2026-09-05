@@ -3,9 +3,21 @@ import {fetchNoteInfo, noteK1, noteSignature} from 'lnurlcash-kit'
 
 import type {Bearer} from './types'
 import type {CarveResult} from './ops'
-import {CarveCheckpointRequiredError, UncertainOutcomeError, ensureExactAmount} from './ops'
+import {
+  CarveCheckpointRequiredError,
+  OutputSecretAllocationRequiredError,
+  UncertainOutcomeError,
+  ensureExactAmount,
+} from './ops'
 import {requiredValue} from './test-utils'
-import {makeBearer, mint, noteUrl, secret, signatureKeysFor} from './ops.testHarness'
+import {
+  allocateOutputSecrets,
+  makeBearer,
+  mint,
+  noteUrl,
+  secret,
+  signatureKeysFor,
+} from './ops.testHarness'
 
 describe('ensureExactAmount', () => {
   it('returns an already-exact note untouched, burning nothing', async () => {
@@ -25,6 +37,7 @@ describe('ensureExactAmount', () => {
     const bearer = await makeBearer(instance, k1, 21_000)
     const result = await ensureExactAmount([bearer], 5_000, {
       onCarve: () => undefined,
+      allocateOutputSecrets,
       mintSignatureKeys: signatureKeysFor(instance),
     })
     expect(result.note.amount).toBe(5_000)
@@ -42,7 +55,7 @@ describe('ensureExactAmount', () => {
     const instance = await mint()
     const first = await makeBearer(instance, secret('03'), 3_000)
     const second = await makeBearer(instance, secret('04'), 4_000)
-    const result = await ensureExactAmount([first, second], 7_000, {onCarve: () => undefined})
+    const result = await ensureExactAmount([first, second], 7_000, {onCarve: () => undefined, allocateOutputSecrets})
     expect(result.note.amount).toBe(7_000)
     expect(result.change).toBeUndefined()
     expect(result.consumed).toHaveLength(2)
@@ -56,7 +69,7 @@ describe('ensureExactAmount', () => {
     const instance = await mint()
     const first = await makeBearer(instance, secret('05'), 3_000)
     const second = await makeBearer(instance, secret('06'), 4_000)
-    const result = await ensureExactAmount([first, second], 5_000, {onCarve: () => undefined})
+    const result = await ensureExactAmount([first, second], 5_000, {onCarve: () => undefined, allocateOutputSecrets})
     expect(result.note.amount).toBe(5_000)
     expect(result.change?.amount).toBe(2_000)
     expect(result.consumed).toHaveLength(2)
@@ -88,7 +101,7 @@ describe('ensureExactAmount', () => {
     const instance = await mint({dropAfterMutation: true})
     const k1 = secret('10')
     const bearer = await makeBearer(instance, k1, 21_000)
-    const result = await ensureExactAmount([bearer], 5_000, {onCarve: () => undefined})
+    const result = await ensureExactAmount([bearer], 5_000, {onCarve: () => undefined, allocateOutputSecrets})
     const partK1 = requiredValue(noteK1(result.note.url))
     const changeK1 = requiredValue(noteK1(requiredValue(result.change).url))
     expect(partK1).not.toBe(k1)
@@ -118,6 +131,7 @@ describe('ensureExactAmount', () => {
     const checkpoints: CarveResult[] = []
     const failure = await ensureExactAmount([bearer], 5_000, {
       fetch: everythingDyingFetch,
+      allocateOutputSecrets,
       onCarve: (carve) => {
         checkpoints.push(carve)
       },
@@ -136,6 +150,7 @@ describe('ensureExactAmount', () => {
     const bearer = await makeBearer(instance, secret('12'), 21_000)
     const seen: CarveResult[] = []
     const result = await ensureExactAmount([bearer], 5_000, {
+      allocateOutputSecrets,
       onCarve: (carve) => {
         seen.push(carve)
       },
@@ -166,6 +181,7 @@ describe('ensureExactAmount', () => {
     const retiredIds = new Set<string>()
 
     const result = await ensureExactAmount([bearer], 5_000, {
+      allocateOutputSecrets,
       onCarve: (carve) => {
         // checkpoints identify an output by its secret: the landed phase's
         // URL has gained a signature the staged phase could not have had
@@ -194,6 +210,7 @@ describe('ensureExactAmount', () => {
 
     await expect(
       ensureExactAmount([bearer], 5_000, {
+        allocateOutputSecrets,
         onCarve: (carve) => {
           seen.push(carve)
           if (carve.consumed.length > 0) throw new Error('final commit failed')
@@ -243,6 +260,7 @@ describe('ensureExactAmount', () => {
     const bearer = await makeBearer(instance, secret('14'), 21_000)
     await expect(
       ensureExactAmount([bearer], 5_000, {
+        allocateOutputSecrets,
         onCarve: () => {
           throw new Error('commit failed')
         },
@@ -302,5 +320,30 @@ describe('ensureExactAmount', () => {
     })
 
     expect(allocations).toBe(0)
+  })
+
+  it('refuses a mutating carve without an allocation path, before any staging', async () => {
+    const instance = await mint()
+    const split = await makeBearer(instance, secret('87'), 21_000)
+    const mergeA = await makeBearer(instance, secret('88'), 3_000)
+    const mergeB = await makeBearer(instance, secret('89'), 4_000)
+    let mutations = 0
+    const countingFetch: typeof fetch = (input, init) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
+      if (url.includes('/w/cb')) mutations += 1
+      return fetch(input, init)
+    }
+
+    await expect(
+      ensureExactAmount([split], 5_000, {fetch: countingFetch, onCarve: () => undefined}),
+    ).rejects.toBeInstanceOf(OutputSecretAllocationRequiredError)
+    await expect(
+      ensureExactAmount([mergeA, mergeB], 7_000, {fetch: countingFetch, onCarve: () => undefined}),
+    ).rejects.toBeInstanceOf(OutputSecretAllocationRequiredError)
+
+    expect(mutations).toBe(0)
+    expect(instance.state.noteState(secret('87'))).toBe('outstanding')
+    expect(instance.state.noteState(secret('88'))).toBe('outstanding')
+    expect(instance.state.noteState(secret('89'))).toBe('outstanding')
   })
 })

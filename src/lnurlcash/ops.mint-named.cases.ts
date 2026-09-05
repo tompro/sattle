@@ -1,10 +1,10 @@
 import {describe, expect, it} from 'vitest'
 import {hashK1, noteK1} from 'lnurlcash-kit'
 
-import {claimMintedNote, prepareMint} from './ops'
+import {claimMintedNote, OutputSecretAllocationRequiredError, prepareMint} from './ops'
 import {requiredValue} from './test-utils'
 import type {Mint} from './ops.testHarness'
-import {mint, persistOutput, secret, settleLastInvoice} from './ops.testHarness'
+import {allocateOutputSecrets, mint, persistOutput, secret, settleLastInvoice} from './ops.testHarness'
 
 const HEX32 = /^[0-9a-f]{64}$/
 
@@ -16,6 +16,7 @@ describe('mint -> claim, comment-bound output', () => {
     const instance = await mint({testHooks: true})
     const prepared = await prepareMint(`mint@127.0.0.1:${instance.port}`, 21_000, {
       persistOutput,
+      allocateOutputSecrets,
     })
     expect(prepared.noteSecret).toMatch(HEX32)
     expect(boundInvoice(instance)?.boundTo).toBe(hashK1(prepared.noteSecret))
@@ -25,6 +26,7 @@ describe('mint -> claim, comment-bound output', () => {
     const instance = await mint({testHooks: true})
     const prepared = await prepareMint(`mint@127.0.0.1:${instance.port}`, 21_000, {
       persistOutput,
+      allocateOutputSecrets,
     })
     const preimage = await settleLastInvoice(instance)
     const claimed = await claimMintedNote(prepared, {
@@ -44,6 +46,7 @@ describe('mint -> claim, comment-bound output', () => {
     const instance = await mint({testHooks: true})
     const prepared = await prepareMint(`mint@127.0.0.1:${instance.port}`, 21_000, {
       persistOutput,
+      allocateOutputSecrets,
     })
     await expect(
       claimMintedNote(prepared, {intervalMs: 10, intervalCapMs: 20, maxWaitMs: 100}),
@@ -54,6 +57,7 @@ describe('mint -> claim, comment-bound output', () => {
     const instance = await mint({mintToHash: true, testHooks: true})
     const prepared = await prepareMint(`mint@127.0.0.1:${instance.port}`, 21_000, {
       persistOutput,
+      allocateOutputSecrets,
     })
     expect(boundInvoice(instance)?.boundTo).toBe(hashK1(prepared.noteSecret))
     await settleLastInvoice(instance)
@@ -82,5 +86,21 @@ describe('mint -> claim, comment-bound output', () => {
     expect(allocations).toEqual([{server: `127.0.0.1:${instance.port}`, count: 1}])
     expect(prepared.noteSecret).toBe(allocated[0])
     expect(boundInvoice(instance)?.boundTo).toBe(hashK1(requiredValue(allocated[0])))
+  })
+
+  it('refuses to prepare without an allocation path - nothing staged, no invoice', async () => {
+    const instance = await mint({testHooks: true})
+    let persisted = 0
+
+    await expect(
+      prepareMint(`mint@127.0.0.1:${instance.port}`, 21_000, {
+        persistOutput: () => {
+          persisted += 1
+        },
+      }),
+    ).rejects.toBeInstanceOf(OutputSecretAllocationRequiredError)
+
+    expect(persisted).toBe(0)
+    expect(instance.state.invoices.size).toBe(0)
   })
 })

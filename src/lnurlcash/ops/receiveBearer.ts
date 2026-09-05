@@ -4,15 +4,13 @@
 // immediately, since the previous holder (and anything that logged the URL
 // in transit) still knows the old secret.
 //
-// Durability contract: when the caller stages (options.stageRotation), the
-// rotate's fresh secret comes from the caller's reservation path and the
-// future rotated note is persisted BEFORE the rotate can land - a crash
-// after the mint burned the sender's copy then never loses the only secret
-// the money answers to. The staged record carries the original k1 as its
-// pendingMint.sourceRecoverySecret so wallet recovery can restore the
-// received note when the rotate provably never landed. A caller that
-// stages MUST allocate; the legacy no-staging path (random secret, no
-// checkpoint) remains only for engine tests.
+// Durability contract: the rotate's fresh secret comes from the caller's
+// reservation path (options.allocateOutputSecrets) and the future rotated
+// note is persisted through options.stageRotation BEFORE the rotate can
+// land - a crash after the mint burned the sender's copy never loses the
+// only secret the money answers to. The staged record carries the original
+// k1 as its pendingMint.sourceRecoverySecret so wallet recovery can restore
+// the received note when the rotate provably never landed.
 
 import {
   AmbiguousMutationError,
@@ -31,6 +29,14 @@ import type {OutputSecretAllocator} from './allocation'
 import {requireOutputSecrets} from './allocation'
 import type {FundOperationOptions} from './shared'
 import {assertFundOwner, probeMutationOutput, withMutationSafety} from './shared'
+
+export class ReceiveRotationStagingRequiredError extends Error {
+  override readonly name = 'ReceiveRotationStagingRequiredError'
+
+  constructor() {
+    super('A receive rotation requires a durable stageRotation checkpoint.')
+  }
+}
 
 export type ReceiveBearerOptions = FundOperationOptions & {
   // the caller's durable allocation path for the rotation's fresh secret -
@@ -54,8 +60,8 @@ export type ReceivedNote = {
   //   original, demoted to unverified since its copy may be burned)
   // - 'discard': the rotate provably never landed - drop the staged
   //   record; `note` is the original, still verified as received
-  // - 'none': no rotate was attempted or nothing was staged (unverifiable
-  //   note, or the legacy no-staging path)
+  // - 'none': no rotate was attempted (the note could not be verified) -
+  //   nothing was staged
   readonly stage: 'finalize' | 'keep' | 'discard' | 'none'
 }
 
@@ -73,33 +79,29 @@ export const receiveBearer = async (
   if (!note.verified || !note.callback) {
     return {note, rotated: false, stage: 'none'}
   }
-  // staging without allocation is a caller bug: the staged record would
-  // hold a secret no reservation can account for
-  const staging = options.stageRotation
-  const [rotationSecret] = staging
-    ? await requireOutputSecrets(options.allocateOutputSecrets, serverOf(note.url), 1)
-    : []
   // the rotate burns the sender's secret at a fresh one: stage that future
   // note durably before the mutation can land, or a crash strands the money
-  if (staging && rotationSecret) {
-    const staged: NewBearer = {
-      url: withNewK1(note.url, rotationSecret, note.amount),
-      callback: note.callback,
-      amount: note.amount,
-      verified: false,
-      pendingMint: {
-        sourceRecoverySecret: requireNoteK1(note.url),
-        ...(note.mintPubkey ? {mintPubkey: note.mintPubkey} : {}),
-      },
-    }
-    await staging(staged)
+  const staging = options.stageRotation
+  if (!staging) throw new ReceiveRotationStagingRequiredError()
+  const [rotationSecret] = await requireOutputSecrets(
+    options.allocateOutputSecrets,
+    serverOf(note.url),
+    1,
+  )
+  const staged: NewBearer = {
+    url: withNewK1(note.url, rotationSecret, note.amount),
+    callback: note.callback,
+    amount: note.amount,
+    verified: false,
+    pendingMint: {
+      sourceRecoverySecret: requireNoteK1(note.url),
+      ...(note.mintPubkey ? {mintPubkey: note.mintPubkey} : {}),
+    },
   }
-  const rotateOptions = rotationSecret
-    ? {...mutationOptions, randomSecret: () => rotationSecret}
-    : mutationOptions
+  await staging(staged)
+  const rotateOptions = {...mutationOptions, randomSecret: () => rotationSecret}
   // the disposition the caller applies to its staged record
   const disposition = (rotated: boolean, ambiguous: boolean): ReceivedNote['stage'] => {
-    if (!staging) return 'none'
     if (rotated) return 'finalize'
     return ambiguous ? 'keep' : 'discard'
   }

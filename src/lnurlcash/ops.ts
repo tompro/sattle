@@ -47,11 +47,15 @@ export type {
   ClaimedNote,
   StagedMintRecovery,
 } from './ops/mint'
-export {receiveBearer} from './ops/receiveBearer'
+export {receiveBearer, ReceiveRotationStagingRequiredError} from './ops/receiveBearer'
 export type {ReceiveBearerOptions, ReceivedNote} from './ops/receiveBearer'
-export {payWithBearers} from './ops/pay'
+export {payWithBearers, PayReturnCheckpointRequiredError} from './ops/pay'
 export type {PayOutcome, PayResult, PayOptions} from './ops/pay'
-export {recoverPendingTransferSource, transferBetweenMints} from './ops/transfer'
+export {
+  recoverPendingTransferSource,
+  transferBetweenMints,
+  TransferMeltCheckpointRequiredError,
+} from './ops/transfer'
 export type {
   TransferClaimMaterial,
   TransferOptions,

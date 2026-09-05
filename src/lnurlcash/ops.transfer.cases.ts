@@ -3,10 +3,15 @@ import {createMockMint} from 'lnurlcash-conformance/mock-mint'
 import {hashK1, noteK1} from 'lnurlcash-kit'
 
 import {transferBetweenMints as transferBetweenMintsEngine} from './ops'
+import {
+  OutputSecretAllocationRequiredError,
+  TransferMeltCheckpointRequiredError,
+} from './ops'
 import type {CarveResult, TransferOptions} from './ops'
 import type {Bearer} from './types'
 import {requiredValue} from './test-utils'
 import {
+  allocateOutputSecrets,
   expectBurned,
   makeBearer,
   mint,
@@ -20,7 +25,13 @@ const transferBetweenMints = (
   amountMsat: number,
   targetMint: string,
   options: Omit<TransferOptions, 'persistOutput'> = {},
-) => transferBetweenMintsEngine(bearers, amountMsat, targetMint, {...options, persistOutput})
+) =>
+  transferBetweenMintsEngine(bearers, amountMsat, targetMint, {
+    allocateOutputSecrets,
+    onMeltReady: () => undefined,
+    ...options,
+    persistOutput,
+  })
 
 describe('transferBetweenMints', () => {
   const fastPoll = {intervalMs: 10, intervalCapMs: 50, maxWaitMs: 5_000}
@@ -57,6 +68,37 @@ describe('transferBetweenMints', () => {
     ])
     expect(meltReadiness).toEqual([sourceRecoverySecret])
     expect(noteK1(requiredValue(result.mintedAtTarget).note.url)).toBe(targetSecret)
+  })
+
+  it('refuses the source melt without its durable checkpoint', async () => {
+    const source = await mint()
+    const target = await mint({testHooks: true})
+    const bearer = await makeBearer(source, secret('98'), 21_000)
+
+    await expect(
+      transferBetweenMintsEngine([bearer], 21_000, `mint@127.0.0.1:${target.port}`, {
+        allocateOutputSecrets,
+        persistOutput,
+      }),
+    ).rejects.toBeInstanceOf(TransferMeltCheckpointRequiredError)
+
+    // the target stage happened (invoice exists) but the source note is
+    // untouched and nothing melted
+    expect(source.state.noteState(secret('98'))).toBe('outstanding')
+  })
+
+  it('refuses at target staging without an allocation path', async () => {
+    const source = await mint()
+    const target = await mint({testHooks: true})
+    const bearer = await makeBearer(source, secret('99'), 21_000)
+
+    await expect(
+      transferBetweenMintsEngine([bearer], 21_000, `mint@127.0.0.1:${target.port}`, {
+        onMeltReady: () => undefined,
+        persistOutput,
+      }),
+    ).rejects.toBeInstanceOf(OutputSecretAllocationRequiredError)
+    expect(source.state.noteState(secret('99'))).toBe('outstanding')
   })
 
   it('moves value to another mint at a wallet-chosen target secret', async () => {
