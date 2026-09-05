@@ -30,7 +30,9 @@ import {
   persistBearer,
   persistSettings,
   readEncryptedBearers,
+  readNextByHost,
 } from './storage'
+import {readFundsDocument, writeFundsDocument} from './storage/bearers'
 import type {Bearer} from './types'
 import {addTrustedMint, isMintUnconfirmed, readTrustedMints} from './trustedMints'
 import {requiredValue, stubLocalStorage} from './test-utils'
@@ -108,7 +110,7 @@ describe('restoreFromNostr', () => {
     await publishBackup(
       secretKey,
       {
-        notes: readEncryptedBearers(),
+        notes: {bearers: readEncryptedBearers(), nextByHost: readNextByHost()},
         mints: readTrustedMints(OWNER_ID),
         settings: loadSettings(),
       },
@@ -145,7 +147,7 @@ describe('restoreFromNostr', () => {
 
     // device A publishes its store holding the spendable note
     await persistBearer(aesKey, bearerFixture({id: 'rec-a'}))
-    await publishBackup(secretKey, {notes: readEncryptedBearers()}, RELAYS, {
+    await publishBackup(secretKey, {notes: {bearers: readEncryptedBearers(), nextByHost: readNextByHost()}}, RELAYS, {
       transport,
       createdAt: 1000,
     })
@@ -155,7 +157,7 @@ describe('restoreFromNostr', () => {
     stubLocalStorage()
     await restoreFromNostr(LINKING_KEY, RELAYS, {transport})
     await persistBearer(aesKey, bearerFixture({id: 'rec-b', spent: true, updatedAt: 2000}))
-    await publishBackup(secretKey, {notes: readEncryptedBearers()}, RELAYS, {
+    await publishBackup(secretKey, {notes: {bearers: readEncryptedBearers(), nextByHost: readNextByHost()}}, RELAYS, {
       transport,
       createdAt: 2000,
     })
@@ -190,7 +192,7 @@ describe('restoreFromNostr', () => {
     persistSettings({defaultMint: 'remote.example'})
     await publishBackup(
       secretKey,
-      {notes: readEncryptedBearers(), settings: loadSettings()},
+      {notes: {bearers: readEncryptedBearers(), nextByHost: readNextByHost()}, settings: loadSettings()},
       RELAYS,
       {transport, createdAt: 1000},
     )
@@ -219,5 +221,51 @@ describe('restoreFromNostr', () => {
     const result = await restoreFromNostr(LINKING_KEY, RELAYS, {transport})
     expect(result.found).toEqual([])
     expect(result.added).toBe(0)
+  })
+
+  it('merges relayed counters upward-only and never carries pending state', async () => {
+    const aesKey = await deriveBearerAesKey(LINKING_KEY)
+    const secretKey = deriveBackupKey(LINKING_KEY)
+    const {transport} = createRecordingTransport()
+
+    // device A: counter at 5 for mint.example, one note, all published
+    await persistBearer(aesKey, bearerFixture({id: 'note-a'}))
+    writeFundsDocument({
+      version: 2,
+      bearers: readEncryptedBearers(),
+      pending: [
+        {id: 'device-local-pending', kind: 'cash-allocation', phase: 'reserved', iv: '00', ciphertext: '00'},
+      ],
+      nextByHost: {'mint.example': 5},
+      revision: 3,
+    })
+    await publishBackup(
+      secretKey,
+      {notes: {bearers: readEncryptedBearers(), nextByHost: readNextByHost()}},
+      RELAYS,
+      {transport, createdAt: 1000},
+    )
+
+    // device B: same seed, a HIGHER local counter for one host and a lower
+    // incoming one for the other; the pending record must not cross over
+    stubLocalStorage()
+    writeFundsDocument({
+      version: 2,
+      bearers: [],
+      pending: [],
+      nextByHost: {'mint.example': 2, 'local-only.example': 7},
+      revision: 1,
+    })
+
+    const result = await restoreFromNostr(LINKING_KEY, RELAYS, {transport})
+
+    expect(result.found).toEqual(['notes'])
+    expect(result.added).toBe(1)
+    expect(readFundsDocument().nextByHost).toEqual({
+      'mint.example': 5,
+      'local-only.example': 7,
+    })
+    expect(readFundsDocument().pending).toEqual([])
+    expect(await loadBearers(aesKey)).toEqual([bearerFixture({id: 'note-a'})])
   })
 })

@@ -103,11 +103,12 @@ describe('buildBackupEvent / parseBackupEvent', () => {
     // assertion below
     {id: 'record-id-plaintext-sentinel-7f3a', iv: '00'.repeat(12), ciphertext: 'ab'.repeat(40)},
   ]
+  const notes = {bearers: records, nextByHost: {'mint.example': 3}}
   const mints = [{server: 'mint.example', mintPubkey: MINT_PUBKEY, addedAt: 1000, locked: true}]
   const settings = {defaultMint: 'mint.example'}
 
   it('round-trips all three parts through build and parse', () => {
-    const events = buildBackupEvents(secretKey, {notes: records, mints, settings}, 1000)
+    const events = buildBackupEvents(secretKey, {notes, mints, settings}, 1000)
     expect(events).toHaveLength(3)
     expect(events.map((e) => e.kind)).toEqual([
       BACKUP_EVENT_KIND,
@@ -124,6 +125,7 @@ describe('buildBackupEvent / parseBackupEvent', () => {
     expect(parseBackupEvent(secretKey, requiredValue(events[0]))).toEqual({
       part: 'notes',
       bearers: records,
+      nextByHost: {'mint.example': 3},
     })
     expect(parseBackupEvent(secretKey, requiredValue(events[1]))).toEqual({
       part: 'mints',
@@ -136,7 +138,7 @@ describe('buildBackupEvent / parseBackupEvent', () => {
   })
 
   it('leaves no plaintext in the payload', () => {
-    const event = buildBackupEvent(secretKey, 'notes', records)
+    const event = buildBackupEvent(secretKey, 'notes', notes)
     expect(event.content).not.toContain('record-id-plaintext-sentinel-7f3a')
     expect(event.content).not.toContain('ciphertext')
   })
@@ -187,5 +189,26 @@ describe('buildBackupEvent / parseBackupEvent', () => {
       secretKey,
     )
     expect(parseBackupEvent(secretKey, event)).toBeNull()
+  })
+
+  it('rejects a legacy version-1 notes envelope and a v2 notes envelope without counters', () => {
+    const conversationKey = nip44v2.utils.getConversationKey(secretKey, getPublicKey(secretKey))
+    const build = (payload: unknown): NostrEvent =>
+      finalizeEvent(
+        {
+          kind: BACKUP_EVENT_KIND,
+          created_at: 1000,
+          tags: [['d', 'notes']],
+          content: nip44v2.encrypt(JSON.stringify(payload), conversationKey),
+        },
+        secretKey,
+      )
+    // v1 notes carried bare bearer arrays and no counters - pre-funds-document
+    expect(parseBackupEvent(secretKey, build({version: 1, bearers: records}))).toBeNull()
+    expect(parseBackupEvent(secretKey, build({version: 2, bearers: records}))).toBeNull()
+    // a v2 envelope whose counters are malformed is rejected, not coerced
+    expect(
+      parseBackupEvent(secretKey, build({version: 2, bearers: records, nextByHost: 'junk'})),
+    ).toBeNull()
   })
 })

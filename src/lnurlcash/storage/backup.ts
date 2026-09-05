@@ -1,8 +1,14 @@
 // Backup files: everything exactly as it sits in localStorage - bearer
-// ciphertexts always, the linking-key record only when it is itself
-// password-encrypted. A plaintext linking key never leaves the device in a
-// backup; the seed phrase is the recovery path for it instead. Trusted
-// mints are plain (not secret - a mintPubkey is public), included as-is.
+// ciphertexts and the BIP-32 counter map always, the linking-key record only
+// when it is itself password-encrypted. A plaintext linking key never leaves
+// the device in a backup; the seed phrase is the recovery path for it
+// instead. Trusted mints are plain (not secret - a mintPubkey is public),
+// included as-is. The pending-mutation journal is device-local recovery
+// state and is deliberately NOT part of any backup.
+//
+// Format v2 (breaking): the funds document made bearers + counters one
+// atomic unit, so the backup projects both from the same single read -
+// they can never disagree about which generation they came from.
 
 import type {StoredSecret} from '../keys'
 import {
@@ -16,39 +22,45 @@ import type {TrustedMint} from '../trustedMints'
 import {readTrustedMints, mergeTrustedMints} from '../trustedMints'
 import {isWalletOwnerId} from './walletOwner'
 import type {EncryptedBearerRecord} from './bearers'
-import {readEncryptedBearers, writeEncryptedBearers} from './bearers'
+import {commitFundsRestore, readFundsDocument} from './bearers'
 import type {WalletSettings} from './settings'
 import {loadSettings, persistSettings} from './settings'
 import {isJsonObject} from '../jsonParsing'
 
 export type BackupFile = {
   type: 'sattle-backup'
-  version: 1
+  version: 2
   createdAt: number
   ownerId?: unknown
   linkingKey?: StoredSecret
   bearers: EncryptedBearerRecord[]
+  nextByHost: Record<string, number>
   trustedMints?: TrustedMint[]
   settings?: WalletSettings
 }
 
 type ParsedBackupFile = {
   type: 'sattle-backup'
-  version: 1
+  version: 2
   createdAt?: unknown
   ownerId?: unknown
   linkingKey?: unknown
   bearers: unknown[]
+  nextByHost: Record<string, unknown>
   trustedMints?: unknown
   settings?: unknown
 }
 
 export const buildBackup = (ownerId?: string): BackupFile => {
+  // one document, one getItem: bearers and counters are snapshot-consistent
+  // by construction; pending journal records are never read here
+  const funds = readFundsDocument()
   const backup: BackupFile = {
     type: 'sattle-backup',
-    version: 1,
+    version: 2,
     createdAt: Date.now(),
-    bearers: readEncryptedBearers(),
+    bearers: funds.bearers,
+    nextByHost: funds.nextByHost,
     trustedMints: readTrustedMints(ownerId),
     settings: loadSettings(),
   }
@@ -91,8 +103,9 @@ const MAX_BACKUP_FIELD_LENGTH = 64 * 1024
 const isBackupFile = (data: unknown): data is ParsedBackupFile =>
   isJsonObject(data) &&
   data.type === 'sattle-backup' &&
-  data.version === 1 &&
-  Array.isArray(data.bearers)
+  data.version === 2 &&
+  Array.isArray(data.bearers) &&
+  isJsonObject(data.nextByHost)
 
 export const parseBackupFile = (data: unknown): ParsedBackupFile => {
   if (!isBackupFile(data)) {
@@ -102,7 +115,10 @@ export const parseBackupFile = (data: unknown): ParsedBackupFile => {
 }
 
 // merges a backup into localStorage: bearer records are added by id
-// (already present ids are left as-is - union, never overwrite), the
+// (already present ids are left as-is - union, never overwrite) and counter
+// entries merge upward-only (max per host - a stale backup must never rewind
+// a BIP-32 counter and reopen burned indices), both inside ONE locked funds
+// document write (commitFundsRestore enforces the counter bounds). The
 // backup's linking key is only installed when this device has none yet -
 // never overwriting an existing wallet. That guard is deliberate (a
 // stale/wrong backup must never clobber a wallet already holding funds),
@@ -114,14 +130,12 @@ export const parseBackupFile = (data: unknown): ParsedBackupFile => {
 // decrypt, in bearers.ts's mergeBearers.
 export const applyBackup = async (data: unknown, ownerId?: string): Promise<RestoreResult> => {
   const backup = parseBackupFile(data)
-  const existing = readEncryptedBearers()
-  const existingIds = new Set(existing.map((r) => r.id))
   if (backup.bearers.length > MAX_BACKUP_RECORDS) {
     throw new Error(
       `Backup holds ${backup.bearers.length} records - more than the ${MAX_BACKUP_RECORDS} a real wallet could produce.`,
     )
   }
-  let added = 0
+  const incomingBearers: EncryptedBearerRecord[] = []
   let skipped = 0
   for (const record of backup.bearers) {
     if (
@@ -136,20 +150,30 @@ export const applyBackup = async (data: unknown, ownerId?: string): Promise<Rest
       skipped++
       continue
     }
-    if (existingIds.has(record.id)) {
-      skipped++
-      continue
-    }
-    existing.push({id: record.id, iv: record.iv, ciphertext: record.ciphertext})
-    existingIds.add(record.id)
-    added++
+    incomingBearers.push({id: record.id, iv: record.iv, ciphertext: record.ciphertext})
   }
+  // candidate counters: validity (host length, safe range, host cap) is
+  // enforced by commitFundsRestore; here we only keep the raw shape honest
+  const incomingCounters: Record<string, number> = {}
+  for (const [host, next] of Object.entries(backup.nextByHost)) {
+    if (typeof next === 'number') incomingCounters[host] = next
+  }
+
+  let added: number
   try {
-    writeEncryptedBearers(existing)
-  } catch {
-    throw new Error(
-      'Local storage is full - the backup could not be written. Free up space (or forget unused wallets) and try again.',
-    )
+    const merged = await commitFundsRestore(incomingBearers, incomingCounters)
+    added = merged.added
+    skipped += merged.skipped
+  } catch (error) {
+    const name = error instanceof Error ? error.name : ''
+    const message = error instanceof Error ? error.message : ''
+    if (name === 'QuotaExceededError' || /quota|full/i.test(message)) {
+      throw new Error(
+        'Local storage is full - the backup could not be written. Free up space (or forget unused wallets) and try again.',
+        {cause: error},
+      )
+    }
+    throw error
   }
 
   let linkingKeyRestored = false

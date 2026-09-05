@@ -9,11 +9,14 @@
 //
 // Three d-tags carry three payloads in separate replaceable slots, so a
 // notes publish never clobbers settings:
-//   notes    - the encrypted bearer records exactly as they sit in
-//              localStorage (each note is already an AES-GCM ciphertext
-//              under the seed-derived bearer key, so the blob goes up
-//              as-is; the linking key itself is NEVER part of a payload -
-//              the seed phrase is its recovery path)
+//   notes    - the funds projection: encrypted bearer records exactly as
+//              they sit in the funds document (each note is already an
+//              AES-GCM ciphertext under the seed-derived bearer key, so the
+//              blob goes up as-is; the linking key itself is NEVER part of a
+//              payload - the seed phrase is its recovery path) plus the
+//              per-host BIP-32 next-unused counters, so a restored device
+//              never reissues a burned index. Pending journal state is
+//              device-local recovery data and is never published.
 //   mints    - the trusted-mint registry
 //   settings - plaintext wallet settings
 
@@ -46,9 +49,16 @@ export const BACKUP_D_TAGS: Record<BackupPart, string> = {
   settings: 'settings',
 }
 
+// the notes payload: bearers plus the counter map, from one consistent
+// funds-document read
+export type NotesBackupPayload = {
+  bearers: EncryptedBearerRecord[]
+  nextByHost: Record<string, number>
+}
+
 // the decrypted payload of each part, without its envelope
 export type BackupPartPayload = {
-  notes: EncryptedBearerRecord[]
+  notes: NotesBackupPayload
   mints: TrustedMint[]
   settings: WalletSettings
 }
@@ -77,10 +87,21 @@ const MAX_BACKUP_CONTENT_CHARS = 16 * 1024 * 1024
 
 export const dTagOf = (event: NostrEvent): string => event.tags.find((t) => t[0] === 'd')?.[1] ?? ''
 
+// per-part envelope versions: the notes part went v2 with the funds
+// document (counters joined the payload - a breaking change); mints and
+// settings envelopes are unchanged
+const PART_ENVELOPE_VERSION: Record<BackupPart, number> = {
+  notes: 2,
+  mints: 1,
+  settings: 1,
+}
+
 const envelopeFor = (part: BackupPart, payload: BackupPartPayload[BackupPart]): string => {
   switch (part) {
-    case 'notes':
-      return JSON.stringify({version: 1, bearers: payload})
+    case 'notes': {
+      const notes = payload as NotesBackupPayload
+      return JSON.stringify({version: 2, bearers: notes.bearers, nextByHost: notes.nextByHost})
+    }
     case 'mints':
       return JSON.stringify({version: 1, trustedMints: payload})
     case 'settings':
@@ -122,18 +143,18 @@ export const buildBackupEvents = (
 }
 
 export type ParsedBackupEvent =
-  | {part: 'notes'; bearers: EncryptedBearerRecord[]}
+  | {part: 'notes'; bearers: EncryptedBearerRecord[]; nextByHost: Record<string, number>}
   | {part: 'mints'; trustedMints: TrustedMint[]}
   | {part: 'settings'; settings: WalletSettings}
 
 // Light shape checks so parse returns typed values; the strict bounds
-// (record counts, field lengths, pubkey patterns) are enforced by
-// applyBackup / mergeTrustedMints on the restore path, same as file
+// (record counts, field lengths, counter ranges and caps) are enforced by
+// applyBackup / commitFundsRestore on the restore path, same as file
 // backups.
 const parsePayload = (dTag: BackupPart, data: unknown): ParsedBackupEvent | null => {
   if (typeof data !== 'object' || data === null) return null
   const envelope = data as Record<string, unknown>
-  if (envelope.version !== 1) return null
+  if (envelope.version !== PART_ENVELOPE_VERSION[dTag]) return null
   switch (dTag) {
     case 'notes': {
       if (!Array.isArray(envelope.bearers)) return null
@@ -148,7 +169,14 @@ const parsePayload = (dTag: BackupPart, data: unknown): ParsedBackupEvent | null
       ) {
         return null
       }
-      return {part: 'notes', bearers: bearers as EncryptedBearerRecord[]}
+      if (typeof envelope.nextByHost !== 'object' || envelope.nextByHost === null) return null
+      const counters = envelope.nextByHost as Record<string, unknown>
+      if (!Object.values(counters).every((v) => typeof v === 'number')) return null
+      return {
+        part: 'notes',
+        bearers: bearers as EncryptedBearerRecord[],
+        nextByHost: counters as Record<string, number>,
+      }
     }
     case 'mints': {
       if (!Array.isArray(envelope.trustedMints)) return null

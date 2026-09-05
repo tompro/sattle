@@ -1,12 +1,16 @@
 // Backup restore waits for owner-bound trusted-mint convergence before it
-// reports success, while retaining the hostile-file merge policy.
+// reports success, while retaining the hostile-file merge policy. The v2
+// format also projects the BIP-32 counters: backups carry nextByHost,
+// restore merges upward-only, and pending journal state never leaves the
+// device.
 
 import {beforeEach, describe, expect, it, vi} from 'vitest'
 
 import {linkingPubKeyHex, saveLinkingKey} from './keys'
-import {applyBackup, buildBackup} from './storage'
+import {applyBackup, buildBackup, parseBackupFile} from './storage'
+import {readFundsDocument, writeFundsDocument} from './storage/bearers'
 import {addTrustedMint, readTrustedMints} from './trustedMints'
-import {stubLocalStorage} from './test-utils'
+import {requiredValue, stubLocalStorage} from './test-utils'
 
 const LINKING_KEY = new Uint8Array(32).fill(7)
 const OWNER_ID = linkingPubKeyHex(LINKING_KEY)
@@ -40,9 +44,10 @@ class DeferredLocks {
 
 const backup = (server: string, mintPubkey: string) => ({
   type: 'sattle-backup' as const,
-  version: 1 as const,
+  version: 2 as const,
   createdAt: 1,
   bearers: [],
+  nextByHost: {},
   trustedMints: [
     {
       server,
@@ -151,5 +156,103 @@ describe('owner-bound backup restore', () => {
         pendingMintPubkey: KEY_B,
       }),
     ])
+  })
+})
+
+describe('backup counter projection', () => {
+  const fundsDoc = (nextByHost: Record<string, number>) => ({
+    version: 2 as const,
+    bearers: [] as {id: string; iv: string; ciphertext: string}[],
+    pending: [] as {id: string; kind: string; phase: string; iv: string; ciphertext: string}[],
+    nextByHost,
+    revision: 1,
+  })
+
+  it('exports the counters and never the pending journal', () => {
+    const doc = fundsDoc({'mint.example': 5})
+    doc.pending.push({
+      id: 'pending-sentinel-never-exported',
+      kind: 'cash-allocation',
+      phase: 'reserved',
+      iv: '00',
+      ciphertext: '00',
+    })
+    writeFundsDocument(doc)
+
+    const built = buildBackup(OWNER_ID)
+
+    expect(built.version).toBe(2)
+    expect(built.nextByHost).toEqual({'mint.example': 5})
+    expect('pending' in built).toBe(false)
+    expect(JSON.stringify(built)).not.toContain('pending-sentinel-never-exported')
+  })
+
+  it('round-trips counters through a restore and merges upward-only', async () => {
+    writeFundsDocument(fundsDoc({'mint.example': 5, 'other.example': 2}))
+
+    const result = await applyBackup({
+      type: 'sattle-backup',
+      version: 2,
+      createdAt: 1,
+      bearers: [],
+      nextByHost: {'mint.example': 3, 'other.example': 9, 'new.example': 4},
+    })
+
+    expect(result.added).toBe(0)
+    // lower incoming values never rewind a counter; higher ones advance it;
+    // unknown hosts adopt the backup's value
+    expect(readFundsDocument().nextByHost).toEqual({
+      'mint.example': 5,
+      'other.example': 9,
+      'new.example': 4,
+    })
+  })
+
+  it('skips out-of-bounds counter entries instead of rejecting the restore', async () => {
+    writeFundsDocument(fundsDoc({'mint.example': 5}))
+
+    await applyBackup({
+      type: 'sattle-backup',
+      version: 2,
+      createdAt: 1,
+      bearers: [],
+      nextByHost: {
+        [`${'h'.repeat(254)}`]: 9,
+        'overflow.example': 2 ** 31,
+        'negative.example': -1,
+        'fractional.example': 1.5,
+        'valid.example': 7,
+      },
+    })
+
+    expect(readFundsDocument().nextByHost).toEqual({'mint.example': 5, 'valid.example': 7})
+  })
+
+  it('never grows the counter map beyond ten hosts on restore', async () => {
+    const incoming: Record<string, number> = {}
+    for (let i = 0; i < 12; i += 1) incoming[`mint-${i}.example`] = i + 1
+
+    await applyBackup({
+      type: 'sattle-backup',
+      version: 2,
+      createdAt: 1,
+      bearers: [],
+      nextByHost: incoming,
+    })
+
+    const merged = readFundsDocument().nextByHost
+    expect(Object.keys(merged)).toHaveLength(10)
+  })
+
+  it('rejects a legacy version-1 backup file', () => {
+    expect(() =>
+      parseBackupFile({type: 'sattle-backup', version: 1, createdAt: 1, bearers: []}),
+    ).toThrow('Not a valid sattle backup file.')
+  })
+
+  it('rejects a v2 file without a counter map', () => {
+    expect(() =>
+      parseBackupFile({type: 'sattle-backup', version: 2, createdAt: 1, bearers: []}),
+    ).toThrow('Not a valid sattle backup file.')
   })
 })

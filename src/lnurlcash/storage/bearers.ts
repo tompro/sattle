@@ -174,16 +174,6 @@ export const writeFundsDocument = (doc: StoredFundsV2): void => {
   localStorage.setItem(FUNDS_STORAGE_KEY, JSON.stringify(doc))
 }
 
-// COMPAT shim for the pre-counter backup path (storage/backup.ts before the
-// backup-projection commit): replaces the document's bearer array wholesale,
-// preserving pending journal and counters. Deleted together with that path's
-// last call site; new code writes through the locked commit primitives only.
-export const writeEncryptedBearers = (records: EncryptedBearerRecord[]): void => {
-  const doc = readFundsDocument()
-  doc.bearers = records
-  writeFundsDocument(doc)
-}
-
 export const readEncryptedBearers = (): EncryptedBearerRecord[] => readFundsDocument().bearers
 
 export const readPendingJournal = (): EncryptedJournalRecord[] => readFundsDocument().pending

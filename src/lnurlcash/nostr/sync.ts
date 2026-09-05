@@ -2,11 +2,11 @@
 //
 // v1 is single-device last-writer-wins at the relay (addressable events
 // replace). Restore merges locally through storage/backup.ts's applyBackup
-// - the SAME entry point as file restore (union by record id, mints merged
-// unconfirmed, settings fill-only) - so the two restore paths can't drift
-// apart. The note-level dedupe (same note under different record ids,
-// spent-wins) happens after decrypt in bearers.ts's mergeBearers, exactly
-// as with a file backup.
+// - the SAME entry point as file restore (union by record id, counters
+// merged upward-only, mints merged unconfirmed, settings fill-only) - so the
+// two restore paths can't drift apart. The note-level dedupe (same note
+// under different record ids, spent-wins) happens after decrypt in
+// bearers.ts's mergeBearers, exactly as with a file backup.
 
 import type {RestoreResult} from '../storage/backup'
 import {applyBackup} from '../storage/backup'
@@ -94,7 +94,7 @@ export const fetchBackup = async (
       if (!parsed) continue
       switch (parsed.part) {
         case 'notes':
-          parts.notes = parsed.bearers
+          parts.notes = {bearers: parsed.bearers, nextByHost: parsed.nextByHost}
           break
         case 'mints':
           parts.mints = parsed.trustedMints
@@ -134,9 +134,10 @@ export const restoreFromNostr = async (
   const result = await applyBackup(
     {
       type: 'sattle-backup',
-      version: 1,
+      version: 2,
       createdAt: Date.now(),
-      bearers: parts.notes ?? [],
+      bearers: parts.notes?.bearers ?? [],
+      nextByHost: parts.notes?.nextByHost ?? {},
       trustedMints: parts.mints,
       settings: parts.settings,
     },

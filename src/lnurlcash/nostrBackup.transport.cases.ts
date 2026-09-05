@@ -100,7 +100,10 @@ describe('publishBackup / fetchBackup', () => {
   it('publishes every part and fetches them back decrypted', async () => {
     const {transport} = createRecordingTransport()
     const parts = {
-      notes: [{id: 'r1', iv: '00'.repeat(12), ciphertext: 'ab'.repeat(40)}],
+      notes: {
+        bearers: [{id: 'r1', iv: '00'.repeat(12), ciphertext: 'ab'.repeat(40)}],
+        nextByHost: {'mint.example': 2},
+      },
       mints: [{server: 'mint.example', mintPubkey: MINT_PUBKEY, addedAt: 1000, locked: false}],
       settings: {defaultMint: 'mint.example'},
     }
