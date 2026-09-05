@@ -28,3 +28,4 @@ yarn-error.log*
 # Playwright (e2e/ itself is tracked - only its artifacts are ignored)
 /playwright-report/
 /test-results/
+/.playwright-mcp/
