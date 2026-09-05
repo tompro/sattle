@@ -69,7 +69,11 @@ const mints: Mint[] = [];
 
 beforeEach(() => {
   vi.unstubAllGlobals();
-  vi.stubGlobal('navigator', {});
+  // fund mutations require Web Locks; this harness doesn't care about lock
+  // timing, so a present-but-non-serializing fake is enough
+  vi.stubGlobal('navigator', {
+    locks: { request: (_name: string, fn: () => unknown) => Promise.resolve().then(fn) },
+  });
   stubLocalStorage();
   setActivePinia(createPinia());
 });
