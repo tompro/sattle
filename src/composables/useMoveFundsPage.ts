@@ -1,3 +1,4 @@
+// allow: SIZE_OK — cohesive move-funds UI state machine spanning quote through durable outcome.
 import { computed, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { useQuasar } from 'quasar';
@@ -7,9 +8,10 @@ import type { MintFee } from 'lnurlcash-kit';
 import { transferBetweenMints } from '@/lnurlcash/ops';
 import type { TransferOutcome } from '@/lnurlcash/ops';
 import { maxNetForBalance, quoteMintFee } from '@/lnurlcash/fees';
-import type { Bearer, NewBearer } from '@/lnurlcash/types';
+import { getTrustedMintVerificationKeys } from '@/lnurlcash/trustedMints';
+import type { Bearer } from '@/lnurlcash/types';
 import { floorMsatToSat, msatToSats, satsToMsat, MSAT_PER_SAT } from '@/lnurlcash/units';
-import { useWalletStore } from '@/stores/wallet';
+import { TrustedMintPostCommitError, useWalletStore } from '@/stores/wallet';
 import { useMintsStore } from '@/stores/mints';
 import { useActivityStore } from '@/stores/activity';
 import { addCommittedBearers, commitCarve } from './walletCarveCommit';
@@ -132,28 +134,54 @@ export const useMoveFundsPage = () => {
     if (!sats) return;
     step.value = 'working';
     stage.value = 'Asking the target mint for an invoice…';
+    let fundOperation: ReturnType<typeof wallet.beginFundOperation> | undefined;
     try {
-      const ownerFence = wallet.captureOwnerFence();
+      fundOperation = wallet.beginFundOperation();
+      const ownerFence = fundOperation.ownerFence;
+      const ownerId = wallet.pubkey ?? undefined;
       const commitContext = { ownerFence, warn: warnCommitted };
+      let stagedOutput: Bearer | undefined;
+      let carvedOutput: Bearer | undefined;
       // the carve commits the moment it lands server-side (onCarve), not
       // after the melt + settlement wait - an abort mid-wait can then
       // never leave burned inputs looking spendable or strand the outputs
       const carveState: { committed?: Bearer } = {};
       const transfer = await transferBetweenMints(
-        wallet.bearers,
+        wallet.bearers.filter((bearer) => serverOf(bearer.url) === sourceServer.value),
         satsToMsat(sats),
         targetInput.value,
         {
           assertOwner: ownerFence,
+          allocateOutputSecrets: (server, count) =>
+            wallet.allocateOutputSecrets(server, count, ownerFence),
+          mintSignatureKeys: (server) => getTrustedMintVerificationKeys(server, ownerId),
+          persistOutput: async (note) => {
+            [stagedOutput] = await addCommittedBearers(wallet, [note], commitContext);
+          },
           onCarve: async (carve) => {
             carveState.committed = await commitCarve(wallet, carve, commitContext);
           },
+          onMeltReady: async (carve, sourceRecoverySecret) => {
+            if (!stagedOutput) throw new Error('The pending target note was not persisted.');
+            carvedOutput =
+              carveState.committed ??
+              wallet.bearers.find((bearer) => bearer.url === carve.note.url);
+            if (!carvedOutput) throw new Error('The carved note was not tracked.');
+            await wallet.reserveStagedMintSource(
+              stagedOutput.id,
+              carvedOutput.id,
+              sourceRecoverySecret,
+              ownerFence,
+            );
+          },
         },
       );
+      if (!stagedOutput) throw new Error('The pending target note was not persisted.');
       stage.value = 'Confirming the result…';
       // a carve that mutated nothing fires no hook - the note is already
       // tracked; look it up
       const carved =
+        carvedOutput ??
         carveState.committed ??
         wallet.bearers.find((bearer) => bearer.url === transfer.carve.note.url);
       if (!carved) throw new Error('The carved note was not tracked.');
@@ -162,13 +190,14 @@ export const useMoveFundsPage = () => {
       }
       const feeSats = msatToSats(transfer.quote.targetMintFeeMsat);
       if (transfer.outcome === 'settled') {
-        await wallet.markSpent(carved.id, ownerFence);
         const claimed = transfer.mintedAtTarget;
         if (claimed) {
-          const notes: NewBearer[] = claimed.possibleCopy
-            ? [claimed.note, claimed.possibleCopy]
-            : [claimed.note];
-          await addCommittedBearers(wallet, notes, commitContext);
+          try {
+            await wallet.finalizeStagedMintOutput(stagedOutput.id, claimed.note, ownerFence);
+          } catch (error) {
+            if (!(error instanceof TrustedMintPostCommitError)) throw error;
+            warnCommitted(error.message);
+          }
         }
         await activity.log(
           'transfer',
@@ -178,11 +207,11 @@ export const useMoveFundsPage = () => {
         toast('positive', `Moved ${sats.toLocaleString()} sats.`);
       } else if (transfer.outcome === 'failed-funds-returned') {
         if (transfer.rotatedNote) {
-          // the source-probe rotate re-secured the returned funds at a
-          // fresh secret, burning the carved note the checkpoint already
-          // committed - add the new note BEFORE marking the old one spent
-          await addCommittedBearers(wallet, [transfer.rotatedNote], commitContext);
-          await wallet.markSpent(carved.id, ownerFence);
+          await wallet.restoreStagedMintSource(
+            stagedOutput.id,
+            transfer.rotatedNote,
+            ownerFence,
+          );
         }
         await activity.log(
           'transfer',
@@ -191,22 +220,13 @@ export const useMoveFundsPage = () => {
         );
       } else if (transfer.outcome === 'unknown-still-pending') {
         await wallet.markSpent(carved.id, ownerFence);
-        // a named target's claim material carries the note at the wallet's
-        // own secret - claimable the moment the melt settles, so it is
-        // tracked unverified rather than lost with the result object
-        if (transfer.claimMaterial?.note) {
-          await addCommittedBearers(wallet, [transfer.claimMaterial.note], commitContext);
-        }
         await activity.log(
           'transfer',
           `A move of ${sats.toLocaleString()} sats to ${transfer.targetServer} is still in flight - the note is locked.`,
           (error) => warnCommitted(error.message),
         );
       } else if (transfer.outcome === 'settled-claim-failed') {
-        await wallet.markSpent(carved.id, ownerFence);
-        if (transfer.claimMaterial?.note) {
-          await addCommittedBearers(wallet, [transfer.claimMaterial.note], commitContext);
-        }
+        await wallet.finalizeSpentStagedMintOutput(stagedOutput.id, ownerFence);
         await activity.log(
           'transfer',
           `${sats.toLocaleString()} sats arrived at ${transfer.targetServer} but claiming the note failed - it is saved unverified.`,
@@ -220,7 +240,7 @@ export const useMoveFundsPage = () => {
           (error) => warnCommitted(error.message),
         );
       }
-      const claimNote = transfer.claimMaterial?.note ?? null;
+      const claimNote = transfer.claimMaterial?.note ?? stagedOutput;
       result.value = {
         outcome: transfer.outcome,
         requestedSats: sats,
@@ -237,6 +257,8 @@ export const useMoveFundsPage = () => {
         : message;
       toast('negative', inlineError.value);
       step.value = 'form';
+    } finally {
+      fundOperation?.complete();
     }
   };
   return {

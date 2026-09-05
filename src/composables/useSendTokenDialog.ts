@@ -5,6 +5,7 @@ import { toBech32Lnurl } from 'lnurlcash-kit';
 import { writeClipboard } from '@/capabilities/clipboard';
 import { canShareText, shareText } from '@/capabilities/share';
 import { ensureExactAmount, UncertainOutcomeError } from '@/lnurlcash/ops';
+import { getTrustedMintVerificationKeys } from '@/lnurlcash/trustedMints';
 import type { Bearer } from '@/lnurlcash/types';
 import { msatToSats, satsToMsat } from '@/lnurlcash/units';
 import { useWalletStore } from '@/stores/wallet';
@@ -80,15 +81,21 @@ export const useSendTokenDialog = (props: SendTokenProps, emit: SendTokenEmit) =
     preparing.value = true;
     errorMessage.value = null;
     let ownerFence: WalletOwnerFence | undefined;
+    let fundOperation: ReturnType<typeof wallet.beginFundOperation> | undefined;
     try {
-      ownerFence = wallet.captureOwnerFence();
+      fundOperation = wallet.beginFundOperation();
+      ownerFence = fundOperation.ownerFence;
       const fence = ownerFence;
+      const ownerId = wallet.pubkey ?? undefined;
       // the carve commits the moment it lands server-side (onCarve), so
       // even a crash right after can never strand the fresh outputs or
       // leave burned inputs looking spendable
       const carveState: { committed?: Bearer } = {};
       const carve = await ensureExactAmount(wallet.bearers, satsToMsat(sats), {
         assertOwner: fence,
+        allocateOutputSecrets: (server, count) =>
+          wallet.allocateOutputSecrets(server, count, fence),
+        mintSignatureKeys: (server) => getTrustedMintVerificationKeys(server, ownerId),
         onCarve: async (landed) => {
           carveState.committed = await commitCarve(wallet, landed, {
             ownerFence: fence,
@@ -141,6 +148,7 @@ export const useSendTokenDialog = (props: SendTokenProps, emit: SendTokenEmit) =
         : message;
       toast('negative', errorMessage.value);
     } finally {
+      fundOperation?.complete();
       preparing.value = false;
     }
   };
@@ -165,8 +173,10 @@ export const useSendTokenDialog = (props: SendTokenProps, emit: SendTokenEmit) =
     const note = prepared.value;
     if (!note) return;
     removing.value = true;
+    let fundOperation: ReturnType<typeof wallet.beginFundOperation> | undefined;
     try {
-      await wallet.markSpent(note.id, wallet.captureOwnerFence());
+      fundOperation = wallet.beginFundOperation();
+      await wallet.markSpent(note.id, fundOperation.ownerFence);
       await activity.log(
         'spent',
         `Handed over a ${formatSats(msatToSats(note.amount))} sat note.`,
@@ -178,6 +188,7 @@ export const useSendTokenDialog = (props: SendTokenProps, emit: SendTokenEmit) =
     } catch (error) {
       toast('negative', error instanceof Error ? error.message : 'Something went wrong.');
     } finally {
+      fundOperation?.complete();
       removing.value = false;
     }
   };
