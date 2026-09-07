@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.0.6](https://github.com/tompro/sattle/compare/sattle-v0.0.5...sattle-v0.0.6) (2026-09-07)
+
+
+### Features
+
+* add note management and activity history ([785b56d](https://github.com/tompro/sattle/commit/785b56de3b34fb3752abd7fa637aaa4773380924))
+* add note management and activity history ([644e64e](https://github.com/tompro/sattle/commit/644e64ee10bba66609acf5161e176770b5bf5ee1))
+
 ## [0.0.5](https://github.com/tompro/sattle/compare/sattle-v0.0.4...sattle-v0.0.5) (2026-09-05)
 
 
