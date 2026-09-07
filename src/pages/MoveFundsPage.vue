@@ -33,6 +33,7 @@
             outlined
             color="primary"
             label="From mint"
+            :disable="!!selectedNote"
             class="q-mb-md"
           />
 
@@ -250,6 +251,7 @@ const {
   setMax,
   sourceOptions,
   sourceServer,
+  selectedNote,
   stage,
   step,
   targetChoice,

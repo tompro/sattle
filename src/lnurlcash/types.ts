@@ -40,6 +40,7 @@ export type Bearer = {
   // source record that must be locked when a late settlement is recovered.
   pendingMint?: {
     sourceBearerId?: string;
+    refreshSourceBearerId?: string;
     sourceRecoverySecret?: string;
     mintPubkey?: string;
     retireAfter?: number;
@@ -54,9 +55,11 @@ export type NewBearer = {
   amount: number;
   verified: boolean;
   mintPubkey?: string;
+  label?: string;
   deviceId?: string;
   pendingMint?: {
     sourceBearerId?: string;
+    refreshSourceBearerId?: string;
     sourceRecoverySecret?: string;
     mintPubkey?: string;
     retireAfter?: number;

@@ -1,19 +1,28 @@
 <script setup lang="ts">
 // Unified activity history: renders the activity store's events newest
-// first, one row per wallet action. Self-contained - designed to sit inside
-// a q-expansion-item on the home page.
+// first, one row per wallet action. The caller can provide a page-sized slice
+// or cap the store-backed list for the home-page preview.
 import { computed } from 'vue';
 import { useActivityStore } from '@/stores/activity';
-import type { ActivityKind } from '@/lnurlcash/storage';
+import type { ActivityEvent, ActivityKind } from '@/lnurlcash/storage';
+
+const props = defineProps<{
+  events?: ActivityEvent[];
+  limit?: number;
+}>();
 
 const activity = useActivityStore();
 
 // the store already prepends new events, so the array is newest-first
-const events = computed(() => activity.events);
+const events = computed(() => {
+  const source = props.events ?? activity.events;
+  return props.limit === undefined ? source : source.slice(0, props.limit);
+});
 
 const KIND_ICONS: Record<ActivityKind, string> = {
   mint: 'arrow_downward',
   receive: 'south_west',
+  refresh: 'refresh',
   melt: 'north_east',
   split: 'shuffle',
   combine: 'shuffle',
@@ -26,6 +35,7 @@ const KIND_ICONS: Record<ActivityKind, string> = {
 const KIND_COLORS: Record<ActivityKind, string> = {
   mint: 'positive',
   receive: 'positive',
+  refresh: 'info',
   melt: 'primary',
   split: 'info',
   combine: 'info',

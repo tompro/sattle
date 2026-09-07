@@ -427,3 +427,92 @@ describe('pending mint recovery', () => {
     expect(readFundsDocument().nextByHost).toEqual({ 'mint.example': 2 });
   });
 });
+
+describe('pending note-refresh recovery', () => {
+  // a held-note refresh stages its future rotated note with
+  // pendingMint.refreshSourceBearerId pointing at the still-live source -
+  // the source is never locked at staging time, so recovery owes it nothing
+  // unless the rotate provably landed
+  const refreshStage = (instance: Mint, rotationSecret: string, sourceId: string): NewBearer => ({
+    url: buildNoteUrl(`${instance.url}/w`, rotationSecret, 21_000),
+    callback: `${instance.url}/w/cb`,
+    // The URL retains the expected amount for recovery, but an unconfirmed
+    // refresh output must not contribute to the wallet balance.
+    amount: 0,
+    verified: false,
+    label: 'kept label',
+    pendingMint: { refreshSourceBearerId: sourceId, sourceRecoverySecret: '00'.repeat(32) },
+  });
+
+  it('drops the staged refresh when the rotate never landed, keeping the held source live', async () => {
+    const instance = await mint();
+    const wallet = useWalletStore();
+    await wallet.create();
+    const sourceSecret = '7a'.repeat(32);
+    const rotationSecret = '7b'.repeat(32);
+    instance.state.creditNote(sourceSecret, 21_000);
+    const [source] = await wallet.addBearers(
+      [liveNote(instance, sourceSecret)],
+      wallet.captureOwnerFence(),
+    );
+    if (!source) throw new Error('Expected a source bearer.');
+    // nothing was ever credited at the staged secret: the rotate never
+    // reached the mint
+    const [staged] = await wallet.addBearers(
+      [refreshStage(instance, rotationSecret, source.id)],
+      wallet.captureOwnerFence(),
+    );
+    if (!staged) throw new Error('Expected a staged bearer.');
+    expect(wallet.balanceMsat).toBe(21_000);
+
+    await wallet.recoverPendingMints(wallet.captureOwnerFence());
+
+    // the disposable stage is gone and the held source is untouched - a
+    // kept stage would double-count the same sats
+    expect(wallet.bearers.some((bearer) => bearer.id === staged.id)).toBe(false);
+    const held = wallet.bearers.find((bearer) => bearer.id === source.id);
+    expect(held).toMatchObject({ amount: 21_000, verified: true });
+    expect(held?.spent).toBeUndefined();
+    expect(held?.url).toContain(sourceSecret);
+    expect(wallet.balanceMsat).toBe(21_000);
+    expect(instance.state.noteState(sourceSecret)).toBe('outstanding');
+  });
+
+  it('retires the held source in the same write that finalizes a landed refresh rotate', async () => {
+    const storage = stubLocalStorage();
+    const instance = await mint();
+    const wallet = useWalletStore();
+    await wallet.create();
+    const sourceSecret = '7c'.repeat(32);
+    const rotationSecret = '7d'.repeat(32);
+    instance.state.creditNote(sourceSecret, 21_000);
+    // the rotate landed before the crash: the mint credited the staged secret
+    instance.state.creditNote(rotationSecret, 21_000);
+    const [source] = await wallet.addBearers(
+      [liveNote(instance, sourceSecret)],
+      wallet.captureOwnerFence(),
+    );
+    if (!source) throw new Error('Expected a source bearer.');
+    const [staged] = await wallet.addBearers(
+      [refreshStage(instance, rotationSecret, source.id)],
+      wallet.captureOwnerFence(),
+    );
+    if (!staged) throw new Error('Expected a staged bearer.');
+    const writes = vi.spyOn(storage, 'setItem');
+
+    await wallet.recoverPendingMints(wallet.captureOwnerFence());
+
+    // one commit: the rotated note finalizes under the staged id and the
+    // held source retires atomically with it - the balance never doubles
+    expect(writes.mock.calls.filter(([key]) => key === 'sattle_funds_v2')).toHaveLength(1);
+    expect(wallet.bearers.find((bearer) => bearer.id === source.id)?.spent).toBe(true);
+    expect(wallet.bearers.find((bearer) => bearer.id === staged.id)).toMatchObject({
+      amount: 21_000,
+      callback: `${instance.url}/w/cb`,
+      verified: true,
+      pendingMint: undefined,
+      label: 'kept label',
+    });
+    expect(wallet.balanceMsat).toBe(21_000);
+  });
+});

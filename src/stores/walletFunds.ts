@@ -319,7 +319,8 @@ export const createWalletFunds = (options: WalletFundsOptions) => {
         }
         throw new Error('The wallet record is not a pending mint output.');
       }
-      const sourceBearerId = current.pendingMint.sourceBearerId;
+      const sourceBearerId =
+        current.pendingMint.sourceBearerId ?? current.pendingMint.refreshSourceBearerId;
       if (sourceBearerId && !bearers.value.some((bearer) => bearer.id === sourceBearerId)) {
         throw new BearerNotFoundError();
       }
@@ -350,7 +351,8 @@ export const createWalletFunds = (options: WalletFundsOptions) => {
       const current = bearers.value.find((bearer) => bearer.id === id);
       if (!current) throw new BearerNotFoundError();
       if (!current.pendingMint) return;
-      const sourceBearerId = current.pendingMint.sourceBearerId;
+      const sourceBearerId =
+        current.pendingMint.sourceBearerId ?? current.pendingMint.refreshSourceBearerId;
       ownerFence();
       const spent: Bearer = {
         ...current,
@@ -399,6 +401,13 @@ export const createWalletFunds = (options: WalletFundsOptions) => {
           const recovered = await recoverStagedMintOutput(staged, { assertOwner: ownerFence });
           switch (recovered.state) {
             case 'unminted':
+              if (staged.pendingMint.refreshSourceBearerId) {
+                // A held-note refresh keeps its source live until the rotate
+                // lands. No output at the staged secret means the source is
+                // still the wallet's valid copy and this stage is disposable.
+                await removeNote(staged.id, ownerFence);
+                break;
+              }
               if (
                 !staged.pendingMint.sourceBearerId &&
                 staged.pendingMint.retireAfter !== undefined &&
@@ -434,7 +443,7 @@ export const createWalletFunds = (options: WalletFundsOptions) => {
               await recoverLinkedSource();
               break;
             case 'pending':
-              await recoverLinkedSource();
+              if (!staged.pendingMint.refreshSourceBearerId) await recoverLinkedSource();
               break;
             case 'minted':
               await finalizeStagedMintOutput(staged.id, recovered.note, ownerFence);
@@ -445,7 +454,7 @@ export const createWalletFunds = (options: WalletFundsOptions) => {
           }
         } catch (error) {
           ownerFence();
-          if (staged.pendingMint.sourceBearerId) {
+          if (staged.pendingMint.sourceBearerId && !staged.pendingMint.refreshSourceBearerId) {
             try {
               const source = bearers.value.find(
                 (bearer) => bearer.id === staged.pendingMint?.sourceBearerId,

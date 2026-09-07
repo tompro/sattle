@@ -17,6 +17,7 @@ export type ActivityKind =
   | 'melt'
   | 'transfer'
   | 'receive'
+  | 'refresh'
   | 'spent'
   | 'deleted'
   // a payment or mint initiated by a Nostr Wallet Connect client (M5)
@@ -39,6 +40,7 @@ const isActivityKind = (value: unknown): value is ActivityKind => {
     case 'melt':
     case 'transfer':
     case 'receive':
+    case 'refresh':
     case 'spent':
     case 'deleted':
     case 'nwc':

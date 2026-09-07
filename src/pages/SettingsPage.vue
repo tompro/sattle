@@ -39,13 +39,17 @@
         </q-item-section>
       </q-item>
     </q-list>
+
+    <div class="text-center text-caption text-grey-7 q-py-sm">sattle v{{ version }}</div>
   </q-page>
 </template>
 
 <script setup lang="ts">
 import { useRouter } from 'vue-router';
+import packageMetadata from '../../package.json';
 
 const router = useRouter();
+const version = packageMetadata.version;
 
 type SettingsItem = { label: string; to?: string };
 
@@ -78,13 +82,12 @@ const groups: { label: string; items: SettingsItem[] }[] = [
   {
     label: 'Advanced',
     items: [
-      { label: 'Notes' },
+      { label: 'Notes', to: '/settings/notes' },
       { label: 'Offline mode' },
-      { label: 'Activity log' },
+      { label: 'Activity log', to: '/settings/activity' },
       { label: 'Export / import' },
       { label: 'Developer' },
     ],
   },
-  { label: 'About', items: [{ label: 'Docs' }, { label: 'Protocol' }] },
 ];
 </script>

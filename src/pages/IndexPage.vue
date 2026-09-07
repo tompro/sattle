@@ -100,7 +100,16 @@
             label="History"
             header-class="text-primary text-body2"
           >
-            <HistoryList />
+            <HistoryList :limit="5" />
+            <q-separator dark />
+            <q-btn
+              flat
+              no-caps
+              color="primary"
+              label="View all activity"
+              class="full-width"
+              @click="router.push('/settings/activity')"
+            />
           </q-expansion-item>
         </div>
       </div>
