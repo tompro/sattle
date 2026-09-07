@@ -27,6 +27,14 @@ const routes: RouteRecordRaw[] = [
         path: 'settings/nwc',
         component: () => import('@/pages/NwcPage.vue'),
       },
+      {
+        path: 'settings/notes',
+        component: () => import('@/pages/NotesPage.vue'),
+      },
+      {
+        path: 'settings/activity',
+        component: () => import('@/pages/ActivityLogPage.vue'),
+      },
     ],
   },
   {

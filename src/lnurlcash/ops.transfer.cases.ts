@@ -144,6 +144,29 @@ describe('transferBetweenMints', () => {
     expect(source.state.noteState(k1)).toBe('outstanding');
   });
 
+  it('refuses an invoice the single selected note cannot cover, even when its mint holds more', async () => {
+    const source = await mint();
+    const target = await mint();
+    const selectedK1 = secret('55');
+    const untappedK1 = secret('56');
+    // the move page's selected-note constraint: the engine's source list is
+    // ONLY the picked note, so the sibling note at the same mint must not
+    // top the amount up
+    const selected = await makeBearer(source, selectedK1, 5_000);
+    await makeBearer(source, untappedK1, 50_000);
+    let persisted = false;
+    await expect(
+      transferBetweenMintsEngine([selected], 21_000, `mint@127.0.0.1:${target.port}`, {
+        persistOutput: () => {
+          persisted = true;
+        },
+      }),
+    ).rejects.toThrow(/enough/);
+    expect(persisted).toBe(false);
+    expect(source.state.noteState(selectedK1)).toBe('outstanding');
+    expect(source.state.noteState(untappedK1)).toBe('outstanding');
+  });
+
   it('rejects a transfer onto the mint the notes are already on', async () => {
     const instance = await mint();
     const k1 = secret('42');

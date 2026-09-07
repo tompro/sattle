@@ -107,6 +107,8 @@ const isStoredBearer = (value: unknown): value is Omit<Bearer, 'id'> =>
     (isJsonObject(value.pendingMint) &&
       (value.pendingMint.sourceBearerId === undefined ||
         typeof value.pendingMint.sourceBearerId === 'string') &&
+      (value.pendingMint.refreshSourceBearerId === undefined ||
+        typeof value.pendingMint.refreshSourceBearerId === 'string') &&
       (value.pendingMint.sourceRecoverySecret === undefined ||
         typeof value.pendingMint.sourceRecoverySecret === 'string') &&
       (value.pendingMint.mintPubkey === undefined ||

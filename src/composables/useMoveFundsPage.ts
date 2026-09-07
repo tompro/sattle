@@ -1,6 +1,6 @@
 // allow: SIZE_OK — cohesive move-funds UI state machine spanning quote through durable outcome.
 import { computed, ref, watch } from 'vue';
-import { useRouter } from 'vue-router';
+import { useRoute, useRouter } from 'vue-router';
 import { useQuasar } from 'quasar';
 import { describeMintFee, noteK1, serverOf } from 'lnurlcash-kit';
 import type { MintFee } from 'lnurlcash-kit';
@@ -28,6 +28,7 @@ type TransferResult = Readonly<{
 
 export const useMoveFundsPage = () => {
   const router = useRouter();
+  const route = useRoute();
   const $q = useQuasar();
   const wallet = useWalletStore();
   const mints = useMintsStore();
@@ -47,9 +48,20 @@ export const useMoveFundsPage = () => {
   );
   const CUSTOM_TARGET = '__custom__';
   const displaySats = (msat: number): number => floorMsatToSat(msat) / MSAT_PER_SAT;
+  const requestedNoteId = computed(() =>
+    typeof route.query.noteId === 'string' ? route.query.noteId : '',
+  );
+  const selectedNote = computed(() =>
+    requestedNoteId.value
+      ? wallet.bearers.find((bearer) => bearer.id === requestedNoteId.value)
+      : undefined,
+  );
+  const sourceBearers = computed(() =>
+    selectedNote.value ? [selectedNote.value] : wallet.bearers,
+  );
   const spendableByServerMsat = computed(() => {
     const byServer = new Map<string, number>();
-    for (const bearer of wallet.bearers) {
+    for (const bearer of sourceBearers.value) {
       if (bearer.spent || bearer.callback === '' || bearer.deviceId || !noteK1(bearer.url))
         continue;
       const server = serverOf(bearer.url);
@@ -71,6 +83,15 @@ export const useMoveFundsPage = () => {
   const inlineError = ref('');
   const stage = ref('');
   const result = ref<TransferResult | null>(null);
+  watch(
+    selectedNote,
+    (note) => {
+      if (!note) return;
+      sourceServer.value = serverOf(note.url);
+      amountSats.value = displaySats(note.amount);
+    },
+    { immediate: true },
+  );
   const targetOptions = computed<Option[]>(() => {
     const options: Option[] = [];
     for (const mint of mints.mints) {
@@ -147,7 +168,7 @@ export const useMoveFundsPage = () => {
       // never leave burned inputs looking spendable or strand the outputs
       const carveState: { committed?: Bearer } = {};
       const transfer = await transferBetweenMints(
-        wallet.bearers.filter((bearer) => serverOf(bearer.url) === sourceServer.value),
+        sourceBearers.value.filter((bearer) => serverOf(bearer.url) === sourceServer.value),
         satsToMsat(sats),
         targetInput.value,
         {
@@ -270,6 +291,7 @@ export const useMoveFundsPage = () => {
     setMax,
     sourceOptions,
     sourceServer,
+    selectedNote,
     stage,
     step,
     targetChoice,

@@ -104,6 +104,26 @@ describe('encrypted bearer records', () => {
     clearAllBearers();
     expect(readEncryptedBearers()).toEqual([]);
   });
+
+  it('round-trips a staged note-refresh output linked to its held source', async () => {
+    const key = await deriveBearerAesKey(LINKING_KEY);
+    // the refresh stage: a future rotated note whose pendingMint points at
+    // the still-live source this wallet holds until the rotate lands
+    const bearer = bearerFixture({
+      callback: '',
+      amount: 0,
+      verified: false,
+      pendingMint: { refreshSourceBearerId: 'held-source', sourceRecoverySecret: K1_B },
+    });
+    await persistBearer(key, bearer);
+
+    // the link to the held source is ciphertext-only at rest
+    const raw = requiredValue(localStorage.getItem(FUNDS_STORAGE_KEY));
+    expect(raw).not.toContain('held-source');
+
+    const loaded = await loadBearers(key);
+    expect(loaded).toEqual([bearer]);
+  });
 });
 
 describe('activity log', () => {
@@ -114,6 +134,35 @@ describe('activity log', () => {
 
     const loaded = await loadActivity(key);
     expect(loaded.map((e) => e.id)).toEqual(['2', '1']);
+  });
+
+  it('round-trips every activity kind, refresh included', async () => {
+    const key = await deriveBearerAesKey(LINKING_KEY);
+    const kinds = [
+      'mint',
+      'split',
+      'combine',
+      'melt',
+      'transfer',
+      'receive',
+      'refresh',
+      'spent',
+      'deleted',
+      'nwc',
+    ] as const;
+    const events = kinds.map((kind, index) => ({
+      id: `ev-${kind}`,
+      kind,
+      message: `did ${kind}`,
+      createdAt: 1000 + index,
+    }));
+    for (const event of events) {
+      await persistActivityEvent(key, event);
+    }
+
+    const loaded = await loadActivity(key);
+    // a kind the reader rejects would silently vanish from the log
+    expect(loaded).toEqual([...events].reverse());
   });
 
   it('caps the log, rolling the oldest entries off', async () => {
